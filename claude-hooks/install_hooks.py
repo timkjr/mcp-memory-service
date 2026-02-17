@@ -550,7 +550,7 @@ class HookInstaller:
                 "preferredProtocol": protocol_config["preferredProtocol"],
                 "fallbackEnabled": protocol_config["fallbackEnabled"],
                 "http": {
-                    "endpoint": http_endpoint,
+                    "endpoint": "http://mcp-memory.k-lab.lan:8000",
                     "apiKey": "auto-detect",
                     "healthCheckTimeout": 3000,
                     "useDetailedHealthCheck": True
@@ -644,7 +644,7 @@ class HookInstaller:
                 "preferredProtocol": protocol_config["preferredProtocol"],
                 "fallbackEnabled": protocol_config["fallbackEnabled"],
                 "http": {
-                    "endpoint": "https://localhost:8443",
+                    "endpoint": "http://mcp-memory.k-lab.lan:8000",
                     "apiKey": "auto-detect",
                     "healthCheckTimeout": 3000,
                     "useDetailedHealthCheck": True
