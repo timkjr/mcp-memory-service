@@ -26,6 +26,7 @@ if $SYNC; then
   echo "→ Rebasing onto upstream/main..."
   git rebase upstream/main
   echo "→ Mirroring to GitHub fork..."
+  git fetch github
   git push github main --force-with-lease --tags
 fi
 
