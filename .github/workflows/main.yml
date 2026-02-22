@@ -251,7 +251,7 @@ jobs:
   # Publish to Docker Hub (only after release)
   publish-docker-hub:
     needs: [release, test-docker-build]
-    if: needs.release.outputs.released == 'true'
+    if: github.repository == 'doobidoo/mcp-memory-service' && needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -301,7 +301,7 @@ jobs:
   # Publish to GitHub Container Registry
   publish-ghcr:
     needs: [test-uvx-compatibility, test-docker-build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Publish to GHCR
     permissions:
