@@ -23,14 +23,15 @@ done
 if $SYNC; then
   echo "→ Fetching upstream (doobidoo)..."
   git fetch upstream
-  echo "→ Merging upstream/main..."
-  git merge upstream/main --ff-only
+  echo "→ Rebasing onto upstream/main..."
+  git rebase upstream/main
   echo "→ Mirroring to GitHub fork..."
-  git push github main --tags
+  git push github main --force-with-lease --tags
 fi
 
 echo "→ Pushing to Forgejo (primary)..."
-git push forgejo main --tags
+FORCE_FLAG=$($SYNC && echo "--force-with-lease" || true)
+git push forgejo main $FORCE_FLAG --tags
 
 if $DEPLOY; then
   echo "→ Deploying to mcp-memory.k-lab.lan..."
