@@ -97,12 +97,12 @@ jobs:
     needs: [test-uvx-compatibility, test-docker-build]
     runs-on: ubuntu-latest
     name: Publish Docker image
-    if: github.event_name != 'pull_request'
+    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
       id-token: write
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -158,7 +158,7 @@ jobs:
     needs: [test-uvx-compatibility, test-docker-build]
     runs-on: ubuntu-latest
     name: Publish to PyPI
-    if: github.event_name != 'pull_request'
+    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
     permissions:
       id-token: write
       contents: read
