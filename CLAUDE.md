@@ -12,6 +12,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 - **`.claude/directives/memory-tagging.md`** - MANDATORY: Always tag memories with `mcp-memory-service` as first tag
 - **`.claude/directives/README.md`** - Additional topic-specific directives
 
+## 🛠 Required Tool Selection (enforced)
+
+This project has **chunkhound configured** (`.claude.json`). Use the right tool every time:
+
+| Task | Tool | How to load |
+|---|---|---|
+| Search codebase (functions, patterns, architecture) | `mcp__ChunkHound__code_research` | `ToolSearch("select:mcp__ChunkHound__code_research")` |
+| Debug or analyze multi-step problems | `mcp__sequential-thinking__sequentialthinking` | `ToolSearch("select:mcp__sequential-thinking__sequentialthinking")` |
+| Look up external library/CLI/API formats | `Agent(subagent_type="gemini")` | Always available |
+| Store a discovery for future sessions | `mcp__memory-service__store_memory` + tag `mcp-memory-service` | `ToolSearch("select:mcp__memory-service__store_memory")` |
+
+**Do not use grep, Read, or Bash for code search in this project.** Chunkhound is indexed and faster.
+
 ## Overview
 
 MCP Memory Service is a Model Context Protocol server providing semantic memory and persistent storage for Claude Desktop and 13+ AI applications. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
