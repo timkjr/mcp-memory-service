@@ -18,7 +18,7 @@ This project has **chunkhound configured** (`.claude.json`). Use the right tool 
 
 | Task | Tool | How to load |
 |---|---|---|
-| Search codebase (functions, patterns, architecture) | `mcp__ChunkHound__code_research` | `ToolSearch("select:mcp__ChunkHound__code_research")` |
+| Search codebase (functions, patterns, architecture) | `mcp__chunkhound__code_research` | `ToolSearch("select:mcp__chunkhound__code_research")` |
 | Debug or analyze multi-step problems | `mcp__sequential-thinking__sequentialthinking` | `ToolSearch("select:mcp__sequential-thinking__sequentialthinking")` |
 | Look up external library/CLI/API formats | `Agent(subagent_type="gemini")` | Always available |
 | Store a discovery for future sessions | `mcp__memory-service__store_memory` + tag `mcp-memory-service` | `ToolSearch("select:mcp__memory-service__store_memory")` |
