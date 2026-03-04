@@ -11,7 +11,7 @@ on:
 jobs:
   # First, try to create a release
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: release
     permissions:
@@ -132,6 +132,7 @@ jobs:
 
   # Test uvx compatibility
   test-uvx-compatibility:
+    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test uvx compatibility
     timeout-minutes: 20
@@ -214,6 +215,7 @@ jobs:
 
   # Test Docker build
   test-docker-build:
+    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test Docker build
     

@@ -8,6 +8,7 @@ on:
 
 jobs:
   test-uvx-compatibility:
+    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test uvx compatibility
     
@@ -51,6 +52,7 @@ jobs:
         echo "✓ Package structure compatible with uvx"
 
   test-docker-build:
+    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test Docker build
     
@@ -189,9 +191,9 @@ jobs:
 
   update-documentation:
     needs: [publish-docker, publish-pypi]
+    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: Update documentation
-    if: github.event_name != 'pull_request'
     
     steps:
     - name: Checkout repository
