@@ -13,7 +13,7 @@ PID_FILE="/tmp/mcp-memory-http-server.pid"
 START_TIME_FILE="/tmp/mcp-memory-http-server-start.time"
 LOG_FILE="/tmp/mcp-memory-http-server.log"
 ENV_FILE="$PROJECT_DIR/.env"
-HTTP_ENDPOINT="http://127.0.0.1:8000"
+HTTP_ENDPOINT="http://0.0.0.0:8000"
 
 # Colors for output
 RED='\033[0;31m'
@@ -43,7 +43,7 @@ get_server_version() {
     fi
 
     # Fallback to HTTPS
-    curl -k -s --max-time 2 "https://127.0.0.1:8000/api/health" 2>/dev/null | \
+    curl -k -s --max-time 2 "https://0.0.0.0:8000/api/health" 2>/dev/null | \
         python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('version', 'unknown'))" 2>/dev/null || echo "unknown"
 }
 
@@ -65,7 +65,7 @@ check_http_health() {
         return 0
     fi
     # Fallback to HTTPS (with self-signed cert support)
-    if curl -k -s --max-time 2 "https://127.0.0.1:8000/api/health" > /dev/null 2>&1; then
+    if curl -k -s --max-time 2 "https://0.0.0.0:8000/api/health" > /dev/null 2>&1; then
         return 0
     fi
     return 1
