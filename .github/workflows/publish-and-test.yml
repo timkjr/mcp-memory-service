@@ -8,7 +8,6 @@ on:
 
 jobs:
   test-uvx-compatibility:
-    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test uvx compatibility
     
@@ -52,7 +51,6 @@ jobs:
         echo "✓ Package structure compatible with uvx"
 
   test-docker-build:
-    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test Docker build
     
@@ -99,7 +97,7 @@ jobs:
     needs: [test-uvx-compatibility, test-docker-build]
     runs-on: ubuntu-latest
     name: Publish Docker image
-    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
+    if: (github.repository == 'doobidoo/mcp-memory-service' || github.repository == 'timkjr/mcp-memory-service') && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -133,7 +131,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ghcr.io/doobidoo/mcp-memory-service
+        images: ghcr.io/${{ github.repository }}
         tags: |
           type=ref,event=branch
           type=semver,pattern={{version}}
@@ -160,7 +158,7 @@ jobs:
     needs: [test-uvx-compatibility, test-docker-build]
     runs-on: ubuntu-latest
     name: Publish to PyPI
-    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
+    if: (github.repository == 'doobidoo/mcp-memory-service' || github.repository == 'timkjr/mcp-memory-service') && github.event_name != 'pull_request' && secrets.PYPI_TOKEN
     permissions:
       id-token: write
       contents: read
@@ -191,7 +189,7 @@ jobs:
 
   update-documentation:
     needs: [publish-docker, publish-pypi]
-    if: github.repository == 'doobidoo/mcp-memory-service' && github.event_name != 'pull_request'
+    if: (github.repository == 'doobidoo/mcp-memory-service' || github.repository == 'timkjr/mcp-memory-service') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: Update documentation
     
@@ -202,7 +200,7 @@ jobs:
     - name: Update README with GitHub Container Registry info
       run: |
         echo "Docker image published successfully!" >> docker-publish.log
-        echo "Available at: ghcr.io/doobidoo/mcp-memory-service" >> docker-publish.log
+        echo "Available at: ghcr.io/${{ github.repository }}" >> docker-publish.log
 
     - name: Create/update installation docs
       run: |
@@ -216,20 +214,20 @@ jobs:
         
         ```bash
         # Pull the latest image
-        docker pull ghcr.io/doobidoo/mcp-memory-service:latest
+        docker pull ghcr.io/${{ github.repository }}:latest
         
         # Run with default settings
         docker run -d -p 8000:8000 \
           -v $(pwd)/data/chroma_db:/app/chroma_db \
           -v $(pwd)/data/backups:/app/backups \
-          ghcr.io/doobidoo/mcp-memory-service:latest
+          ghcr.io/${{ github.repository }}:latest
         
         # Run in standalone mode
         docker run -d -p 8000:8000 \
           -e MCP_STANDALONE_MODE=1 \
           -v $(pwd)/data/chroma_db:/app/chroma_db \
           -v $(pwd)/data/backups:/app/backups \
-          ghcr.io/doobidoo/mcp-memory-service:latest
+          ghcr.io/${{ github.repository }}:latest
         ```
         
         ## Available Tags
