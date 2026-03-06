@@ -132,7 +132,6 @@ jobs:
 
   # Test uvx compatibility
   test-uvx-compatibility:
-    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test uvx compatibility
     timeout-minutes: 20
@@ -215,7 +214,6 @@ jobs:
 
   # Test Docker build
   test-docker-build:
-    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     name: Test Docker build
     
