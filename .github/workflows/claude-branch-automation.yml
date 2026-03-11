@@ -13,7 +13,7 @@ jobs:
     # Prevents malicious collaborators from abusing this workflow
     # Claude commits have actor: github-actions[bot] or triggering_actor: github-actions[bot]
     # Branch pattern: claude/issue-{number}-{timestamp} or claude/{type}-{timestamp}
-    if: |
+    if: github.repository == 'doobidoo/mcp-memory-service' && (|
       startsWith(github.ref_name, 'claude/') &&
       (github.actor == 'github-actions[bot]' || github.triggering_actor == 'github-actions[bot]')
     runs-on: ubuntu-latest
@@ -194,7 +194,7 @@ jobs:
           cat /tmp/changelog.md
 
       - name: Create Pull Request
-        if: |
+        if: github.repository == 'doobidoo/mcp-memory-service' && (|
           steps.check_pr.outputs.exists == '0' &&
           steps.quality_check.outputs.blocking != 'true'
         env:
@@ -285,7 +285,7 @@ jobs:
           echo "✅ Pull Request created successfully"
 
       - name: Comment on issue (Quality Check Blocked)
-        if: |
+        if: github.repository == 'doobidoo/mcp-memory-service' && (|
           steps.extract_issue.outputs.number != '' &&
           steps.quality_check.outputs.blocking == 'true'
         env:

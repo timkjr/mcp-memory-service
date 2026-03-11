@@ -12,6 +12,7 @@ on:
 
 jobs:
   hadolint:
+    if: github.repository == "doobidoo/mcp-memory-service"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

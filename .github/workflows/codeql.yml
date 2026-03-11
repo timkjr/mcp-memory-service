@@ -11,6 +11,7 @@ on:
 
 jobs:
   analyze:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Analyze Python Code
     runs-on: ubuntu-latest
     timeout-minutes: 15

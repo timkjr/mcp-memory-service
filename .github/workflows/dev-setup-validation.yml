@@ -23,6 +23,7 @@ on:
 
 jobs:
   test-editable-install:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Test Editable Install Detection
     runs-on: ubuntu-latest
 
@@ -77,6 +78,7 @@ jobs:
           echo "✅ Version consistency check passed"
 
   test-non-editable-detection:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Test Non-Editable Install Detection
     runs-on: ubuntu-latest
 
@@ -112,6 +114,7 @@ jobs:
           echo "✅ Non-editable install correctly detected as problematic"
 
   test-version-mismatch-detection:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Test Version Mismatch Detection
     runs-on: ubuntu-latest
 
@@ -159,6 +162,7 @@ jobs:
           echo "✅ Version mismatch correctly detected"
 
   test-install-py-developer-detection:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Test install.py Developer Detection
     runs-on: ubuntu-latest
 
@@ -200,6 +204,7 @@ jobs:
           EOF
 
   test-runtime-version-warning:
+    if: github.repository == "doobidoo/mcp-memory-service"
     name: Test Runtime Version Warning
     runs-on: ubuntu-latest
 
@@ -236,10 +241,10 @@ jobs:
           EOF
 
   summary:
+    if: github.repository == "doobidoo/mcp-memory-service" && always()
     name: Validation Summary
     runs-on: ubuntu-latest
     needs: [test-editable-install, test-non-editable-detection, test-version-mismatch-detection, test-install-py-developer-detection, test-runtime-version-warning]
-    if: always()
 
     steps:
       - name: Check all tests passed

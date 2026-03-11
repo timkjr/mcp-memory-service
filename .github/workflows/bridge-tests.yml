@@ -15,6 +15,7 @@ on:
 
 jobs:
   test-bridge:
+    if: github.repository == "doobidoo/mcp-memory-service"
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,6 +71,7 @@ jobs:
         echo "✅ URL construction check passed"
 
   contract-validation:
+    if: github.repository == "doobidoo/mcp-memory-service"
     runs-on: ubuntu-latest
     
     steps:
@@ -110,6 +112,7 @@ jobs:
         path: contract-report.md
 
   quick-smoke-test:
+    if: github.repository == "doobidoo/mcp-memory-service"
     runs-on: ubuntu-latest
     
     steps:
