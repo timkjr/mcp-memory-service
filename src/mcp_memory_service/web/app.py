@@ -335,6 +335,7 @@ def create_app() -> FastAPI:
 
     # Include MCP protocol router
     app.include_router(mcp_router, tags=["mcp-protocol"])
+    app.include_router(mcp_router, prefix="", tags=["mcp-protocol"])  # Also at root
 
     # Include OAuth routers if enabled
     if OAUTH_ENABLED:
