@@ -71,7 +71,10 @@ class StartupCheckOrchestrator:
         
         This enables stable Client ID/Secret for deployments.
         """
-        from ..config import OAUTH_ENABLED, OAUTH_PRESET_CLIENT_ID, OAUTH_PRESET_CLIENT_SECRET
+        from ..config import (
+            OAUTH_ENABLED, OAUTH_PRESET_CLIENT_ID, OAUTH_PRESET_CLIENT_SECRET,
+            OAUTH_PRESET_REDIRECT_URIS
+        )
         
         if not OAUTH_ENABLED or not OAUTH_PRESET_CLIENT_ID or not OAUTH_PRESET_CLIENT_SECRET:
             return
@@ -84,26 +87,33 @@ class StartupCheckOrchestrator:
             storage = get_oauth_storage()
             existing_client = await storage.get_client(OAUTH_PRESET_CLIENT_ID)
             
+            # Clean up redirect URIs (remove empty strings)
+            redirect_uris = [uri.strip() for uri in OAUTH_PRESET_REDIRECT_URIS if uri.strip()]
+            
+            # Create or update preset client
+            preset_client = RegisteredClient(
+                client_id=OAUTH_PRESET_CLIENT_ID,
+                client_secret=OAUTH_PRESET_CLIENT_SECRET,
+                redirect_uris=redirect_uris,
+                grant_types=["authorization_code", "client_credentials", "refresh_token"],
+                response_types=["code"],
+                token_endpoint_auth_method="client_secret_basic",
+                client_name="Preset Deployment Client",
+                created_at=time.time()
+            )
+
             if not existing_client:
                 logger.info(f"Auto-registering preset OAuth client: {OAUTH_PRESET_CLIENT_ID}")
-                preset_client = RegisteredClient(
-                    client_id=OAUTH_PRESET_CLIENT_ID,
-                    client_secret=OAUTH_PRESET_CLIENT_SECRET,
-                    redirect_uris=[],  # Default to empty, can use PKCE for redirects if needed
-                    grant_types=["authorization_code", "client_credentials", "refresh_token"],
-                    response_types=["code"],
-                    token_endpoint_auth_method="client_secret_basic",
-                    client_name="Preset Deployment Client",
-                    created_at=time.time()
-                )
                 await storage.store_client(preset_client)
                 logger.info("Preset OAuth client registered successfully")
             else:
-                # Optionally update secret if it changed? For now, just log existence
-                logger.debug(f"Preset OAuth client {OAUTH_PRESET_CLIENT_ID} already exists")
+                # Perform an update (upsert) to ensure redirect_uris match
+                logger.info(f"Updating preset OAuth client metadata: {OAUTH_PRESET_CLIENT_ID}")
+                await storage.store_client(preset_client)
+                logger.info("Preset OAuth client metadata updated successfully")
                 
         except Exception as e:
-            logger.error(f"Failed to auto-register preset OAuth client: {str(e)}")
+            logger.error(f"Failed to auto-register/update preset OAuth client: {str(e)}")
             # Don't crash startup for this, just log the error
 
 

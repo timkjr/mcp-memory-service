@@ -727,6 +727,7 @@ OAUTH_ENABLED = safe_get_bool_env('MCP_OAUTH_ENABLED', False)
 # Used for pre-registering a known client on startup
 OAUTH_PRESET_CLIENT_ID = os.getenv("MCP_OAUTH_PRESET_CLIENT_ID")
 OAUTH_PRESET_CLIENT_SECRET = os.getenv("MCP_OAUTH_PRESET_CLIENT_SECRET")
+OAUTH_PRESET_REDIRECT_URIS = os.getenv("MCP_OAUTH_PRESET_REDIRECT_URIS", "https://claude.ai/api/mcp/auth_callback").split(",")
 
 # OAuth Storage Backend Configuration
 OAUTH_STORAGE_BACKEND = os.getenv("MCP_OAUTH_STORAGE_BACKEND", "memory").lower()
