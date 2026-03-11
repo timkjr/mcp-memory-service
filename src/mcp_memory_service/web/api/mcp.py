@@ -143,7 +143,7 @@ MCP_TOOLS = [
 ]
 
 
-@router.post("")
+@router.post("/")
 async def mcp_endpoint(
     request: MCPRequest,
     user: AuthenticationResult = Depends(require_read_access)
