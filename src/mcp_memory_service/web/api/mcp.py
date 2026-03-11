@@ -144,7 +144,6 @@ MCP_TOOLS = [
 ]
 
 
-@router.post("/")
 @router.post("")
 async def mcp_endpoint(
     request: MCPRequest,

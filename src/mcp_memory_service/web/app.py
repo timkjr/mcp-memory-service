@@ -337,6 +337,7 @@ def create_app() -> FastAPI:
     # Mount at /mcp for existing clients
     app.include_router(mcp_router, prefix="/mcp", tags=["mcp-protocol"])
     # Mount at root for Claude.ai HTTP transport
+    # Note: router is already prefixless in mcp.py, so we mount it directly
     app.include_router(mcp_router, tags=["mcp-protocol"])
 
     # Include OAuth routers if enabled
