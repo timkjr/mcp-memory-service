@@ -723,6 +723,11 @@ if CONSOLIDATION_ENABLED:
 # OAuth 2.1 Configuration
 OAUTH_ENABLED = safe_get_bool_env('MCP_OAUTH_ENABLED', False)
 
+# Preset OAuth client credentials (stable ID and Secret)
+# Used for pre-registering a known client on startup
+OAUTH_PRESET_CLIENT_ID = os.getenv("MCP_OAUTH_PRESET_CLIENT_ID")
+OAUTH_PRESET_CLIENT_SECRET = os.getenv("MCP_OAUTH_PRESET_CLIENT_SECRET")
+
 # OAuth Storage Backend Configuration
 OAUTH_STORAGE_BACKEND = os.getenv("MCP_OAUTH_STORAGE_BACKEND", "memory").lower()
 """
