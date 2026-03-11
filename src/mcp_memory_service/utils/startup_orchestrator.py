@@ -91,6 +91,9 @@ class StartupCheckOrchestrator:
             redirect_uris = [uri.strip() for uri in OAUTH_PRESET_REDIRECT_URIS if uri.strip()]
             
             # Create or update preset client
+            # Preserve original created_at if updating
+            created_at = existing_client.created_at if existing_client else time.time()
+            
             preset_client = RegisteredClient(
                 client_id=OAUTH_PRESET_CLIENT_ID,
                 client_secret=OAUTH_PRESET_CLIENT_SECRET,
@@ -99,7 +102,7 @@ class StartupCheckOrchestrator:
                 response_types=["code"],
                 token_endpoint_auth_method="client_secret_basic",
                 client_name="Preset Deployment Client",
-                created_at=time.time()
+                created_at=created_at
             )
 
             if not existing_client:
