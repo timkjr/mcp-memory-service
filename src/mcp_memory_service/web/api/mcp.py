@@ -21,8 +21,7 @@ from ..oauth.middleware import require_read_access, AuthenticationResult
 
 logger = logging.getLogger(__name__)
 
-# Remove hardcoded prefix here so it can be mounted flexibly in app.py
-router = APIRouter(tags=["mcp"])
+router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
 class MCPRequest(BaseModel):
