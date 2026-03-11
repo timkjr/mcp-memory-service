@@ -20,7 +20,7 @@ Implements .well-known endpoints required for OAuth 2.1 Dynamic Client Registrat
 
 import logging
 from fastapi import APIRouter
-from ...config import OAUTH_ISSUER, get_jwt_algorithm
+from ...config import OAUTH_ISSUER, get_jwt_algorithm, join_url
 from .models import OAuthServerMetadata, OAuthProtectedResourceMetadata
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def oauth_protected_resource_metadata() -> OAuthProtectedResourceMetadata:
         authorization_servers=[OAUTH_ISSUER],
         scopes_supported=["read", "write", "admin"],
         bearer_methods_supported=["header"],
-        resource_documentation=f"{OAUTH_ISSUER}/docs",
+        resource_documentation=join_url(OAUTH_ISSUER, "/docs"),
     )
 
 
@@ -63,9 +63,9 @@ async def oauth_authorization_server_metadata() -> OAuthServerMetadata:
     algorithm = get_jwt_algorithm()
     metadata = OAuthServerMetadata(
         issuer=OAUTH_ISSUER,
-        authorization_endpoint=f"{OAUTH_ISSUER}/oauth/authorize",
-        token_endpoint=f"{OAUTH_ISSUER}/oauth/token",
-        registration_endpoint=f"{OAUTH_ISSUER}/oauth/register",
+        authorization_endpoint=join_url(OAUTH_ISSUER, "/oauth/authorize"),
+        token_endpoint=join_url(OAUTH_ISSUER, "/oauth/token"),
+        registration_endpoint=join_url(OAUTH_ISSUER, "/oauth/register"),
         grant_types_supported=["authorization_code", "client_credentials"],
         response_types_supported=["code"],
         token_endpoint_auth_methods_supported=["client_secret_basic", "client_secret_post", "none"],

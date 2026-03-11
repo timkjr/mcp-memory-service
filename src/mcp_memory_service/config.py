@@ -825,6 +825,24 @@ def get_jwt_verification_key() -> str:
     else:
         raise ValueError("No JWT verification key available")
 
+
+def join_url(base: str, path: str) -> str:
+    """
+    Safely join a base URL and a path, avoiding double slashes.
+    
+    Args:
+        base: The base URL (e.g., OAUTH_ISSUER)
+        path: The path to append (e.g., "/oauth/token")
+        
+    Returns:
+        The combined URL string
+    """
+    if not base:
+        return path
+    base = base.rstrip("/")
+    path = path.lstrip("/")
+    return f"{base}/{path}"
+
 def validate_oauth_configuration() -> None:
     """
     Validate OAuth configuration at startup.
