@@ -948,7 +948,7 @@ def get_oauth_issuer() -> str:
 # OAuth issuer URL - CRITICAL for reverse proxy deployments
 # Production: Set MCP_OAUTH_ISSUER to external URL (e.g., "https://api.example.com")
 # Development: Auto-detects from server configuration
-OAUTH_ISSUER = os.getenv('MCP_OAUTH_ISSUER') or get_oauth_issuer()
+OAUTH_ISSUER = (os.getenv('MCP_OAUTH_ISSUER') or get_oauth_issuer()).rstrip("/")
 
 # OAuth token configuration
 OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES = safe_get_int_env('MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES', 60, min_value=1, max_value=1440)  # 1 minute to 24 hours

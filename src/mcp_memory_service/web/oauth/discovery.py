@@ -48,8 +48,8 @@ async def oauth_protected_resource_metadata() -> OAuthProtectedResourceMetadata:
     )
 
 
-    @router.get("/.well-known/oauth-authorization-server/mcp")
-    async def oauth_authorization_server_metadata() -> OAuthServerMetadata:
+@router.get("/.well-known/oauth-authorization-server/mcp")
+async def oauth_authorization_server_metadata() -> OAuthServerMetadata:
     """
     OAuth 2.1 Authorization Server Metadata endpoint.
 
