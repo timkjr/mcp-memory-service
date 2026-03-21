@@ -25,11 +25,40 @@ This project has **chunkhound configured** (`.claude.json`). Use the right tool 
 
 **Do not use grep, Read, or Bash for code search in this project.** Chunkhound is indexed and faster.
 
+## 🔴 Operational Rules
+
+**These rules apply to every session. Violations cause real incidents — follow them exactly.**
+
+### Memory Storage
+- **Always use MCP Memory Server** (`mcp__memory__memory_store`) for storing context, learnings, and decisions
+- **Never write to `MEMORY.md` or local memory files** unless the user explicitly asks for file-based storage
+- Tag all memories with `mcp-memory-service` as the first tag (per `memory-tagging.md`)
+
+### MCP Configuration
+- **MCP server configs go in `.mcp.json`**, not in `settings.json`
+- `settings.json` is for Claude Code settings (hooks, plugins, permissions) only
+
+### SSH / Network Safety
+- **Before any SSH or network task**: confirm machine identity with `hostname` and verify connection direction (source → target)
+- **Never assume** which machine you're on or which direction a connection flows — always verify first
+- This prevents accidental operations on production machines or reverse-direction tunnels
+
+### Auto-Save Learnings
+- **After completing tasks**: automatically save key learnings, decisions, and patterns to MCP Memory without being asked
+- Include relevant tags: `mcp-memory-service`, task-specific tags, and `learnings`
+
+### Release Workflow Checklist
+Before merging or releasing:
+1. Verify CI is green on the target branch (`gh run list --branch <branch>`)
+2. Check landing page version (`docs/index.html`) against latest tag — update if stale (MINOR/MAJOR only)
+3. Clean up merged branches after release (`git branch -d`, `git push origin --delete`)
+4. Use `github-release-manager` agent — never manually bump versions
+
 ## Overview
 
 MCP Memory Service is a Model Context Protocol server providing semantic memory and persistent storage for Claude Desktop and 13+ AI applications. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
 
-**Current Version:** v10.26.3 - Dashboard metadata display fixes + quality scorer resilience (Groq 429 fallback chain, empty-query absolute prompt) — 1,420 tests — see [CHANGELOG.md](CHANGELOG.md) for details
+**Current Version:** v10.26.6 - Security patch: authlib>=1.6.9, PyJWT>=2.12.0, pypdf>=6.9.1 (5 Dependabot alerts: 1 critical, 3 high, 1 medium) — 1,420 tests — see [CHANGELOG.md](CHANGELOG.md) for details
 
 > **🎯 v10.0.0 Milestone**: This major release represents a complete API consolidation - 34 tools unified into 12 with enhanced capabilities. All deprecated tools continue working with warnings until v11.0. See `docs/MIGRATION.md` for migration guide.
 

@@ -109,6 +109,29 @@ async with httpx.AsyncClient() as client:
 
 **Framework-specific guides:** [docs/agents/](docs/agents/)
 
+### Real-World: Multi-Agent Cluster with Shared Memory
+
+> *"After I work with one of the cluster agents on something I want my local agent to know about, the cluster agent adds a special tag to the memory entry that my local agent recognizes as a message from a cluster agent. So they end up using it as a comms bridge — and it's pretty delightful."*
+> — [@jeremykoerber](https://github.com/jeremykoerber), [issue #591](https://github.com/doobidoo/mcp-memory-service/issues/591)
+
+A 5-agent openclaw cluster uses mcp-memory-service as shared state **and** as an inter-agent messaging bus — without any custom protocol. Cluster agents tag memories with a sentinel like `msg:cluster`, and the local agent filters on that tag to receive cross-cluster signals. The memory service becomes the coordination layer with zero additional infrastructure.
+
+```python
+# Cluster agent stores a learning and flags it for the local agent
+await client.post(f"{BASE_URL}/api/memories", json={
+    "content": "Rate limit on provider X is 50 RPM — switch to provider Y after 40",
+    "tags": ["api", "limits", "msg:cluster"],       # sentinel tag
+}, headers={"X-Agent-ID": "cluster-agent-3"})
+
+# Local agent polls for cluster messages
+results = await client.post(f"{BASE_URL}/api/memories/search", json={
+    "query": "messages from cluster",
+    "tags": ["msg:cluster"],
+})
+```
+
+This pattern — **tags as inter-agent signals** — emerges naturally from the tagging system and requires no additional infrastructure.
+
 ## Comparison with Alternatives
 
 | | Mem0 | Zep | DIY Redis+Pinecone | **mcp-memory-service** |
@@ -324,19 +347,22 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.26.3** (March 10, 2026)
+## Latest Release: **v10.26.6** (March 20, 2026)
 
-**Patch release: Dashboard metadata display fixes + quality scorer resilience improvements**
+**Security patch: authlib>=1.6.9, PyJWT>=2.12.0, pypdf>=6.9.1 — 5 Dependabot alerts resolved (1 critical, 3 high, 1 medium)**
 
 **What's New:**
-- **Dashboard: metadata objects now shown as JSON** (#582): Object-typed metadata values rendered as `[object Object]` are now serialised with `JSON.stringify` + HTML-escaped. XSS vector closed.
-- **Dashboard: long content collapsed in detail modal; quality tab fetches full object** (#583): Content >500 chars collapses with a Show more/less toggle. Quality-tab clicks now fetch the full memory object before opening the modal.
-- **Quality scorer: empty-query path uses absolute quality prompt** (#584): `store_memory` calls (query = "") no longer produce a 0.0 score — a dedicated absolute quality prompt is used instead of the relevance-based one.
-- **Quality scorer: Groq 429 triggers model fallback chain** (#585): Rate-limit responses now try `llama-3.1-8b-instant` → `llama3-8b-8192` → `gemma2-9b-it` in sequence instead of failing hard.
+- **Security fix: authlib JWS/JWE vulnerabilities** (Critical + 2 High): `authlib` bumped from `>=1.6.5` to `>=1.6.9` to address JWS JWK header injection (signature verification bypass), JWE RSA1_5 Bleichenbacher padding oracle, and fail-open OIDC hash binding vulnerabilities.
+- **Security fix: PyJWT unknown `crit` header extensions** (High): `PyJWT[crypto]` bumped from `>=2.8.0` to `>=2.12.0` to prevent acceptance of unknown `crit` header extensions in JWT verification.
+- **Security fix: pypdf inefficient array-stream decoding** (Medium): `pypdf` bumped from `>=3.0.0` to `>=6.9.1` to address a DoS vector via inefficient array-based content stream processing.
+- `uv.lock` updated: pypdf 6.8.0 -> 6.9.1, authlib 1.6.8 -> 1.6.9.
 
 ---
 
 **Previous Releases**:
+- **v10.26.5** - Security patch: black dev dependency bumped to >=26.3.1 (GHSA-3936-cmfr-pm3m, CVE-2026-32274, path traversal)
+- **v10.26.4** - FTS5 hybrid search fix on upgrade + dashboard auth lifecycle fixes (9 bugs)
+- **v10.26.3** - Dashboard metadata display fixes + quality scorer resilience (Groq 429 fallback chain, empty-query absolute prompt)
 - **v10.26.2** - OAuth public PKCE client fix (token exchange 500 error, issue #576) + automated CHANGELOG housekeeping
 - **v10.26.1** - Hybrid backend correctly reported in MCP health checks (`HealthCheckFactory` structural detection fix for wrapped/delegated backends, issue #570)
 - **v10.26.0** - Credentials tab + Settings restructure + Sync Owner selector in dashboard; `MCP_HYBRID_SYNC_OWNER=http` recommended for hybrid mode

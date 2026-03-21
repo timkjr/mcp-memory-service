@@ -10,6 +10,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.26.6] - 2026-03-20
+
+### Security
+
+- **[#597] bump authlib>=1.6.9 — JWS JWK header injection, JWE Bleichenbacher padding oracle, fail-open OIDC hash binding (Critical + 2 High)**: `authlib` minimum version raised from `>=1.6.5` to `>=1.6.9`. Three vulnerabilities addressed: (1) JWS JWK header injection allowed an attacker to inject their own public key into the header and bypass signature verification (Critical); (2) JWE RSA1_5 algorithm was susceptible to a Bleichenbacher padding oracle attack allowing ciphertext decryption (High); (3) OIDC hash binding (`c_hash`/`at_hash`) validation was fail-open — invalid hash values were silently accepted rather than rejected (High). These affect deployments using the OAuth 2.1 endpoints.
+- **[#597] bump PyJWT[crypto]>=2.12.0 — unknown `crit` header extension acceptance (High)**: `PyJWT` minimum version raised from `>=2.8.0` to `>=2.12.0`. Prior versions accepted JWTs with unknown `crit` header extensions instead of rejecting them, which could allow crafted tokens to bypass validation checks relying on extension semantics.
+- **[#597] bump pypdf>=6.9.1 — inefficient array-stream decoding (DoS) (Medium)**: `pypdf` minimum version raised from `>=3.0.0` to `>=6.9.1`. Processing attacker-controlled PDF files with large array-based content streams could cause excessive CPU/memory usage. Fix limits stream length and improves decoding performance.
+- **[#598] uv.lock updated**: `pypdf` 6.8.0 -> 6.9.1, `authlib` 1.6.8 -> 1.6.9 (Dependabot lock-file sync).
+
+## [10.26.5] - 2026-03-13
+
+### Security
+
+- **bump black dev dependency to >=26.3.1 (GHSA-3936-cmfr-pm3m, CVE-2026-32274, High)**: The `black` code formatter contained a path traversal vulnerability via the `--python-cell-magics` option that could allow an attacker to write files outside the intended directory. The minimum required version has been updated from `>=24.0.0` to `>=26.3.1`. This vulnerability affects development and CI environments only — `black` is not a runtime dependency and is never included in installed packages. `uv.lock` updated from black 26.1.0 to 26.3.1.
+
+## [10.26.4] - 2026-03-12
+
+### Fixed
+
+- **[#589] FTS5 table not created for existing databases (hybrid search broken on upgrade)** (`sqlite_vec.py`, contributed by @xXGeminiXx): Databases created before v10.8.0 never had the `memory_content_fts` FTS5 virtual table initialised because `initialize()` returned early after running graph migrations for existing DBs, bypassing the FTS5 creation block entirely. This caused hybrid BM25+vector search to silently fall back to vector-only on any pre-v10.8.0 upgrade. Added `_ensure_fts5_initialized()` idempotent method that checks `sqlite_master` for the table's existence before creating it and running the `rebuild` backfill command. The method is now called on both the new-DB and existing-DB paths, eliminating 57 lines of duplicated inline DDL.
+- **[#592] Dashboard auth detection and credential persistence** (`web/static/app.js`, contributed by @jeremykoerber, fixes #591): Fixed 9 bugs in the dashboard authentication lifecycle: API key no longer lost on page refresh; `detectAuthRequirement()` and `authenticateWithApiKey()` now probe `/health/detailed` instead of `/health` (which is always public since v10.21.0); `setupServerManagement()` and `setupSSE()` deferred until after auth resolves (race condition); `handleAuthFailure()` respects `initComplete` guard — credentials no longer wiped during startup 401s; SSE reconnect closes existing connection before opening a new one (leak fix); `startSyncStatusMonitoring()` now called in modal auth path; sync monitor interval ID stored and cleaned up in `destroy()`; auth failure toasts debounced to 30 s.
+
 ## [10.26.3] - 2026-03-10
 
 ### Fixed
