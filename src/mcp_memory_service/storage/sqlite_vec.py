@@ -935,6 +935,9 @@ SOLUTIONS:
                         self.embedding_model = _MODEL_CACHE[cache_key]
                         if cache_key in _DIMENSION_CACHE:
                             self.embedding_dimension = _DIMENSION_CACHE[cache_key]
+                        elif hasattr(self.embedding_model, 'embedding_dimension'):
+                            self.embedding_dimension = self.embedding_model.embedding_dimension
+                            _DIMENSION_CACHE[cache_key] = self.embedding_dimension  # backfill cache
                         logger.info("Using cached external embedding model")
                         return
 
@@ -987,6 +990,9 @@ SOLUTIONS:
                         self.embedding_model = _MODEL_CACHE[cache_key]
                         if cache_key in _DIMENSION_CACHE:
                             self.embedding_dimension = _DIMENSION_CACHE[cache_key]
+                        elif hasattr(self.embedding_model, 'embedding_dimension'):
+                            self.embedding_dimension = self.embedding_model.embedding_dimension
+                            _DIMENSION_CACHE[cache_key] = self.embedding_dimension  # backfill cache
                         logger.info(f"Using cached ONNX embedding model: {self.embedding_model_name}")
                         return
 
@@ -1011,7 +1017,7 @@ SOLUTIONS:
                 logger.warning(
                     "Neither ONNX nor sentence-transformers available; using pure-Python hash embeddings (quality reduced)."
                 )
-                self.embedding_model = _HashEmbeddingModel(self.embedding_dimension)
+                self._initialize_hash_embedding_fallback()
                 return
 
             # Check cache first
@@ -1020,6 +1026,14 @@ SOLUTIONS:
                 self.embedding_model = _MODEL_CACHE[cache_key]
                 if cache_key in _DIMENSION_CACHE:
                     self.embedding_dimension = _DIMENSION_CACHE[cache_key]
+                elif hasattr(self.embedding_model, 'get_sentence_embedding_dimension'):
+                    dim = self.embedding_model.get_sentence_embedding_dimension()
+                    if dim:
+                        self.embedding_dimension = dim
+                        _DIMENSION_CACHE[cache_key] = dim  # backfill cache
+                elif hasattr(self.embedding_model, 'embedding_dimension'):
+                    self.embedding_dimension = self.embedding_model.embedding_dimension
+                    _DIMENSION_CACHE[cache_key] = self.embedding_dimension  # backfill cache
                 logger.info(f"Using cached embedding model: {self.embedding_model_name}")
                 return
 
@@ -1123,7 +1137,18 @@ SOLUTIONS:
             logger.warning(
                 "Falling back to pure-Python hash embeddings due to embedding init failure (quality reduced)."
             )
-            self.embedding_model = _HashEmbeddingModel(self.embedding_dimension)
+            self._initialize_hash_embedding_fallback()
+
+    def _initialize_hash_embedding_fallback(self):
+        """Initialize hash embedding model, matching existing DB dimension if possible (#608)."""
+        existing_dim = self._get_existing_db_embedding_dimension()
+        if existing_dim and existing_dim != self.embedding_dimension:
+            logger.warning(
+                f"Adjusting hash embedding dimension from {self.embedding_dimension} to "
+                f"{existing_dim} to match existing database schema."
+            )
+            self.embedding_dimension = existing_dim
+        self.embedding_model = _HashEmbeddingModel(self.embedding_dimension)
 
     def _get_docker_network_help(self) -> str:
         """Get Docker-specific network troubleshooting help."""
@@ -2545,18 +2570,30 @@ SOLUTIONS:
             now = time.time()
             now_iso = datetime.utcfromtimestamp(now).isoformat() + "Z"
 
-            # Handle timestamp updates based on preserve_timestamps flag
-            if not preserve_timestamps:
-                # When preserve_timestamps=False, use timestamps from updates dict if provided
-                # This allows syncing timestamps from source (e.g., Cloudflare → SQLite)
-                # Always preserve created_at (never reset to current time!)
+            # Handle timestamp updates based on preserve_timestamps flag (#605)
+            # preserve_timestamps=True (default): do NOT advance updated_at — used by
+            # consolidation/scoring callers that write computed metadata without changing content.
+            # preserve_timestamps=False: allow caller-supplied timestamps (sync use case)
+            #   or fall back to current time for content/structural changes.
+            structural_change = any(k in updates for k in ("tags", "memory_type", "content"))
+            if preserve_timestamps and not structural_change:
+                # Pure metadata update — keep existing timestamps
+                # We need to read the current updated_at from the DB
+                ts_cursor = self.conn.execute(
+                    "SELECT updated_at, updated_at_iso FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                    (content_hash,),
+                )
+                ts_row = ts_cursor.fetchone()
+                updated_at = ts_row[0] if ts_row else now
+                updated_at_iso = ts_row[1] if ts_row else now_iso
+            elif not preserve_timestamps:
+                # Sync use case: use timestamps from updates dict if provided
                 created_at = updates.get('created_at', created_at)
                 created_at_iso = updates.get('created_at_iso', created_at_iso)
-                # Use updated_at from updates or current time
                 updated_at = updates.get('updated_at', now)
                 updated_at_iso = updates.get('updated_at_iso', now_iso)
             else:
-                # preserve_timestamps=True: only update updated_at to current time
+                # preserve_timestamps=True but structural change — advance updated_at
                 updated_at = now
                 updated_at_iso = now_iso
 
@@ -2608,7 +2645,7 @@ SOLUTIONS:
             logger.error(traceback.format_exc())
             return False, error_msg
 
-    async def update_memories_batch(self, memories: List[Memory]) -> List[bool]:
+    async def update_memories_batch(self, memories: List[Memory], preserve_timestamps: bool = False) -> List[bool]:
         """
         Update multiple memories in a single database transaction for optimal performance.
 
@@ -2617,6 +2654,7 @@ SOLUTIONS:
 
         Args:
             memories: List of Memory objects with updated fields
+            preserve_timestamps: If True, do not advance updated_at for metadata-only changes (#605)
 
         Returns:
             List of success booleans, one for each memory in the batch
@@ -2638,10 +2676,11 @@ SOLUTIONS:
 
             for idx, memory in enumerate(memories):
                 try:
-                    # Get current memory data
+                    # Get current memory data (includes updated_at to avoid N+1 query #610)
                     cursor.execute(
                         """
-                        SELECT content, tags, memory_type, metadata, created_at, created_at_iso
+                        SELECT content, tags, memory_type, metadata, created_at, created_at_iso,
+                               updated_at, updated_at_iso
                         FROM memories WHERE content_hash = ? AND deleted_at IS NULL
                     """,
                         (memory.content_hash,),
@@ -2652,7 +2691,8 @@ SOLUTIONS:
                         logger.warning(f"Memory {memory.content_hash} not found during batch update")
                         continue
 
-                    content, current_tags, current_type, current_metadata_str, created_at, created_at_iso = row
+                    (content, current_tags, current_type, current_metadata_str,
+                     created_at, created_at_iso, current_updated_at, current_updated_at_iso) = row
 
                     # Parse current metadata
                     current_metadata = self._safe_json_loads(current_metadata_str, "update_memories_batch")
@@ -2668,6 +2708,19 @@ SOLUTIONS:
                     new_tags = ",".join(memory.tags) if memory.tags else current_tags
                     new_type = memory.memory_type if memory.memory_type else current_type
 
+                    # Determine whether to advance updated_at (#605)
+                    structural_change = (
+                        new_tags != current_tags or
+                        new_type != current_type
+                    )
+                    if preserve_timestamps and not structural_change:
+                        # Pure metadata update — reuse timestamps from initial SELECT
+                        mem_updated_at = current_updated_at if current_updated_at else now
+                        mem_updated_at_iso = current_updated_at_iso if current_updated_at_iso else now_iso
+                    else:
+                        mem_updated_at = now
+                        mem_updated_at_iso = now_iso
+
                     # Execute update
                     cursor.execute(
                         """
@@ -2680,8 +2733,8 @@ SOLUTIONS:
                             new_tags,
                             new_type,
                             json.dumps(merged_metadata),
-                            now,
-                            now_iso,
+                            mem_updated_at,
+                            mem_updated_at_iso,
                             memory.content_hash,
                         ),
                     )

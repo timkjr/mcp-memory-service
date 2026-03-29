@@ -43,6 +43,13 @@ _STOPWORDS: Set[str] = {
     "most", "such", "into", "through", "during", "however", "although",
     "though", "because", "since", "while", "each", "few", "further",
     "once", "only", "same", "other", "new", "own", "very", "too",
+    # German stopwords
+    "der", "die", "das", "ein", "eine", "und", "oder", "aber", "ist",
+    "war", "sind", "hat", "haben", "wird", "wurde", "kann", "mit",
+    "von", "auf", "für", "den", "dem", "des", "sich", "auch", "noch",
+    "wie", "bei", "nach", "über", "aus", "wenn", "dann", "nur", "man",
+    "nicht", "schon", "hier", "gibt", "sehr", "mehr", "zum", "zur",
+    "einem", "einer", "eines", "dass", "wir", "uns", "ihr", "euch",
 }
 
 
@@ -54,7 +61,8 @@ def _extract_domain_keywords(text: str) -> Set[str]:
     and not in the stopword list.
     """
     # Split on non-alphanumeric characters (handles hyphens, underscores, etc.)
-    words = re.findall(r"[a-z][a-z0-9_-]{2,}", text.lower())
+    # Use 3+ char words (lowered from 4) to catch more domain terms
+    words = re.findall(r"[a-zA-ZäöüÄÖÜß][a-zA-Z0-9äöüÄÖÜß_-]{2,}", text.lower())
     return {w for w in words if w not in _STOPWORDS}
 
 
@@ -104,6 +112,11 @@ class RelationshipInferenceEngine:
             r"\bresulted\s+in\b",
             r"\btriggered\b",
             r"\bgenerated\b",
+            # German
+            r"\bverursacht\b",
+            r"\bführt[e]?\s+zu\b",
+            r"\bausgelöst\b",
+            r"\bgrund\s+(?:war|ist|dafür)\b",
         ],
         "resolution": [
             r"\bfixed?\b",
@@ -112,6 +125,12 @@ class RelationshipInferenceEngine:
             r"\bpatched?\b",
             r"\brepaired\b",
             r"\bhealed\b",
+            # German
+            r"\bgefixt\b",
+            r"\bbehoben\b",
+            r"\bgelöst\b",
+            r"\bkorrigiert\b",
+            r"\brepariert\b",
         ],
         "support": [
             r"\bsupports?\b",
@@ -119,6 +138,11 @@ class RelationshipInferenceEngine:
             r"\bfacilitate[ds]?\b",
             r"\bhelps?\b",
             r"\baccompany\b",
+            # German
+            r"\bunterstützt\b",
+            r"\bermöglicht\b",
+            r"\bhilft\b",
+            r"\berleichtert\b",
         ],
         # Issue #541 fix: removed weak conjunctions ("but", "yet", "although",
         # "however", "nevertheless") — they fire on virtually any sentence that
@@ -137,14 +161,20 @@ class RelationshipInferenceEngine:
             r"\bcontrary\b",
             r"\bopposite\b",
             r"\bnever\b",
+            # German
+            r"\bwiderspricht\b",
+            r"\bfalsch\b",
+            r"\binkorrekt\b",
+            r"\bstimmt\s+nicht\b",
+            r"\bgegenteil\b",
         ],
     }
 
     def __init__(
         self,
-        min_confidence: float = 0.6,
-        min_typed_confidence: float = 0.75,
-        min_typed_similarity: float = 0.65,
+        min_confidence: float = 0.5,
+        min_typed_confidence: float = 0.50,
+        min_typed_similarity: float = 0.45,
         typed_edges_enabled: bool = True,
     ):
         """
@@ -225,7 +255,10 @@ class RelationshipInferenceEngine:
 
         # Issue #541 fix: check whether memories share domain vocabulary.
         # Typed labels require topical relevance; "related" does not.
+        # Relaxed: also accept shared tags as domain overlap signal.
         has_shared_keywords = _shares_domain_keywords(source_lower, target_lower)
+        has_shared_tags = bool(set(source_tags) & set(target_tags)) if source_tags and target_tags else False
+        has_domain_overlap = has_shared_keywords or has_shared_tags
 
         # Issue #541 fix: if a similarity score is supplied, typed labels
         # require similarity >= min_typed_similarity.
@@ -290,8 +323,8 @@ class RelationshipInferenceEngine:
                 )
                 return ("related", best_confidence)
 
-            # Guard 2: shared domain keywords (cross-content verification)
-            if not has_shared_keywords:
+            # Guard 2: shared domain keywords or tags (cross-content verification)
+            if not has_domain_overlap:
                 logger.debug(
                     "No shared domain keywords between memories, "
                     "downgrading typed label to 'related'"
@@ -382,17 +415,41 @@ class RelationshipInferenceEngine:
         target_parent = self._resolve_parent_type(target_type)
 
         # High-confidence patterns from ontology
+        # Extended to cover all common memory types in production:
+        # observation (64%), note (18%), reference (5%), document (3%),
+        # configuration (1.4%), decision (1.2%), pattern/learning (<1%)
         type_patterns = {
+            # Original high-confidence patterns
             ("decision", "error"): ("uses", 0.7),
             ("learning", "error"): ("fixes", 0.8),
             ("pattern", "error"): ("fixes", 0.75),
             ("learning", "decision"): ("supports", 0.6),
-            ("observation", "learning"): ("supports", 0.5),
             ("pattern", "learning"): ("supports", 0.6),
-            ("decision", "decision"): ("supports", 0.4),
-            ("learning", "learning"): ("supports", 0.3),
             ("error", "error"): ("causes", 0.6),
-            ("observation", "observation"): ("follows", 0.3),
+            # Cross-type relationships for common types
+            ("observation", "learning"): ("supports", 0.6),
+            ("observation", "decision"): ("supports", 0.55),
+            ("observation", "error"): ("causes", 0.55),
+            ("observation", "observation"): ("follows", 0.5),
+            ("note", "note"): ("follows", 0.5),
+            ("note", "decision"): ("supports", 0.55),
+            ("note", "learning"): ("supports", 0.55),
+            ("note", "error"): ("causes", 0.5),
+            ("note", "observation"): ("supports", 0.5),
+            ("reference", "reference"): ("supports", 0.5),
+            ("reference", "decision"): ("supports", 0.55),
+            ("reference", "learning"): ("supports", 0.55),
+            ("reference", "observation"): ("supports", 0.5),
+            ("document", "document"): ("supports", 0.5),
+            ("document", "reference"): ("supports", 0.55),
+            ("document", "observation"): ("supports", 0.5),
+            ("document", "learning"): ("supports", 0.55),
+            ("configuration", "error"): ("causes", 0.65),
+            ("configuration", "decision"): ("supports", 0.6),
+            ("configuration", "configuration"): ("supports", 0.5),
+            ("configuration", "observation"): ("supports", 0.5),
+            ("decision", "decision"): ("supports", 0.5),
+            ("learning", "learning"): ("supports", 0.5),
         }
 
         # Check both (source, target) and (target, source) directions

@@ -20,7 +20,8 @@ context in 5ms — without cloud lock-in or API costs.
 [![Works with Claude](https://img.shields.io/badge/Works%20with-Claude-blue)](https://claude.ai)
 [![Works with Cursor](https://img.shields.io/badge/Works%20with-Cursor-orange)](https://cursor.sh)
 [![Remote MCP](https://img.shields.io/badge/MCP-Remote%20Support-blue?logo=anthropic)](docs/remote-mcp-setup.md)
-[![claude.ai](https://img.shields.io/badge/claude.ai-Browser%20Compatible-orange?logo=anthropic)](docs/remote-mcp-setup.md)
+[![claude.ai](https://img.shields.io/badge/claude.ai-Browser%20Compatible-orange?logo=anthropic)](docs/remote-mcp-setu
+p.md)
 [![OAuth 2.0](https://img.shields.io/badge/Auth-OAuth%202.0%20%2B%20DCR-green)](docs/oauth-setup.md)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/doobidoo)
 
@@ -131,6 +132,26 @@ results = await client.post(f"{BASE_URL}/api/memories/search", json={
 ```
 
 This pattern — **tags as inter-agent signals** — emerges naturally from the tagging system and requires no additional infrastructure.
+
+### Real-World: Self-Hosted Docker Stack with Cloudflare Tunnel
+
+> *"The quality of life that session-independent memory adds to AI workflows is immense. File-based memory demands constant discipline. Semantic recall from a live database doesn't. Storing data on my own hardware while making it remotely accessible across platforms turned out to be a feature I didn't know I needed."*
+> — [@PL-Peter](https://github.com/PL-Peter), [discussion #602](https://github.com/doobidoo/mcp-memory-service/discussions/602)
+
+A production-tested self-hosted deployment using Docker containers behind a Cloudflare tunnel, with [AuthMCP Gateway](https://github.com/loglux/authmcp-gateway) handling authentication:
+
+| Layer | Role |
+|-------|------|
+| **Cloudflare Tunnel** | Name-based routing, subnet-based access control, authentication before hitting self-hosted resources |
+| **AuthMCP Gateway** | Auth/aggregation with locally managed users, admin UI, per-user MCP server access control, bearer token auth |
+| **mcp-memory-service** | Two Docker containers sharing one SQLite backend — one for MCP, one for the web UI (document ingestion) |
+
+**Security best practices for this setup:**
+- Use Cloudflare ZeroTrust with subnet-based access control (e.g., allow Anthropic subnets + your own IPs)
+- Add **Client IP Address Filtering** to all Cloudflare API tokens (Dashboard → My Profile → API Tokens → Edit → Client IP Address Filtering) to limit abuse if a token leaks
+- If using IPv6, include your IPv6 /64 network in the allowlist (Python prefers IPv6 by default)
+- Set `MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES=1440` to extend OAuth tokens to 24 hours (refresh tokens not yet supported)
+- Consider an auth proxy like [AuthMCP](https://github.com/loglux/authmcp-gateway) or [mcp-auth-proxy](https://github.com/sigbit/mcp-auth-proxy) for robust session management
 
 ## Comparison with Alternatives
 
@@ -347,19 +368,25 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.26.6** (March 20, 2026)
+## Latest Release: **v10.28.3** (March 26, 2026)
 
-**Security patch: authlib>=1.6.9, PyJWT>=2.12.0, pypdf>=6.9.1 — 5 Dependabot alerts resolved (1 critical, 3 high, 1 medium)**
+**HTTP MCP endpoint fix: accept 'content' as alias for 'query' so Claude Code HTTP transport returns results**
 
 **What's New:**
-- **Security fix: authlib JWS/JWE vulnerabilities** (Critical + 2 High): `authlib` bumped from `>=1.6.5` to `>=1.6.9` to address JWS JWK header injection (signature verification bypass), JWE RSA1_5 Bleichenbacher padding oracle, and fail-open OIDC hash binding vulnerabilities.
-- **Security fix: PyJWT unknown `crit` header extensions** (High): `PyJWT[crypto]` bumped from `>=2.8.0` to `>=2.12.0` to prevent acceptance of unknown `crit` header extensions in JWT verification.
-- **Security fix: pypdf inefficient array-stream decoding** (Medium): `pypdf` bumped from `>=3.0.0` to `>=6.9.1` to address a DoS vector via inefficient array-based content stream processing.
-- `uv.lock` updated: pypdf 6.8.0 -> 6.9.1, authlib 1.6.8 -> 1.6.9.
+- **Parameter alias fix**: `retrieve_memory` and `recall_memory` now accept `content` in addition to `query` as the search parameter name.
+- **Claude Code HTTP transport**: Resolves always-empty results when Claude Code invokes memory tools via HTTP (it sends `content`, not `query`).
+- **Backward compatible**: Existing callers using `query` are unaffected; `query` takes precedence when both are present.
 
 ---
 
 **Previous Releases**:
+- **v10.28.2** - Relationship inference tuning: 93.5% typed labels vs 0.5% before + German language support
+- **v10.28.1** - Harvest false-positive fix: skip system prompts, skill outputs, and long injected content (3 new tests)
+- **v10.28.0** - Session harvest tool (`memory_harvest`): extract learnings from Claude Code transcripts + security dependency updates (#614-#616)
+- **v10.27.0** - External embedding compatibility fix (missing `index` field, community PR #612) + Docker/Cloudflare deployment docs
+- **v10.26.8** - 6 bug fixes in consolidation, embeddings, and memory types (#603-#608)
+- **v10.26.7** - Cloudflare D1 fresh-database schema initialization fix (issue #600), community contribution by @Lyt060814
+- **v10.26.6** - Security patch: authlib>=1.6.9, PyJWT>=2.12.0, pypdf>=6.9.1 (5 Dependabot alerts: 1 critical, 3 high, 1 medium)
 - **v10.26.5** - Security patch: black dev dependency bumped to >=26.3.1 (GHSA-3936-cmfr-pm3m, CVE-2026-32274, path traversal)
 - **v10.26.4** - FTS5 hybrid search fix on upgrade + dashboard auth lifecycle fixes (9 bugs)
 - **v10.26.3** - Dashboard metadata display fixes + quality scorer resilience (Groq 429 fallback chain, empty-query absolute prompt)

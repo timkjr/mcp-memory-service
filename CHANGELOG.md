@@ -10,6 +10,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.28.3] - 2026-03-26
+
+### Fixed
+
+- **[#619] Accept 'content' as alias for 'query' in HTTP MCP endpoint**: Claude Code sends `{content: "search terms"}` via HTTP transport, but the handler only read `arguments.get("query")`, causing `retrieve_memory` and `recall_memory` to always return empty results when invoked over HTTP. The endpoint now accepts both `content` and `query` as parameter names, with `query` taking precedence.
+
+## [10.28.2] - 2026-03-26
+
+### Fixed
+
+- **Tune relationship inference thresholds for real-world memory distribution**: Lowered `min_typed_confidence` from 0.75 to 0.50, `min_typed_similarity` from 0.65 to 0.45, and `min_confidence` from 0.6 to 0.5 so that relationships are inferred for a much broader range of real-world memories. Expanded `type_patterns` to cover `note`, `reference`, `document`, and `configuration` memory types (previously only `decision`, `learning`, `error`, and `pattern` were mapped, missing 85%+ of memories). Result: 93.5% typed relationship labels vs 0.5% before tuning.
+- **Add German language patterns for relationship inference**: Added German patterns for causation, resolution, support, and contradiction relationships, along with German stopwords. Shared tags are now accepted as an alternative to keyword overlap for domain affinity, improving inference on short or terse memories.
+
+## [10.28.1] - 2026-03-26
+
+### Fixed
+
+- **[harvest] Filter system prompts, skill outputs, and long injected content**: The JSONL parser now skips blocks tagged `system-reminder`, `command-name`, and `ide_opened_file`, and drops text blocks exceeding 2000 characters. This eliminates false-positive learnings extracted from injected system context rather than genuine session content. 3 new tests added.
+
+## [10.28.0] - 2026-03-26
+
+### Added
+
+- **[#615] Session harvest — extract learnings from Claude Code transcripts (closes #596)**: New `memory_harvest` MCP tool that parses Claude Code JSONL transcript files and extracts structured learnings using pattern-based extraction with confidence scoring. Dry-run mode is enabled by default for safe preview before committing any memories. 27 new tests cover the JSONL parser, extractor patterns, and dry-run behaviour.
+
+### Dependencies
+
+- **[#614] bump requests from 2.32.5 to 2.33.0 (security fix CVE-2026-25645)**: Addresses a security vulnerability in the `requests` library; upgrade is recommended for all deployments that use outbound HTTP (e.g. Cloudflare sync, external embedding APIs).
+- **[#616] bump pypdf from 6.9.1 to 6.9.2**: Routine patch update to `pypdf`; no functional changes affecting this project.
+
+## [10.27.0] - 2026-03-25
+
+### Fixed
+
+- **[#612] Tolerate missing index in external embedding responses (community contribution by [@qq540491950](https://github.com/qq540491950))**: The external embedding client raised a `KeyError` when the upstream API returned responses without an `index` field (non-standard but valid for single-item batches). The fix falls back to enumerate-based ordering when `index` is absent, making the client compatible with a broader range of self-hosted embedding providers.
+
+### Documentation
+
+- **[e9b5db0] Add real-world self-hosted Docker + Cloudflare deployment example**: Added a complete end-to-end deployment walkthrough covering Docker Compose setup, Cloudflare D1 + Vectorize configuration, and hybrid storage mode for production self-hosted deployments.
+
+## [10.26.9] - 2026-03-24
+
+### Refactored
+
+- **[#610] Fix N+1 query in update_memories_batch**: The batch update method issued a separate SELECT per memory to fetch `updated_at`; it now includes `updated_at` in the initial bulk SELECT, eliminating the N+1 query pattern and reducing database round-trips proportionally to batch size.
+- **[#610] Simplify _get_memory_age_days with max(filter(None, ...))**: Replaced explicit conditional logic with a concise `max(filter(None, ...))` expression, improving readability while preserving correct behaviour when either timestamp is absent.
+- **[#610] Extract _initialize_hash_embedding_fallback() helper**: Duplicated hash-embedding fallback initialization logic has been consolidated into a single private helper method, eliminating code duplication and making the fallback path easier to maintain.
+
+## [10.26.8] - 2026-03-24
+
+### Fixed
+
+- **[#603] Fix invalid memory_type "learning_note" in learning_session prompt**: The `create_learning_session` prompt handler was emitting `memory_type: "learning_note"`, which is not a valid type in the memory schema. Changed to `"learning"` so sessions are correctly classified and retrievable by type filter.
+- **[#604] Remove memory.touch() call from update_memory_relevance_metadata**: `update_memory_relevance_metadata` was calling `memory.touch()` as a side-effect, which silently overwrote `updated_at` on every relevance update. Relevance metadata updates (access count, quality score) no longer corrupt the `updated_at` timestamp.
+- **[#605] Add preserve_timestamps option to update_memories_batch; consolidation callers opt in**: `update_memories_batch` now accepts a `preserve_timestamps` flag (default `False` for backward compatibility). The consolidation pipeline passes `preserve_timestamps=True` so that merging and compressing memories does not reset their original creation/update times.
+- **[#606] Use max(created_at, updated_at) for memory age in _get_memory_age_days**: The age calculation previously used only `created_at`, so a memory that was meaningfully updated still decayed as if it had never been touched. The fix uses `max(created_at, updated_at)` so that a substantive update resets the effective age and prevents premature forgetting.
+- **[#607] Add dimension fallback when _DIMENSION_CACHE misses on _MODEL_CACHE hit**: If the embedding model was already cached but the dimension entry was absent (e.g. after a cache-partial warm-up), the encoder would raise a KeyError. The fix re-derives and caches the dimension from the loaded model so subsequent calls succeed without re-loading the model.
+- **[#608] Detect existing DB schema dimension for _HashEmbeddingModel fallback**: When the real embedding model cannot be loaded and the `_HashEmbeddingModel` fallback is used, the code now inspects the existing database schema to determine the vector dimension already in use rather than defaulting to a hard-coded value. This prevents dimension mismatch errors when re-opening an existing database with the fallback encoder.
+
+## [10.26.7] - 2026-03-23
+
+### Fixed
+
+- **[#601] Cloudflare D1 schema initialization fails on fresh database (issue #600)**: On a brand-new Cloudflare D1 database, `PRAGMA table_list` returns a success response (`success: true`) with an empty `results` array rather than an error. The schema migration logic incorrectly treated this as a failure and aborted initialization, leaving the database in an unusable state. The fix explicitly checks for an empty-results success response and proceeds with full schema creation. Contributed by [@Lyt060814](https://github.com/Lyt060814).
+
 ## [10.26.6] - 2026-03-20
 
 ### Security
