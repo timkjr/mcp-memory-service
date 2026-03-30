@@ -399,6 +399,23 @@ class SqliteVecMemoryStorage(MemoryStorage):
         except Exception as e:
             logger.warning(f"Failed to run graph migrations (non-fatal): {e}")
 
+    def _run_evolution_migrations(self):
+        """Execute Memory Evolution P1 migrations (non-destructive updates + lineage tracking)."""
+        try:
+            migrations_dir = Path(__file__).parent / "migrations"
+            if migrations_dir.exists():
+                migration_runner = MigrationRunner(migrations_dir)
+                success, message = migration_runner.run_migrations_sync(
+                    self.conn,
+                    ["011_memory_evolution_p1.sql"]
+                )
+                if not success:
+                    logger.warning(f"Evolution migrations warning: {message}")
+                else:
+                    logger.info(f"Evolution migrations completed: {message}")
+        except Exception as e:
+            logger.warning(f"Failed to run evolution migrations (non-fatal): {e}")
+
     def _ensure_fts5_initialized(self):
         """Ensure FTS5 virtual table exists for BM25 keyword search (v10.8.0+).
 
@@ -689,6 +706,9 @@ SOLUTIONS:
                     # Execute graph table migrations (Knowledge Graph feature v9.0.0+)
                     self._run_graph_migrations()
 
+                    # Execute Memory Evolution P1 migrations (v10.30.0+)
+                    self._run_evolution_migrations()
+
                     # Ensure FTS5 table exists (v10.8.0+ migration for existing databases)
                     self._ensure_fts5_initialized()
 
@@ -847,6 +867,9 @@ SOLUTIONS:
 
             # Execute graph table migrations (Knowledge Graph feature v9.0.0+)
             self._run_graph_migrations()
+
+            # Execute Memory Evolution P1 migrations (v10.30.0+)
+            self._run_evolution_migrations()
 
             # Mark as initialized to prevent re-initialization
             self._initialized = True
@@ -1338,12 +1361,26 @@ SOLUTIONS:
                     raise
 
             await self._execute_with_retry(insert_memory_and_embedding)
-            
+
+            # --- Conflict detection (P3) ---
+            try:
+                conflict_infos = self._detect_conflicts(
+                    memory.content_hash, memory.content, embedding
+                )
+                if conflict_infos:
+                    await self._record_conflicts(memory.content_hash, conflict_infos)
+                    conflict_msg = f" {len(conflict_infos)} conflict(s) detected."
+                else:
+                    conflict_msg = ""
+            except Exception as e:
+                logger.warning(f"Conflict detection failed (non-fatal): {e}")
+                conflict_msg = ""
+
             # Commit with retry logic
             await self._execute_with_retry(self.conn.commit)
-            
+
             logger.info(f"Successfully stored memory: {memory.content_hash}")
-            return True, "Memory stored successfully"
+            return True, f"Memory stored successfully{conflict_msg}"
             
         except Exception as e:
             error_msg = f"Failed to store memory: {str(e)}"
@@ -1458,7 +1495,7 @@ SOLUTIONS:
 
         return [(r if r is not None else (False, "Skipped")) for r in results]
 
-    async def retrieve(self, query: str, n_results: int = 5, tags: Optional[List[str]] = None) -> List[MemoryQueryResult]:
+    async def retrieve(self, query: str, n_results: int = 5, tags: Optional[List[str]] = None, min_confidence: float = 0.0) -> List[MemoryQueryResult]:
         """Retrieve memories using semantic search."""
         try:
             if not self.conn:
@@ -1505,7 +1542,10 @@ SOLUTIONS:
                 # CRITICAL: Cap k_value even without tags to prevent DoS
                 # An attacker could request n_results=1000000 to trigger
                 # exhaustive scan of all embeddings
-                k_value = min(n_results, _MAX_TAG_SEARCH_CANDIDATES)
+                # Overfetch when confidence filtering is active, since
+                # post-hoc filtering may discard stale results.
+                fetch_n = max(n_results * 3, 20) if min_confidence > 0.0 else n_results
+                k_value = min(fetch_n, _MAX_TAG_SEARCH_CANDIDATES)
 
             # Perform vector similarity search using JOIN with retry logic
             def search_memories():
@@ -1549,7 +1589,7 @@ SOLUTIONS:
                         FROM memory_embeddings
                         WHERE content_embedding MATCH ? AND k = ?
                     ) e ON m.id = e.rowid
-                    WHERE m.deleted_at IS NULL{tag_conditions}
+                    WHERE m.deleted_at IS NULL AND (m.superseded_by IS NULL OR m.superseded_by = ''){tag_conditions}
                     ORDER BY e.distance
                     LIMIT ?
                 '''
@@ -1598,13 +1638,23 @@ SOLUTIONS:
                     # Convert to similarity score: 1 - (distance/2) gives 0-1 range
                     relevance_score = max(0.0, 1.0 - (float(distance) / 2.0)) if distance is not None else 0.0
 
+                    # Compute staleness BEFORE record_access overwrites last_accessed_at
+                    effective_confidence = self._effective_confidence(
+                        memory.metadata.get("confidence"),
+                        memory.metadata.get("last_accessed_at"),
+                        created_at,
+                    )
+
                     # Record access for quality scoring (implicit signals)
                     memory.record_access(query)
-
                     results.append(MemoryQueryResult(
                         memory=memory,
                         relevance_score=relevance_score,
-                        debug_info={"distance": distance, "backend": "sqlite-vec"}
+                        debug_info={
+                            "distance": distance,
+                            "backend": "sqlite-vec",
+                            "effective_confidence": effective_confidence,
+                        }
                     ))
 
                 except Exception as parse_error:
@@ -1616,6 +1666,14 @@ SOLUTIONS:
                 await self._persist_access_metadata_batch([r.memory for r in results])
             except Exception as e:
                 logger.warning(f"Failed to persist access metadata: {e}")
+
+            if min_confidence > 0.0:
+                before = len(results)
+                results = [
+                    r for r in results
+                    if r.debug_info.get("effective_confidence", 1.0) >= min_confidence
+                ][:n_results]
+                logger.debug(f"min_confidence={min_confidence} filtered {before - len(results)} stale memories")
 
             logger.info(f"Retrieved {len(results)} memories for query: {_sanitize_log_value(query)}")
             return results
@@ -3601,6 +3659,445 @@ SOLUTIONS:
         except Exception as e:
             logger.error(f"Unexpected error getting graph visualization data: {str(e)}")
             return {"nodes": [], "edges": []}
+
+    # -------------------------------------------------------------------------
+    # Memory Evolution P2: Staleness Scoring
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _effective_confidence(
+        confidence: Optional[float],
+        last_accessed: Optional[float],
+        created_at: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> float:
+        """Compute time-decayed confidence score.
+
+        Formula (MEMORY-EVOLUTION-DESIGN.md §6):
+            staleness = days_since_last_access / decay_window
+            decay     = max(0.0, 1.0 - staleness * decay_rate)
+            effective = confidence * decay
+
+        Defaults: decay_window=30d (MEMORY_DECAY_WINDOW_DAYS env), decay_rate=0.5
+        """
+        decay_window = float(os.environ.get("MEMORY_DECAY_WINDOW_DAYS", "30"))
+        decay_rate = 0.5
+        ts_now = now or time.time()
+        reference = last_accessed or created_at or ts_now
+        days_since = (ts_now - reference) / 86400.0
+        staleness = days_since / decay_window
+        decay = max(0.0, 1.0 - staleness * decay_rate)
+        return round((confidence or 1.0) * decay, 4)
+
+    # -------------------------------------------------------------------------
+    # Memory Evolution P3: Conflict Detection
+    # -------------------------------------------------------------------------
+
+    def _detect_conflicts(self, new_hash: str, new_content: str, embedding) -> list:
+        """Detect conflicting active memories for a newly stored memory.
+
+        Conflict = cosine similarity > 0.95 AND Levenshtein divergence > 0.20.
+        Returns list of conflict info dicts.
+        """
+        from difflib import SequenceMatcher
+
+        SIMILARITY_THRESHOLD = 0.95
+        DIVERGENCE_THRESHOLD = 0.20
+
+        if not self.conn or embedding is None:
+            return []
+
+        # Find top-5 nearest active memories (excluding self)
+        try:
+            cursor = self.conn.execute(
+                """SELECT m.content_hash, m.content,
+                          vec_distance_cosine(me.content_embedding, ?) as distance
+                   FROM memories m
+                   JOIN memory_embeddings me ON m.rowid = me.rowid
+                   WHERE m.deleted_at IS NULL
+                     AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                     AND m.content_hash != ?
+                   ORDER BY distance ASC
+                   LIMIT 5""",
+                (serialize_float32(embedding), new_hash),
+            )
+            candidates = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"Conflict detection query failed: {e}")
+            return []
+
+        conflicts = []
+        for cand_hash, cand_content, distance in candidates:
+            # cosine distance to similarity: sim = 1 - dist (for normalized vectors)
+            similarity = max(0.0, 1.0 - float(distance))
+            if similarity < SIMILARITY_THRESHOLD:
+                continue
+
+            # Compute text divergence
+            ratio = SequenceMatcher(None, new_content.lower(), cand_content.lower()).ratio()
+            divergence = 1.0 - ratio
+            if divergence < DIVERGENCE_THRESHOLD:
+                continue
+
+            conflicts.append({
+                "existing_hash": cand_hash,
+                "existing_content": cand_content,
+                "similarity": round(similarity, 4),
+                "divergence": round(divergence, 4),
+            })
+
+        return conflicts
+
+    async def _record_conflicts(self, new_hash: str, conflicts: list) -> None:
+        """Tag conflicting memories and create graph edges."""
+        import json as _json
+
+        for c in conflicts:
+            existing_hash = c["existing_hash"]
+            metadata = _json.dumps({
+                "similarity": c["similarity"],
+                "divergence": c["divergence"],
+                "detected_at": time.time(),
+            })
+
+            # Add conflict:unresolved tag to both memories
+            for h in (new_hash, existing_hash):
+                cursor = self.conn.execute(
+                    "SELECT tags FROM memories WHERE content_hash = ?", (h,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    tags = row[0] or ""
+                    if "conflict:unresolved" not in tags:
+                        new_tags = f"{tags},conflict:unresolved" if tags else "conflict:unresolved"
+                        self.conn.execute(
+                            "UPDATE memories SET tags = ? WHERE content_hash = ?",
+                            (new_tags, h),
+                        )
+
+            # Create bidirectional contradicts edge in memory_graph
+            now = time.time()
+            for src, tgt in ((new_hash, existing_hash), (existing_hash, new_hash)):
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO memory_graph
+                       (source_hash, target_hash, similarity, connection_types,
+                        metadata, created_at, relationship_type)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (src, tgt, c["similarity"], "semantic",
+                     metadata, now, "contradicts"),
+                )
+
+        logger.info(f"Recorded {len(conflicts)} conflict(s) for {new_hash[:8]}")
+
+    async def get_conflicts(self) -> list:
+        """Return all unresolved conflict pairs (active, non-superseded memories)."""
+        if not self.conn:
+            return []
+
+        try:
+            cursor = self.conn.execute(
+                """SELECT g.source_hash, g.target_hash, g.similarity, g.metadata,
+                          m1.content AS content_a, m2.content AS content_b
+                   FROM memory_graph g
+                   JOIN memories m1 ON m1.content_hash = g.source_hash
+                   JOIN memories m2 ON m2.content_hash = g.target_hash
+                   WHERE g.relationship_type = 'contradicts'
+                   AND m1.deleted_at IS NULL AND (m1.superseded_by IS NULL OR m1.superseded_by = '')
+                   AND m2.deleted_at IS NULL AND (m2.superseded_by IS NULL OR m2.superseded_by = '')
+                   AND g.source_hash < g.target_hash"""
+            )
+            results = []
+            for row in cursor.fetchall():
+                meta = self._safe_json_loads(row[3], "get_conflicts") if row[3] else {}
+                results.append({
+                    "hash_a": row[0],
+                    "hash_b": row[1],
+                    "content_a": row[4],
+                    "content_b": row[5],
+                    "similarity": row[2],
+                    "divergence": meta.get("divergence"),
+                    "detected_at": meta.get("detected_at"),
+                })
+            return results
+        except Exception as e:
+            logger.error(f"get_conflicts error: {e}")
+            return []
+
+    async def resolve_conflict(self, winner_hash: str, loser_hash: str) -> Tuple[bool, str]:
+        """Resolve a conflict: supersede loser, boost winner confidence."""
+        try:
+            if not self.conn:
+                return False, "Database not initialized"
+
+            # Verify both exist and are active
+            for h, label in ((winner_hash, "Winner"), (loser_hash, "Loser")):
+                cursor = self.conn.execute(
+                    "SELECT content_hash FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                    (h,),
+                )
+                if not cursor.fetchone():
+                    return False, f"{label} memory {h} not found or deleted"
+
+            now = time.time()
+
+            # Mark loser as superseded
+            self.conn.execute(
+                "UPDATE memories SET superseded_by = ? WHERE content_hash = ?",
+                (winner_hash, loser_hash),
+            )
+
+            # Boost winner: confidence = 1.0, last_accessed = now
+            self.conn.execute(
+                "UPDATE memories SET confidence = 1.0, last_accessed = ? WHERE content_hash = ?",
+                (int(now), winner_hash),
+            )
+
+            # Remove conflict:unresolved tag from both
+            for h in (winner_hash, loser_hash):
+                cursor = self.conn.execute(
+                    "SELECT tags FROM memories WHERE content_hash = ?", (h,)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    tags = [t.strip() for t in row[0].split(",") if t.strip() != "conflict:unresolved"]
+                    self.conn.execute(
+                        "UPDATE memories SET tags = ? WHERE content_hash = ?",
+                        (",".join(tags), h),
+                    )
+
+            self.conn.commit()
+            logger.info(f"Conflict resolved: {winner_hash[:8]} wins over {loser_hash[:8]}")
+            return True, f"Conflict resolved: {winner_hash[:8]} supersedes {loser_hash[:8]}"
+
+        except Exception as e:
+            logger.error(f"resolve_conflict error: {e}")
+            return False, str(e)
+
+    async def retrieve_with_staleness(
+        self,
+        query: str,
+        n_results: int = 5,
+        tags: Optional[List[str]] = None,
+        min_confidence: float = 0.0,
+    ) -> List[MemoryQueryResult]:
+        """Semantic search with staleness-aware confidence scoring.
+
+        Wraps retrieve(), adds effective_confidence to debug_info, updates
+        last_accessed in DB, and optionally filters by min_confidence.
+
+        Args:
+            min_confidence: 0.0 = no filter (backward compatible).
+        """
+        fetch_n = max(n_results * 3, 20) if min_confidence > 0.0 else n_results
+        raw = await self.retrieve(query, fetch_n, tags)
+        if not raw:
+            return raw
+
+        hashes = [r.memory.content_hash for r in raw]
+        placeholders = ",".join("?" * len(hashes))
+        cursor = self.conn.execute(
+            f"SELECT content_hash, confidence, last_accessed, created_at "
+            f"FROM memories WHERE content_hash IN ({placeholders})",
+            hashes,
+        )
+        meta = {row[0]: row[1:] for row in cursor.fetchall()}
+
+        now = time.time()
+        enriched: List[MemoryQueryResult] = []
+        hashes_to_touch: List[str] = []
+
+        for result in raw:
+            ch = result.memory.content_hash
+            confidence, last_accessed, created_at = meta.get(ch, (1.0, None, None))
+            eff = self._effective_confidence(confidence, last_accessed, created_at, now)
+
+            if eff < min_confidence:
+                continue
+
+            result.debug_info["effective_confidence"] = eff
+            result.debug_info["confidence"] = confidence or 1.0
+            result.debug_info["last_accessed"] = last_accessed
+            hashes_to_touch.append(ch)
+            enriched.append(result)
+
+            if len(enriched) >= n_results:
+                break
+
+        if hashes_to_touch:
+            def _touch(hashes=hashes_to_touch, ts=now):
+                self.conn.executemany(
+                    "UPDATE memories SET last_accessed = ? WHERE content_hash = ?",
+                    [(int(ts), h) for h in hashes],
+                )
+                self.conn.commit()
+            try:
+                await self._execute_with_retry(_touch)
+            except Exception as e:
+                logger.warning(f"Failed to update last_accessed (non-fatal): {e}")
+
+        return enriched
+
+    async def update_memory_versioned(
+        self,
+        content_hash: str,
+        new_content: str,
+        new_tags: Optional[List[str]] = None,
+        new_memory_type: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Non-destructive update: creates a child node and marks the old one superseded.
+
+        Returns:
+            (success, message, new_content_hash)
+        """
+        try:
+            if not self.conn:
+                return False, "Database not initialized", None
+
+            cursor = self.conn.execute(
+                """SELECT content_hash, content, tags, memory_type, metadata, version
+                   FROM memories
+                   WHERE content_hash = ? AND deleted_at IS NULL AND superseded_by IS NULL""",
+                (content_hash,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False, f"Memory {content_hash} not found or already superseded", None
+
+            old_hash, old_content, old_tags_str, old_type, old_metadata_str, old_version = row
+            old_version = old_version or 1
+
+            resolved_tags = new_tags if new_tags is not None else (
+                [t for t in old_tags_str.split(",") if t] if old_tags_str else []
+            )
+            resolved_type = new_memory_type if new_memory_type is not None else old_type
+            old_metadata = self._safe_json_loads(old_metadata_str, "update_memory_versioned")
+            if reason:
+                old_metadata["evolution_reason"] = reason
+
+            new_hash = hashlib.sha256(new_content.strip().lower().encode("utf-8")).hexdigest()
+            new_ver = old_version + 1
+
+            # Generate embedding for the new content
+            try:
+                embedding = self._generate_embedding(new_content)
+            except Exception as e:
+                return False, f"Failed to generate embedding: {e}", None
+
+            tags_str = ",".join(resolved_tags) if resolved_tags else ""
+            metadata_str = json.dumps(old_metadata) if old_metadata else "{}"
+            now = time.time()
+            now_iso = datetime.utcfromtimestamp(now).isoformat() + "Z"
+
+            # Atomic operation: insert new version + link lineage in a single SAVEPOINT.
+            # Prevents orphaned nodes if any step fails (per repo rules on batch inserts).
+            def versioned_insert():
+                self.conn.execute('SAVEPOINT evolve_memory')
+                try:
+                    cursor = self.conn.execute('''
+                        INSERT INTO memories (
+                            content_hash, content, tags, memory_type, metadata,
+                            created_at, updated_at, created_at_iso, updated_at_iso,
+                            parent_id, version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        new_hash, new_content, tags_str, resolved_type, metadata_str,
+                        now, now, now_iso, now_iso,
+                        old_hash, new_ver,
+                    ))
+                    memory_rowid = cursor.lastrowid
+
+                    self.conn.execute('''
+                        INSERT INTO memory_embeddings (rowid, content_embedding)
+                        VALUES (?, ?)
+                    ''', (memory_rowid, serialize_float32(embedding)))
+
+                    self.conn.execute(
+                        "UPDATE memories SET superseded_by = ? WHERE content_hash = ?",
+                        (new_hash, old_hash),
+                    )
+                    self.conn.execute('RELEASE SAVEPOINT evolve_memory')
+                except Exception:
+                    self.conn.execute('ROLLBACK TO SAVEPOINT evolve_memory')
+                    self.conn.execute('RELEASE SAVEPOINT evolve_memory')
+                    raise
+
+            await self._execute_with_retry(versioned_insert)
+            await self._execute_with_retry(self.conn.commit)
+            logger.info(f"Memory evolved: {old_hash[:8]} → {new_hash[:8]} (v{old_version} → v{new_ver})")
+            return True, f"Memory updated (v{old_version} → v{new_ver})", new_hash
+
+        except Exception as e:
+            logger.error(f"update_memory_versioned error: {e}")
+            return False, str(e), None
+
+    async def get_memory_history(self, content_hash: str) -> List[Dict[str, Any]]:
+        """Return full version lineage for a memory, oldest-first.
+
+        Works from any version: walks parent_id chain to root, then
+        traverses forward via recursive CTE.
+        """
+        try:
+            if not self.conn:
+                return []
+
+            # Walk parent_id chain upward to find the oldest existing ancestor.
+            # Single query per iteration using EXISTS to verify parent exists.
+            # Stops if parent_id is NULL or points to a missing row (pre-evolution data).
+            current = content_hash
+            visited: Set[str] = set()
+            while True:
+                if current in visited:
+                    break
+                visited.add(current)
+                cursor = self.conn.execute(
+                    """SELECT m.parent_id FROM memories m
+                       WHERE m.content_hash = ? AND m.parent_id IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM memories p WHERE p.content_hash = m.parent_id)""",
+                    (current,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    break
+                current = row[0]
+
+            root = current
+
+            # Walk lineage forward from root (exclude soft-deleted nodes)
+            cursor = self.conn.execute(
+                """
+                WITH RECURSIVE lineage(content_hash, content, version, parent_id, superseded_by, created_at) AS (
+                    SELECT content_hash, content, version, parent_id, superseded_by, created_at
+                    FROM memories WHERE content_hash = ? AND deleted_at IS NULL
+                    UNION ALL
+                    SELECT m.content_hash, m.content, m.version, m.parent_id, m.superseded_by, m.created_at
+                    FROM memories m
+                    INNER JOIN lineage l ON m.parent_id = l.content_hash
+                    WHERE m.deleted_at IS NULL
+                )
+                SELECT content_hash, content, version, parent_id, superseded_by, created_at
+                FROM lineage
+                ORDER BY COALESCE(version, 1) ASC
+                """,
+                (root,),
+            )
+
+            return [
+                {
+                    "content_hash": r[0],
+                    "content": r[1],
+                    "version": r[2] or 1,
+                    "parent_id": r[3],
+                    "superseded_by": r[4],
+                    "created_at": r[5],
+                    "active": r[4] is None,
+                }
+                for r in cursor.fetchall()
+            ]
+
+        except Exception as e:
+            logger.error(f"get_memory_history error: {e}")
+            return []
 
     async def close(self):
         """Close the database connection."""
