@@ -58,7 +58,7 @@ Before merging or releasing:
 
 MCP Memory Service is a Model Context Protocol server providing semantic memory and persistent storage for Claude Desktop and 13+ AI applications. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
 
-**Current Version:** v10.26.9 - Refactor: eliminate N+1 query in update_memories_batch, simplify age calc, extract hash-embedding helper (#610) — 1,340 tests — see [CHANGELOG.md](CHANGELOG.md) for details
+**Current Version:** v10.29.1 - fix: orphaned graph edges cleaned up on memory deletion (#632) — 1,483 tests — see [CHANGELOG.md](CHANGELOG.md) for details
 
 > **🎯 v10.0.0 Milestone**: This major release represents a complete API consolidation - 34 tools unified into 12 with enhanced capabilities. All deprecated tools continue working with warnings until v11.0. See `docs/MIGRATION.md` for migration guide.
 
@@ -412,6 +412,8 @@ export MCP_EXTERNAL_EMBEDDING_API_KEY=sk-xxx  # Optional
 - Ensures consistency across `pyproject.toml`, `_version.py`, CHANGELOG, and GitHub releases
 - Example: After merging feature PR, invoke github-release-manager agent to create release
 
+**Dashboard changes (`web/static/`):** Verify in browser before merging. Dashboard JS lacks automated test coverage — PRs touching this area should include manual testing evidence or screenshots.
+
 **Memory Tagging:** Always tag memories with `mcp-memory-service` as first tag (see `.claude/directives/memory-tagging.md`)
 
 ### Common Development Tasks
@@ -518,6 +520,10 @@ memory.memory_type or ''
 | Cloudflare 401 on MCP server startup (hybrid mode) | Set `MCP_HYBRID_SYNC_OWNER=http` in `.env` — MCP server then uses SQLite-Vec only, no Cloudflare token needed in Claude Desktop config |
 | Cloudflare 403 / sync not running (IPv6) | Python prefers IPv6 but token IP allowlist may only have IPv4. Add your IPv6 /64 network to token's Client IP Address Filtering, or remove IP filtering entirely |
 | Strict stdio client times out during handshake (e.g. Codex, 10s budget) | Set `MCP_INIT_TIMEOUT=5` to force lazy loading — storage initializes on first tool call instead (issue #561) |
+| uv.lock revision downgraded (revision=2 vs revision=3) | Local uv 0.7.16 silently downgrades lockfile. Restore with `git checkout uv.lock` or upgrade uv. Don't include revision-only changes in PRs |
+| Pre-commit hook fails "Package not installed" | Hook uses system Python, not venv. Use `PATH=".venv/bin:$PATH" git commit -m "..."` for all commits |
+| Editable install replaced PyPI version | `uv pip install -e .` replaces PyPI package with local source. After commit, restore with `uv pip install mcp-memory-service==<version>` |
+| Cloudflare 401 after upgrade/restart | First search Memory (`cloudflare 401`), then verify `.env` token matches Cloudflare Dashboard. Token rotation in dashboard does NOT update local `.env` |
 
 **Comprehensive troubleshooting:** [docs/troubleshooting/hooks-quick-reference.md](docs/troubleshooting/hooks-quick-reference.md)
 

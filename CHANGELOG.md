@@ -10,6 +10,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.29.1] - 2026-03-29
+
+### Fixed
+
+- **[#632] Clean up orphaned graph edges on memory deletion**: When memories were deleted, their associated edges in the `memory_graph` table were not removed, causing dead references to accumulate over time and pollute graph queries. The fix adds explicit edge removal to `delete()`, `delete_by_tag()`, and `delete_by_tags()` in `sqlite_vec.py`. The consolidation forgetting phase now also performs a periodic orphan-pruning pass after archival, ensuring edges referencing non-existent memories are swept up even for memories removed by other means.
+
+### Documentation
+
+- **Troubleshooting additions**: Pre-commit hook PATH workaround (`.venv/bin`), editable install vs PyPI version switching, Cloudflare 401 memory-first diagnosis, dashboard testing guidelines, uv.lock revision downgrade
+- **Instincts bootstrap**: Added `instincts/learned.instincts.yaml` with 4 session-derived instincts (PR workflow, memory-first debugging, env/dashboard token sync, release agent usage)
+
+## [10.29.0] - 2026-03-29
+
+### Added
+
+- **[#628] LLM-based classification layer for session harvest (Phase 2)**: `memory_harvest` now accepts an optional `use_llm` boolean parameter. When `true`, extracted memories are routed through a new `_GroqClassifierBridge` (in `harvest/classifier.py`) that calls the Groq API to produce higher-precision category labels. Falls back transparently to the existing rule-based classifier when `use_llm=false` (the default) or when the Groq API is unavailable. Closes #618.
+- **[#628] `harvest/classifier.py`**: New module implementing `_GroqClassifierBridge` — a lightweight, async-compatible adapter that wraps Groq's chat-completion API for memory classification. Includes rate-limit handling, structured output parsing, and a `classify_batch()` method for efficient bulk classification.
+- **[#628] 14 new tests**: Full unit and integration coverage for `_GroqClassifierBridge` (mock API responses, fallback on 429/503, batch classification), the `use_llm` path in the harvest MCP handler, and end-to-end harvest flows with and without LLM classification enabled.
+
+## [10.28.5] - 2026-03-29
+
+### Fixed
+
+- **[#621] Anonymous access flag ignored in dashboard**: `MCP_ALLOW_ANONYMOUS_ACCESS=true` had no effect on the dashboard — unauthenticated users were still redirected to a login prompt regardless of the flag value. The OAuth middleware now grants anonymous users full `read write` scope when `MCP_ALLOW_ANONYMOUS_ACCESS=true`, matching the server's intended behavior. Users behind a firewall or using external auth (e.g. Nginx Basic Auth) who rely on this flag no longer need to provide credentials in the dashboard.
+
+### Documentation
+
+- **Anonymous access scope clarification**: Updated `.env.example`, dashboard auth modal, and test docstrings to explicitly state that `MCP_ALLOW_ANONYMOUS_ACCESS=true` grants read+write access (not read-only). Addresses Gemini review feedback on PR #626.
+
+## [10.28.4] - 2026-03-29
+
+### Security
+
+- **[#622] bump cryptography from 46.0.5 to 46.0.6**: Fixes CVE-2026-34073 (incomplete DNS name constraint enforcement). Dependabot alert #68 (low severity). Automated Dependabot bump.
+- **[#623] bump serialize-javascript to >=7.0.5**: Fixes CVE-2026-34043 (CPU exhaustion DoS via crafted array-like objects in serialized output). Dependabot alerts #66 and #67 (medium severity). Applied to `tests/integration/` and `tests/web/` npm packages.
+
+### Fixed
+
+- **[#623] Remove unused `Optional` import in `harvester.py`**: CodeQL alert #379 (note). Import was a leftover from an earlier implementation; removal has no functional impact.
+
+### Maintenance
+
+- **[#623] Sort dependencies alphabetically in `pyproject.toml`**: Improves readability and prevents merge conflicts on future dependency updates.
+
 ## [10.28.3] - 2026-03-26
 
 ### Fixed

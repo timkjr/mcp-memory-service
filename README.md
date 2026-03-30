@@ -368,18 +368,23 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.28.3** (March 26, 2026)
+## Latest Release: **v10.29.1** (March 29, 2026)
 
-**HTTP MCP endpoint fix: accept 'content' as alias for 'query' so Claude Code HTTP transport returns results**
+**fix: clean up orphaned graph edges on memory deletion (#632)**
 
 **What's New:**
-- **Parameter alias fix**: `retrieve_memory` and `recall_memory` now accept `content` in addition to `query` as the search parameter name.
-- **Claude Code HTTP transport**: Resolves always-empty results when Claude Code invokes memory tools via HTTP (it sends `content`, not `query`).
-- **Backward compatible**: Existing callers using `query` are unaffected; `query` takes precedence when both are present.
+- **Orphaned edge cleanup**: Deleting a memory now removes its associated edges from the `memory_graph` table immediately, preventing dead references from accumulating.
+- **Cascade deletion**: `delete()`, `delete_by_tag()`, and `delete_by_tags()` in the SQLite-Vec backend all perform graph edge removal as part of the same operation.
+- **Periodic orphan pruning**: The consolidation forgetting phase sweeps up any remaining orphaned edges after archival, providing a safety net for edges left by other deletion paths.
+- **Fixes #632**: Graph queries no longer return or traverse stale edges referencing deleted memories.
 
 ---
 
 **Previous Releases**:
+- **v10.29.0** - feat(harvest): LLM-based classification via Groq (Phase 2, #628) — `memory_harvest` supports `use_llm=true` for higher-precision category labels via _GroqClassifierBridge
+- **v10.28.5** - Bug fix: MCP_ALLOW_ANONYMOUS_ACCESS=true now respected in the dashboard (anonymous users granted read+write scope)
+- **v10.28.4** - Security patch: cryptography>=46.0.6 (CVE-2026-34073), serialize-javascript>=7.0.5 (CVE-2026-34043), CodeQL cleanup
+- **v10.28.3** - HTTP MCP endpoint fix: accept 'content' as alias for 'query' so Claude Code HTTP transport returns results
 - **v10.28.2** - Relationship inference tuning: 93.5% typed labels vs 0.5% before + German language support
 - **v10.28.1** - Harvest false-positive fix: skip system prompts, skill outputs, and long injected content (3 new tests)
 - **v10.28.0** - Session harvest tool (`memory_harvest`): extract learnings from Claude Code transcripts + security dependency updates (#614-#616)
