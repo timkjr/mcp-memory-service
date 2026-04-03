@@ -215,3 +215,9 @@ docs/.herenow/
 
 # Chunkhound storage
 .chunkhound*
+
+certs/cert.pem
+certs/key.pem
+
+# LoCoMo benchmark data (downloaded on demand)
+data/locomo/

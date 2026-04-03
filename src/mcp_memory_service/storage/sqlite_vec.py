@@ -232,6 +232,11 @@ class SqliteVecMemoryStorage(MemoryStorage):
     while maintaining the same interface as other storage backends.
     """
 
+    # TODO(#637): ~119 direct self.conn.execute() calls bypass _execute_with_retry
+    # and still block the event loop. A follow-up PR should either:
+    # (a) route all DB calls through _execute_with_retry, or
+    # (b) migrate to aiosqlite for native async sqlite access.
+
     @property
     def max_content_length(self) -> Optional[int]:
         """SQLite-vec content length limit from configuration (default: unlimited)."""
@@ -291,9 +296,13 @@ class SqliteVecMemoryStorage(MemoryStorage):
     async def _execute_with_retry(self, operation: Callable, max_retries: int = 5, initial_delay: float = 0.2):
         """
         Execute a database operation with exponential backoff retry logic.
-        
+
+        The operation is offloaded to a thread via asyncio.to_thread() to
+        avoid blocking the event loop. Requires self.conn to be created
+        with check_same_thread=False (set in initialize()).
+
         Args:
-            operation: The database operation to execute
+            operation: The database operation to execute (synchronous callable)
             max_retries: Maximum number of retry attempts
             initial_delay: Initial delay in seconds before first retry
             
@@ -308,7 +317,7 @@ class SqliteVecMemoryStorage(MemoryStorage):
         
         for attempt in range(max_retries + 1):
             try:
-                return operation()
+                return await asyncio.to_thread(operation)
             except sqlite3.OperationalError as e:
                 last_exception = e
                 error_msg = str(e).lower()
@@ -1233,6 +1242,13 @@ SOLUTIONS:
             logger.error(f"Failed to generate embedding: {str(e)}")
             raise RuntimeError(f"Failed to generate embedding: {str(e)}") from e
 
+    def _purge_tombstone(self, content_hash: str) -> None:
+        """Remove a soft-deleted tombstone so the UNIQUE constraint allows re-insert (#644)."""
+        self.conn.execute(
+            'DELETE FROM memories WHERE content_hash = ? AND deleted_at IS NOT NULL',
+            (content_hash,)
+        )
+
     async def _check_semantic_duplicate(
         self,
         content: str,
@@ -1329,6 +1345,7 @@ SOLUTIONS:
             def insert_memory_and_embedding():
                 self.conn.execute('SAVEPOINT store_memory')
                 try:
+                    self._purge_tombstone(memory.content_hash)
                     cursor = self.conn.execute('''
                         INSERT INTO memories (
                             content_hash, content, tags, memory_type,
@@ -1449,6 +1466,8 @@ SOLUTIONS:
                 # orphaned rows that would be unsearchable.
                 try:
                     self.conn.execute('SAVEPOINT batch_item')
+
+                    self._purge_tombstone(memory.content_hash)
 
                     cur = self.conn.execute('''
                         INSERT INTO memories (
@@ -3994,6 +4013,7 @@ SOLUTIONS:
             def versioned_insert():
                 self.conn.execute('SAVEPOINT evolve_memory')
                 try:
+                    self._purge_tombstone(new_hash)
                     cursor = self.conn.execute('''
                         INSERT INTO memories (
                             content_hash, content, tags, memory_type, metadata,

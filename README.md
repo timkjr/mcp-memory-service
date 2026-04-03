@@ -368,21 +368,20 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.30.0** (March 30, 2026)
+## Latest Release: **v10.31.1** (March 31, 2026)
 
-**feat: Memory Evolution — Non-destructive updates, lineage tracking, staleness scoring, conflict detection (P1+P2+P3)**
+**fix: tombstone blocks re-insertion after delete of same content (#644)**
 
 **What's New:**
-- **Non-destructive versioned updates (P1)**: `update_memory_versioned()` creates child nodes, marks parents as superseded, and tracks full lineage — history is never lost.
-- **Staleness scoring with decay (P2)**: `_effective_confidence()` time-decays memory confidence; `retrieve_with_staleness()` filters out stale memories automatically. Configurable via `MEMORY_DECAY_WINDOW_DAYS`.
-- **Automatic conflict detection (P3)**: `memory_store()` detects contradictions (cosine > 0.95 + Levenshtein divergence > 20%) and links them as `contradicts` graph edges.
-- **New MCP tools**: `memory_conflicts` and `memory_resolve` for managing contradictions.
-- **New REST endpoints**: `GET /api/conflicts` and `POST /api/conflicts/resolve`.
-- **30 new tests** covering all three phases (1,514 total).
+- **Tombstone purge before re-insert (#644)**: `store()`, `store_batch()`, and `update_memory_versioned()` now call `_purge_tombstone()` to remove soft-delete rows before INSERT, fixing UNIQUE constraint errors when the same content is stored after deletion.
+- **Re-store roundtrip test**: New `test_store_after_delete_same_content` covers the full delete → re-store scenario.
+- **1,521 tests** (1 new test added).
 
 ---
 
 **Previous Releases**:
+- **v10.31.0** - feat: Harvest Evolution (P4) + Sync-in-Async Refactoring — harvest dedup via `update_memory_versioned()`, `asyncio.to_thread()` in `_execute_with_retry` (1,520 tests)
+- **v10.30.0** - feat: Memory Evolution (P1+P2+P3) — non-destructive versioned updates, staleness scoring, conflict detection + resolution (1,514 tests)
 - **v10.29.1** - fix: clean up orphaned graph edges on memory deletion — cascade edge removal in delete/delete_by_tag/delete_by_tags + periodic orphan pruning in consolidation
 - **v10.29.0** - feat(harvest): LLM-based classification via Groq (Phase 2, #628) — `memory_harvest` supports `use_llm=true` for higher-precision category labels via _GroqClassifierBridge
 - **v10.28.5** - Bug fix: MCP_ALLOW_ANONYMOUS_ACCESS=true now respected in the dashboard (anonymous users granted read+write scope)
@@ -488,6 +487,29 @@ result = storage.find_connected(
 **Relationship Types:**
 - Asymmetric: causes, fixes, supports, follows (A→B ≠ B→A)
 - Symmetric: related, contradicts (A↔B)
+
+### Retrieval Benchmarks
+
+Two benchmarks measure retrieval quality (all-MiniLM-L6-v2, 384d embeddings):
+
+**DevBench** (practical developer workflow queries):
+
+| Category | Recall@5 | MRR |
+|----------|----------|-----|
+| **Overall** | **91.1%** | **0.861** |
+| exact | 100% | 1.000 |
+| semantic | 80.0% | 0.700 |
+| cross-type | 90.0% | 0.867 |
+
+**LoCoMo** ([ACL 2024](https://github.com/snap-research/locomo) long-term conversational memory):
+
+| Category | Recall@5 | MRR |
+|----------|----------|-----|
+| **Overall** | **49.7%** | **0.414** |
+| multi-hop | 72.0% | 0.600 |
+| temporal | 33.5% | 0.274 |
+
+Run benchmarks: `python scripts/benchmarks/benchmark_devbench.py` and `python scripts/benchmarks/benchmark_locomo.py`
 
 ### Performance Improvements
 
