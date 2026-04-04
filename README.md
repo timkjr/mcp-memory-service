@@ -27,6 +27,14 @@ p.md)
 
 ---
 
+## 🎬 See It in Action
+
+[![Watch the Dashboard Walkthrough](https://img.youtube.com/vi/W34r8VFoSdQ/maxresdefault.jpg)](https://youtu.be/W34r8VFoSdQ)
+
+**[Watch the Web Dashboard Walkthrough on YouTube](https://youtu.be/W34r8VFoSdQ)** — Semantic search, tag browser, document ingestion, analytics, quality scoring, and API docs in under 2 minutes.
+
+---
+
 ## 🌐 Works with claude.ai (Browser)
 
 Unlike desktop-only MCP servers, **mcp-memory-service supports Remote MCP** for native claude.ai integration.
@@ -368,18 +376,23 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.31.1** (March 31, 2026)
+## Latest Release: **v10.31.2** (April 3, 2026)
 
-**fix: tombstone blocks re-insertion after delete of same content (#644)**
+**fix: storage consistency, error handling, and upload progress (community PRs #648, #649, #650)**
 
 **What's New:**
-- **Tombstone purge before re-insert (#644)**: `store()`, `store_batch()`, and `update_memory_versioned()` now call `_purge_tombstone()` to remove soft-delete rows before INSERT, fixing UNIQUE constraint errors when the same content is stored after deletion.
-- **Re-store roundtrip test**: New `test_store_after_delete_same_content` covers the full delete → re-store scenario.
-- **1,521 tests** (1 new test added).
+- **Consistent `_safe_json_loads` usage (#648)**: Replaced remaining bare `json.loads` calls in `get_largest_memories()` and `get_graph_visualization_data()` with the `_safe_json_loads` helper for consistent error handling.
+- **Non-JSON error response handling (#649)**: HTTP client and embedding API now gracefully handle non-JSON error responses (e.g. HTML from reverse proxies) instead of crashing.
+- **Upload progress tracking (#650)**: Fixed broken single-file progress formula and added per-file batch progress updates for smooth 0→100% tracking.
+- **Repo & agent cleanup**: Moved 8 legacy docs to archive, cleaned up `.claude/` config, consolidated agents (84% size reduction: 2,507 → 412 lines).
+- **1,503 tests** passing.
+
+Thanks to @lawrence3699 for contributing PRs #648, #649, and #650!
 
 ---
 
 **Previous Releases**:
+- **v10.31.1** - fix: tombstone blocks re-insertion after delete of same content (#644) — `_purge_tombstone()` before INSERT (1,521 tests)
 - **v10.31.0** - feat: Harvest Evolution (P4) + Sync-in-Async Refactoring — harvest dedup via `update_memory_versioned()`, `asyncio.to_thread()` in `_execute_with_retry` (1,520 tests)
 - **v10.30.0** - feat: Memory Evolution (P1+P2+P3) — non-destructive versioned updates, staleness scoring, conflict detection + resolution (1,514 tests)
 - **v10.29.1** - fix: clean up orphaned graph edges on memory deletion — cascade edge removal in delete/delete_by_tag/delete_by_tags + periodic orphan pruning in consolidation

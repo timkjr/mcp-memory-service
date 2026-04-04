@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+- Added `/health` endpoint to SSE and Streamable HTTP transports (port `MCP_SSE_PORT`, default 8765) for external monitoring (load balancers, Docker healthchecks, K8s probes) (PR #656, contributor: @Lobster-Armlock)
+- Added `MCP_TRANSPORT_TIMEOUT_KEEP_ALIVE` (default 5s) and `MCP_TRANSPORT_TIMEOUT_GRACEFUL_SHUTDOWN` (default 30s) configurable env vars for MCP transport uvicorn instances (PR #656, contributor: @Lobster-Armlock)
+
+## [10.31.2] - 2026-04-03
+
+### Fixed
+
+- **[#648] Use `_safe_json_loads` consistently for metadata parsing**: Replaced remaining bare `json.loads` calls in `get_largest_memories()` and `get_graph_visualization_data()` with `_safe_json_loads` helper, ensuring consistent error handling for malformed metadata across all SQLite-Vec storage methods. Also corrected the context string from `"get_graph_data"` to `"get_graph_visualization_data"` for accurate error logs. (PR #648, contributor: @lawrence3699)
+- **[#649] Handle non-JSON error responses in HTTP client and embedding API**: Wrapped `response.json()` calls on error paths in `http_client.py` (`store()`, `delete()`) with `try/except (ContentTypeError, ValueError)` to handle HTML/empty responses from reverse proxies. Added similar guards in `external_api.py` for `_verify_connection()` and `encode()`. (PR #649, contributor: @lawrence3699)
+- **[#650] Correct upload progress tracking for single and batch uploads**: Removed broken single-file progress formula that always evaluated to 100%. Added per-file `session.progress` updates during batch processing so the polling endpoint returns smooth 0→100% progress instead of jumping at completion. (PR #650, contributor: @lawrence3699)
+
 ### Changed
 
 - **Repo root cleanup**: Moved 8 legacy documentation files (`FIXES_COMPLETE.md`, `IMPLEMENTATION_SUMMARY.md`, `TEST_ADDITIONS_SUMMARY.md`, `TEST_VALIDATION_REPORT.md`, `AUTH_FLOW_DIAGRAM.md`, `test_auth_implementation.md`, `test_fixes.py`, `.commit-message`) to `archive/docs-root-cleanup-2026-04-02/`. Removed redundant `venv/` directory (keeping `.venv/` as the active Python 3.11 environment).
