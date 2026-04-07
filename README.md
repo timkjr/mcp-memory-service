@@ -20,8 +20,7 @@ context in 5ms — without cloud lock-in or API costs.
 [![Works with Claude](https://img.shields.io/badge/Works%20with-Claude-blue)](https://claude.ai)
 [![Works with Cursor](https://img.shields.io/badge/Works%20with-Cursor-orange)](https://cursor.sh)
 [![Remote MCP](https://img.shields.io/badge/MCP-Remote%20Support-blue?logo=anthropic)](docs/remote-mcp-setup.md)
-[![claude.ai](https://img.shields.io/badge/claude.ai-Browser%20Compatible-orange?logo=anthropic)](docs/remote-mcp-setu
-p.md)
+[![claude.ai Browser Compatible](https://img.shields.io/badge/claude.ai-Browser%20Compatible-orange?logo=anthropic)](docs/remote-mcp-setup.md)
 [![OAuth 2.0](https://img.shields.io/badge/Auth-OAuth%202.0%20%2B%20DCR-green)](docs/oauth-setup.md)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/doobidoo)
 
@@ -224,6 +223,8 @@ It automatically captures your project context, architecture decisions, and code
 
 ## 🚀 Get Started in 60 Seconds
 
+> Not sure which setup fits your needs? See the **[Setup Guide](docs/setup-guide.md)** — a decision tree walks you to the right path in under a minute.
+
 **1. Install:**
 
 ```bash
@@ -376,22 +377,21 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.31.2** (April 3, 2026)
+## Latest Release: **v10.33.0** (April 6, 2026)
 
-**fix: storage consistency, error handling, and upload progress (community PRs #648, #649, #650)**
+**refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage**
 
 **What's New:**
-- **Consistent `_safe_json_loads` usage (#648)**: Replaced remaining bare `json.loads` calls in `get_largest_memories()` and `get_graph_visualization_data()` with the `_safe_json_loads` helper for consistent error handling.
-- **Non-JSON error response handling (#649)**: HTTP client and embedding API now gracefully handle non-JSON error responses (e.g. HTML from reverse proxies) instead of crashing.
-- **Upload progress tracking (#650)**: Fixed broken single-file progress formula and added per-file batch progress updates for smooth 0→100% tracking.
-- **Repo & agent cleanup**: Moved 8 legacy docs to archive, cleaned up `.claude/` config, consolidated agents (84% size reduction: 2,507 → 412 lines).
-- **1,503 tests** passing.
-
-Thanks to @lawrence3699 for contributing PRs #648, #649, and #650!
+- **Event-loop blocking eliminated (#663)**: All ~119 remaining direct `self.conn.execute()` calls in async methods of `SqliteVecMemoryStorage` are now routed through `asyncio.to_thread()` via `_execute_with_retry`, preventing up to 15-second event-loop freezes under concurrent load.
+- **Silent data loss in conflict detection fixed (#663)**: `_record_conflicts` was writing conflict tags and graph edges but never committing — all conflict data was silently discarded. Fixed with `self.conn.commit()` inside the closure.
+- **SAVEPOINT concurrency safety (#663)**: Added `_savepoint_lock` (asyncio.Lock) to serialize `store`/`store_batch`/`evolve_memory` SAVEPOINT sections, preventing interleaved SAVEPOINT stacks and "no such savepoint" errors under concurrent load.
+- **1,520 tests** passing.
 
 ---
 
 **Previous Releases**:
+- **v10.32.0** - feat: transport health endpoint + configurable timeouts + optional DCR registration key protection (community PRs #656, #657, 1,520 tests)
+- **v10.31.2** - fix: storage consistency, error handling, and upload progress — `_safe_json_loads` consistency, non-JSON error handling, upload progress tracking (community PRs #648, #649, #650, 1,503 tests)
 - **v10.31.1** - fix: tombstone blocks re-insertion after delete of same content (#644) — `_purge_tombstone()` before INSERT (1,521 tests)
 - **v10.31.0** - feat: Harvest Evolution (P4) + Sync-in-Async Refactoring — harvest dedup via `update_memory_versioned()`, `asyncio.to_thread()` in `_execute_with_retry` (1,520 tests)
 - **v10.30.0** - feat: Memory Evolution (P1+P2+P3) — non-destructive versioned updates, staleness scoring, conflict detection + resolution (1,514 tests)
@@ -549,13 +549,13 @@ If you encounter issues during migration:
 
 - **[Agent Integration Guides](docs/agents/)** 🆕 – LangGraph, CrewAI, AutoGen, HTTP generic
 - **[Remote MCP Setup (claude.ai)](docs/remote-mcp-setup.md)** 🆕 – Browser integration via HTTPS + OAuth
-- **[Installation Guide](docs/installation.md)** – Detailed setup instructions
+- **[Setup Guide](docs/setup-guide.md)** – Decision tree + step-by-step paths for all use cases
 - **[Configuration Guide](docs/mastery/configuration-guide.md)** – Backend options and customization
 - **[Architecture Overview](docs/architecture.md)** – How it works under the hood
-- **[Team Setup Guide](docs/teams.md)** – OAuth and cloud collaboration
+- **[Team Setup Guide](docs/setup-guide.md#path-4-full-stack)** – OAuth and cloud collaboration
 - **[Knowledge Graph Dashboard](docs/features/knowledge-graph-dashboard.md)** 🆕 – Interactive graph visualization guide
 - **[Troubleshooting](docs/troubleshooting/)** – Common issues and solutions
-- **[API Reference](docs/api.md)** – Programmatic usage
+- **[API Reference](https://github.com/doobidoo/mcp-memory-service/wiki)** – Programmatic usage
 - **[Wiki](https://github.com/doobidoo/mcp-memory-service/wiki)** – Complete documentation
 - [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/doobidoo/mcp-memory-service) – AI-powered documentation assistant
 - **[MCP Starter Kit](https://kruppster57.gumroad.com/l/glbhd)** – Build your own MCP server using the patterns from this project

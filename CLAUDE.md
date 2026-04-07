@@ -58,7 +58,7 @@ Before merging or releasing:
 
 MCP Memory Service is a Model Context Protocol server providing semantic memory and persistent storage for Claude Desktop and 13+ AI applications. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
 
-**Current Version:** v10.31.2 - fix: consistent metadata parsing, non-JSON error handling, upload progress tracking (#648, #649, #650) — 1,521 tests — see [CHANGELOG.md](CHANGELOG.md) for details
+**Current Version:** v10.33.0 - refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage (PR #663) — 1,520 tests — see [CHANGELOG.md](CHANGELOG.md) for details
 
 > **🎯 v10.0.0 Milestone**: This major release represents a complete API consolidation - 34 tools unified into 12 with enhanced capabilities. All deprecated tools continue working with warnings until v11.0. See `docs/MIGRATION.md` for migration guide.
 
@@ -418,6 +418,8 @@ export MCP_EXTERNAL_EMBEDDING_API_KEY=sk-xxx  # Optional
 **Dashboard changes (`web/static/`):** Verify in browser before merging. Dashboard JS lacks automated test coverage — PRs touching this area should include manual testing evidence or screenshots.
 
 **Memory Tagging:** Always tag memories with `mcp-memory-service` as first tag (see `.claude/directives/memory-tagging.md`)
+
+**Removing a feature:** When removing a feature or changing a port/command, run `grep -r "<term>" docs/ README.md` and clean up references in the same PR. CI catches new dead refs via `scripts/ci/check_dead_refs.sh` (also run as GitHub Action on docs changes).
 
 ### Common Development Tasks
 

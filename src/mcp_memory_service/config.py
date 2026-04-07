@@ -733,6 +733,15 @@ OAUTH_PRESET_CLIENT_ID = os.getenv("MCP_OAUTH_PRESET_CLIENT_ID")
 OAUTH_PRESET_CLIENT_SECRET = os.getenv("MCP_OAUTH_PRESET_CLIENT_SECRET")
 OAUTH_PRESET_REDIRECT_URIS = os.getenv("MCP_OAUTH_PRESET_REDIRECT_URIS", "https://claude.ai/api/mcp/auth_callback").split(",")
 
+# DCR Registration Key (optional endpoint protection for /oauth/register)
+# WARNING: RFC 7591 DCR is intentionally open by design to allow dynamic clients.
+# Setting this key restricts registration to callers who supply
+# Authorization: Bearer <key>. Use only for self-hosted deployments where open
+# registration is unacceptable (e.g., internet-facing instances without VPN).
+# Leave unset (default) to preserve standard RFC 7591 open-registration behavior.
+# Rotate via your secret manager; the service reads the env var on each request.
+DCR_REGISTRATION_KEY: str | None = os.getenv('MCP_DCR_REGISTRATION_KEY')
+
 # OAuth Storage Backend Configuration
 OAUTH_STORAGE_BACKEND = os.getenv("MCP_OAUTH_STORAGE_BACKEND", "memory").lower()
 """

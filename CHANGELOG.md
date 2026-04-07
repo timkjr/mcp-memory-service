@@ -10,9 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.33.0] - 2026-04-06
+
+### Changed
+
+- **[#637/#663] Wrap all remaining direct SQLite calls in `_execute_with_retry`**: Eliminated ~119 direct `self.conn.execute()` / `executemany()` / `commit()` calls in async methods of `SqliteVecMemoryStorage`. All DB operations now run via `asyncio.to_thread()` through `_execute_with_retry`, preventing up to 15-second event-loop freezes under concurrent load (`busy_timeout=15000` WAL mode). Key correctness guarantees: cursor thread-safety (all `fetchall()`/`fetchone()`/`rowcount` accesses moved inside closures), DDL idempotency (`ALTER TABLE ADD COLUMN` guarded by `PRAGMA table_info()` check), `_savepoint_lock` (`asyncio.Lock`) added to serialize SAVEPOINT-based writes (`store`/`store_batch`/`evolve_memory`) at the coroutine level without blocking the event loop, and unique SAVEPOINT names (`store_<hex>`, `batch_<hex>`, `evolve_<hex>`) to prevent name collision. Removes the `TODO(#637)` comment added in v10.31.0. (PR #663)
+
+### Fixed
+
+- **[#637/#663] `_record_conflicts` silent data loss**: `_record_conflicts` was writing conflict tags and graph edges inside `_execute_with_retry` threads but never called `self.conn.commit()`, causing all conflict data to be silently discarded. Fixed by adding `self.conn.commit()` inside the `_record_all_conflicts` closure. (PR #663)
+- **[#637/#663] `store_batch` outer-scope mutation**: `batch_insert` closure now returns its results list instead of mutating an outer-scope variable, making the pattern safe against future concurrency model changes. (PR #663)
+
+## [10.32.0] - 2026-04-06
+
 ### Added
-- Added `/health` endpoint to SSE and Streamable HTTP transports (port `MCP_SSE_PORT`, default 8765) for external monitoring (load balancers, Docker healthchecks, K8s probes) (PR #656, contributor: @Lobster-Armlock)
-- Added `MCP_TRANSPORT_TIMEOUT_KEEP_ALIVE` (default 5s) and `MCP_TRANSPORT_TIMEOUT_GRACEFUL_SHUTDOWN` (default 30s) configurable env vars for MCP transport uvicorn instances (PR #656, contributor: @Lobster-Armlock)
+- **[#656] `/health` endpoint on SSE and Streamable HTTP transports**: Added a `/health` endpoint to the SSE and Streamable HTTP transport servers (port `MCP_SSE_PORT`, default 8765) for external monitoring — load balancers, Docker healthchecks, and Kubernetes liveness/readiness probes can now query transport health independently of the main HTTP API. (PR #656, contributor: @Lobster-Armlock)
+- **[#656] Configurable transport timeouts**: Added `MCP_TRANSPORT_TIMEOUT_KEEP_ALIVE` (default 5s) and `MCP_TRANSPORT_TIMEOUT_GRACEFUL_SHUTDOWN` (default 30s) environment variables to control uvicorn timeouts for MCP transport instances, enabling tuning for different deployment environments. (PR #656, contributor: @Lobster-Armlock)
+- **[#657] Optional DCR registration key protection**: Added `MCP_DCR_REGISTRATION_KEY` environment variable to optionally protect the `/oauth/register` Dynamic Client Registration endpoint. When set, requests must include `Authorization: Bearer <key>` (timing-safe comparison via `secrets.compare_digest`). Backward-compatible — when unset, DCR remains open per RFC 7591. (PR #657, contributor: @irizzant)
 
 ## [10.31.2] - 2026-04-03
 
