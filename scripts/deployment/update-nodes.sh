@@ -115,15 +115,8 @@ log_success "Verification passed on $TEST_NODE"
 echo
 
 # Step 3: Deploy to remaining nodes
-log_info "Step 3: Deploy to remaining nodes"
-log_warn "This will update sync script on: ${NODES[*]:1}"
+log_info "Deploying to remaining nodes: ${NODES[*]:1}"
 echo
-read -p "Deploy to all remaining nodes? (y/N): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    log_warn "Cancelled - only test node was updated"
-    exit 0
-fi
 
 FAILED_NODES=()
 SUCCESS_COUNT=0
