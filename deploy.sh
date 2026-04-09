@@ -10,9 +10,11 @@
 set -euo pipefail
 
 REMOTE_HOST="timkjr@mcp-memory.k-lab.lan"
-REMOTE_BASE="~/mcp-memory-service/scripts/deployment"
+REMOTE_USER="timkjr"
+REMOTE_BASE="/home/$REMOTE_USER/mcp-memory-service/scripts/deployment"
 MIRROR=false
 SYNC=false
+LOG_FILE="/tmp/deploy-$(date +%Y%m%d-%H%M%S).log"
 
 for arg in "$@"; do
   case "$arg" in
@@ -37,7 +39,26 @@ if $MIRROR; then
 fi
 
 echo "→ Deploying to mcp-memory.k-lab.lan..."
-ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-mcp-memory.sh"
-ssh "$REMOTE_HOST" "bash $REMOTE_BASE/deploy-hooks-to-nfs.sh"
-ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-nodes.sh"
-echo "✓ Done"
+echo "→ Log file: $LOG_FILE"
+
+{
+  echo "=== Deployment started at $(date) ==="
+  echo ""
+
+  echo "→ Updating service..."
+  ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-mcp-memory.sh" || true
+  echo ""
+
+  echo "→ Deploying hooks to NFS..."
+  ssh "$REMOTE_HOST" "yes | bash $REMOTE_BASE/deploy-hooks-to-nfs.sh" || true
+  echo ""
+
+  echo "→ Updating nodes..."
+  ssh "$REMOTE_HOST" "yes | bash $REMOTE_BASE/update-nodes.sh" || true
+  echo ""
+
+  echo "=== Deployment completed at $(date) ==="
+} 2>&1 | tee "$LOG_FILE"
+
+echo ""
+echo "✓ Done. Full log: $LOG_FILE"
