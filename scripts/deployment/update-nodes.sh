@@ -41,8 +41,8 @@ NODES=(
     "mcp-memory"
 )
 
-log_info "Update Nodes: Hooks & Commands Sync Script"
-log_info "=========================================="
+log_info "Update Nodes: Sync Script Deployment"
+log_info "====================================="
 echo
 
 # Validation
@@ -51,31 +51,8 @@ if [ ! -f "$REFACTORED_SYNC" ]; then
     exit 1
 fi
 
-if [ ! -f "$DEPLOY_SCRIPT" ]; then
-    log_error "Deploy script not found: $DEPLOY_SCRIPT"
-    exit 1
-fi
-
-# Step 1: Deploy hooks to NFS (including install_hooks.py)
-log_info "Step 1: Deploying hooks and commands to NFS canonical location"
-log_warn "This will run: $DEPLOY_SCRIPT"
-echo
-read -p "Deploy to NFS now? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    if bash "$DEPLOY_SCRIPT"; then
-        log_success "NFS deployment successful"
-    else
-        log_error "NFS deployment failed"
-        exit 1
-    fi
-else
-    log_warn "Skipped NFS deployment - ensure NFS is up to date!"
-fi
-echo
-
-# Step 2: Test on one node first
-log_info "Step 2: Testing on first node (${NODES[0]})"
+# Step 1: Test on one node first
+log_info "Testing on first node (${NODES[0]})"
 TEST_NODE="${NODES[0]}"
 
 log_info "Deploying updated sync script to $TEST_NODE..."
