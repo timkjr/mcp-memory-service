@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "memoryService": {
-    "endpoint": "https://memory.example.com",
-    "apiKey": "",
+    "endpoint": "https://memory.timkjr.link",
+    "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
     "timeoutMs": 5000,
     "loadTimeoutMs": 2500,
     "maxMemoriesPerSession": 8,
