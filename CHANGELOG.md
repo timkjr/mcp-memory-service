@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.35.0] - 2026-04-08
+
+### Added
+
+- **Session-level memory ingestion (`memory_store_session` MCP tool)**: New MCP tool that stores a full conversation as a single memory unit. All turns are concatenated as `[role] content` lines and stored with `memory_type=session` and auto-tagged `session:<id>`. Complements turn-level storage: turn-level is best for precise fact retrieval; session-level improves session-recall benchmarks. 10 new handler tests added.
+- **`POST /api/sessions` HTTP endpoint**: REST endpoint for session-level ingestion, mirroring the MCP tool for HTTP API consumers. 7 new endpoint tests added (total: +17 tests, now 1,537).
+- **`--ingestion-mode session|turn|both` flag for LongMemEval benchmark**: Allows apples-to-apples comparison of ingestion strategies. With session mode: R@5 improves from 80.4% to **86.0%** (+5.6%), with largest gains in multi-session (+15.2%) and temporal-reasoning (+10.6%) categories.
+- **`session` and `conversation_turn` memory types**: Added to the memory type ontology so session-level memories are correctly classified and queryable by type.
+- **MemPalace comparison in README**: New section documenting honest benchmark gap context and explaining why session-level ingestion narrows the gap to MemPalace-style approaches.
+
+## [10.34.0] - 2026-04-08
+
+### Added
+
+- **[#665] LongMemEval benchmark**: New benchmark implementation evaluating semantic memory retrieval against the LongMemEval dataset (500 single-session questions, zero LLM API calls). Results: R@5 80.4%, R@10 90.4%, NDCG@10 82.2%, MRR 89.1%. Includes HuggingFace dataset loader (`scripts/benchmarks/longmemeval_dataset.py`), CLI orchestrator with ablation support (`scripts/benchmarks/benchmark_longmemeval.py`), and `ndcg_at_k` metric added to `locomo_evaluator.py`. (PR #665)
+- **[#665] `docs/BENCHMARKS.md`**: New benchmark results documentation covering LongMemEval methodology, results table, and comparison context. (PR #665)
+
 ## [10.33.0] - 2026-04-06
 
 ### Changed

@@ -4,7 +4,7 @@ Welcome to the comprehensive documentation for MCP Memory Service - a Model Cont
 
 ## Quick Start
 
-- **New Users**: Start with the [Installation Guide](installation/master-guide.md)
+- **New Users**: Start with the [Setup Guide](setup-guide.md)
 - **Multi-Client Setup**: See [Multi-Client Integration](integration/multi-client.md)
 - **Docker Users**: Check out [Docker Deployment](deployment/docker.md)
 - **Troubleshooting**: Visit [General Troubleshooting](troubleshooting/general.md)
@@ -13,23 +13,17 @@ Welcome to the comprehensive documentation for MCP Memory Service - a Model Cont
 
 ### 📦 Installation & Setup
 
-- **[Master Installation Guide](installation/master-guide.md)** - Comprehensive installation instructions for all platforms
-- **[Platform-Specific Guides](platforms/)** - Detailed setup for specific operating systems
-  - [macOS Intel](platforms/macos-intel.md) - Intel Mac setup (including legacy 2013-2017 models)
-  - [Windows](platforms/windows.md) - Windows installation with CUDA/DirectML support
-  - [Ubuntu](platforms/ubuntu.md) - Ubuntu setup for desktop and server
+- **[Setup Guide](setup-guide.md)** - Comprehensive installation instructions for all platforms
 
 ### 🔗 Integration & Connectivity
 
 - **[Multi-Client Setup](integration/multi-client.md)** - Share memory across multiple applications
 - **[Homebrew Integration](integration/homebrew.md)** - Use system-installed PyTorch via Homebrew
-- **[Claude Desktop Integration](guides/claude_integration.md)** - Connect with Claude Desktop
 - **[IDE Compatibility](ide-compatability.md)** - VS Code, Continue, and other IDE integrations
 
 ### 🚀 Deployment
 
 - **[Docker Deployment](deployment/docker.md)** - Containerized deployment with various configurations
-- **[Server Deployment](deployment/multi-client-server.md)** - Production server setups
 - **[Cloud Deployment](glama-deployment.md)** - Cloud platform deployment guides
 
 ### 📚 User Guides
@@ -38,7 +32,6 @@ Welcome to the comprehensive documentation for MCP Memory Service - a Model Cont
 - **[Storage Backends](guides/STORAGE_BACKENDS.md)** - ChromaDB vs SQLite-vec comparison and configuration
 - **[Migration Guide](guides/migration.md)** - Migrate between storage backends and versions
 - **[Scripts Reference](guides/scripts.md)** - Available utility scripts
-- **[Invocation Guide](guides/invocation_guide.md)** - Different ways to run the service
 
 ### 🎯 Tutorials & Examples
 
@@ -61,7 +54,6 @@ Welcome to the comprehensive documentation for MCP Memory Service - a Model Cont
 ### 🛠️ Development & Technical
 
 - **[Development Guide](technical/development.md)** - Contributing and development setup
-- **[Architecture Overview](development/multi-client-architecture.md)** - System architecture and design patterns
 - **[Technical Implementation](technical/)** - Deep dive into technical details
   - [Memory Migration](technical/memory-migration.md)
   - [Tag Storage](technical/tag-storage.md)
@@ -70,7 +62,6 @@ Welcome to the comprehensive documentation for MCP Memory Service - a Model Cont
 
 - **[General Troubleshooting](troubleshooting/general.md)** - Common issues and solutions
 - **[Docker Issues](deployment/docker.md#troubleshooting)** - Docker-specific troubleshooting
-- **[Platform-Specific Issues](platforms/)** - Platform-specific troubleshooting sections
 
 ## Project Information
 
@@ -106,7 +97,7 @@ MCP Memory Service enables persistent, semantic memory for AI applications throu
 
 ### Quick Links
 
-- **Installation Issues**: Check the [Installation Guide](installation/master-guide.md) and platform-specific guides
+- **Installation Issues**: Check the [Setup Guide](setup-guide.md) and platform-specific guides
 - **Configuration Problems**: See [Troubleshooting](troubleshooting/general.md)
 - **Multi-Client Setup**: Follow the [Multi-Client Guide](integration/multi-client.md)
 - **Performance Issues**: Review [Performance Tuning](implementation/performance.md)

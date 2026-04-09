@@ -162,6 +162,8 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 
 ## Comparison with Alternatives
 
+### vs. Commercial Memory APIs
+
 | | Mem0 | Zep | DIY Redis+Pinecone | **mcp-memory-service** |
 |---|---|---|---|---|
 | License | Proprietary | Enterprise | — | **Apache 2.0** |
@@ -177,6 +179,27 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 | Hybrid search | No | Yes | Manual | **Yes (BM25 + vector)** |
 | MCP protocol | No | No | No | **Yes** |
 | REST API | Yes | Yes | Manual | **Yes (15 endpoints)** |
+
+### vs. MCP-Native Alternatives
+
+[MemPalace](https://github.com/milla-jovovich/mempalace) (~20k ⭐) is a strong MCP-native alternative worth knowing about.
+
+| | **MemPalace** | **mcp-memory-service** |
+|---|---|---|
+| LongMemEval R@5 (zero LLM) | **96.6%** | 86.0% (session) / 80.4% (turn) |
+| LongMemEval R@5 (with reranking) | **100%**¹ | — |
+| Storage granularity | Session-level | **Turn-level** |
+| Team / multi-device sync | ❌ Local only | **✅ Cloudflare sync** |
+| REST API / Web dashboard | ❌ | **✅** |
+| OAuth 2.1 + multi-user | ❌ | **✅** |
+| Knowledge graph | ❌ | **✅ (typed edges)** |
+| Auto consolidation | ❌ | **✅ (decay + compression)** |
+| Compatible AI tools | Claude-focused | **13+ tools** |
+| License | MIT | **Apache 2.0** |
+
+**Why the benchmark gap?** MemPalace stores each conversation as a single unit (session-level). LongMemEval asks "which session contains the answer?" — a question that session-level storage answers structurally. mcp-memory-service defaults to turn-level storage (one entry per message), which enables fine-grained retrieval ("what exactly did the user say about X?") but spreads a session's signal across many entries. Using `memory_store_session` (session-level ingestion, added in v10.35.0) brings our score to **86.0% R@5** — closing the gap significantly. The remaining difference is primarily due to MemPalace's larger embedding model.
+
+> ¹ 100% result uses optional LLM reranking (~500 API calls) and includes a partially tuned test set. Clean held-out score: **98.4% R@5**.
 
 ---
 
@@ -377,19 +400,23 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.33.0** (April 6, 2026)
+## Latest Release: **v10.35.0** (April 8, 2026)
 
-**refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage**
+**feat: session-level memory ingestion — LongMemEval R@5 86.0% (+5.6% vs turn-level)**
 
 **What's New:**
-- **Event-loop blocking eliminated (#663)**: All ~119 remaining direct `self.conn.execute()` calls in async methods of `SqliteVecMemoryStorage` are now routed through `asyncio.to_thread()` via `_execute_with_retry`, preventing up to 15-second event-loop freezes under concurrent load.
-- **Silent data loss in conflict detection fixed (#663)**: `_record_conflicts` was writing conflict tags and graph edges but never committing — all conflict data was silently discarded. Fixed with `self.conn.commit()` inside the closure.
-- **SAVEPOINT concurrency safety (#663)**: Added `_savepoint_lock` (asyncio.Lock) to serialize `store`/`store_batch`/`evolve_memory` SAVEPOINT sections, preventing interleaved SAVEPOINT stacks and "no such savepoint" errors under concurrent load.
-- **1,520 tests** passing.
+- **`memory_store_session` MCP tool**: Stores a full conversation as a single memory unit — all turns concatenated as `[role] content`, stored with `memory_type=session` and auto-tagged `session:<id>`.
+- **`POST /api/sessions` HTTP endpoint**: REST endpoint for session-level ingestion mirroring the MCP tool.
+- **LongMemEval session-mode results**: R@5 86.0% (+5.6% vs turn-level), with biggest gains in multi-session (+15.2%) and temporal-reasoning (+10.6%) categories.
+- **`--ingestion-mode session|turn|both`** flag for LongMemEval benchmark for direct strategy comparison.
+- **`session` and `conversation_turn` memory types** added to the ontology.
+- **1,537 tests** passing (+17 new: 10 handler + 7 HTTP endpoint tests).
 
 ---
 
 **Previous Releases**:
+- **v10.34.0** - feat: LongMemEval benchmark — R@5 80.4%, R@10 90.4%, NDCG@10 82.2%, MRR 89.1% (PR #665, 1,520 tests)
+- **v10.33.0** - refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage (PR #663, 1,520 tests)
 - **v10.32.0** - feat: transport health endpoint + configurable timeouts + optional DCR registration key protection (community PRs #656, #657, 1,520 tests)
 - **v10.31.2** - fix: storage consistency, error handling, and upload progress — `_safe_json_loads` consistency, non-JSON error handling, upload progress tracking (community PRs #648, #649, #650, 1,503 tests)
 - **v10.31.1** - fix: tombstone blocks re-insertion after delete of same content (#644) — `_purge_tombstone()` before INSERT (1,521 tests)
@@ -503,7 +530,18 @@ result = storage.find_connected(
 
 ### Retrieval Benchmarks
 
-Two benchmarks measure retrieval quality (all-MiniLM-L6-v2, 384d embeddings):
+Three benchmarks measure retrieval quality (all-MiniLM-L6-v2, 384d embeddings, zero LLM API calls):
+
+**LongMemEval** ([500 questions](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned), ~45–62 distractor sessions per question):
+
+| Question Type | R@5 | R@10 | NDCG@10 | MRR |
+|---------------|-----|------|---------|-----|
+| **Overall** | **80.4%** | **90.4%** | **82.2%** | **89.1%** |
+| single-session-assistant | 100.0% | 100.0% | 99.3% | 99.1% |
+| knowledge-update | 84.6% | 96.8% | 86.2% | 95.5% |
+| single-session-user | 91.4% | 92.9% | 86.0% | 83.8% |
+| temporal-reasoning | 72.0% | 84.1% | 75.1% | 85.7% |
+| multi-session | 70.7% | 86.0% | 77.6% | 89.4% |
 
 **DevBench** (practical developer workflow queries):
 
@@ -522,7 +560,7 @@ Two benchmarks measure retrieval quality (all-MiniLM-L6-v2, 384d embeddings):
 | multi-hop | 72.0% | 0.600 |
 | temporal | 33.5% | 0.274 |
 
-Run benchmarks: `python scripts/benchmarks/benchmark_devbench.py` and `python scripts/benchmarks/benchmark_locomo.py`
+Run benchmarks: `python scripts/benchmarks/benchmark_longmemeval.py`, `python scripts/benchmarks/benchmark_devbench.py`, `python scripts/benchmarks/benchmark_locomo.py`
 
 ### Performance Improvements
 
