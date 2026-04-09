@@ -165,8 +165,9 @@ if [ ! -d "$OPENCODE_CANONICAL" ]; then
 else
     # Create local plugin dir if needed
     mkdir -p "$OPENCODE_PLUGINS_LOCAL"
+    mkdir -p "$OPENCODE_CONFIG_LOCAL"
 
-    # Check for updates
+    # Check for updates (version mismatch)
     if [ ! -f "$OPENCODE_LOCAL_VER" ] || ! diff -q "$OPENCODE_CANONICAL_VER" "$OPENCODE_LOCAL_VER" &>/dev/null; then
         logger -t "$LOG_TAG" "OpenCode plugin version change detected, syncing..."
 
@@ -177,12 +178,6 @@ else
         echo "$RSYNC_OUT" | logger -t "$LOG_TAG"
 
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Create default config from example if it doesn't exist
-            if [ ! -f "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" ] && [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" ]; then
-                logger -t "$LOG_TAG" "Creating memory-plugin.json from example config..."
-                cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
-            fi
-
             cp "$OPENCODE_CANONICAL_VER" "$OPENCODE_LOCAL_VER"
             logger -t "$LOG_TAG" "OpenCode plugin synced successfully"
             echo "SUCCESS: OpenCode plugin synced successfully"
@@ -192,5 +187,12 @@ else
         fi
     else
         logger -t "$LOG_TAG" "OpenCode plugin already up to date"
+    fi
+
+    # Always create config from example if it doesn't exist (handles new/reset nodes)
+    if [ ! -f "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" ] && [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" ]; then
+        logger -t "$LOG_TAG" "Creating memory-plugin.json from example config..."
+        cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
+        echo "SUCCESS: Created memory-plugin.json from example"
     fi
 fi
