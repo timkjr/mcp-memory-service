@@ -6,7 +6,7 @@ Open-source memory backend for multi-agent systems.
 Agents store decisions, share causal knowledge graphs, and retrieve
 context in 5ms — without cloud lock-in or API costs.
 
-**Works with LangGraph · CrewAI · AutoGen · any HTTP client · Claude Desktop**
+**Works with LangGraph · CrewAI · AutoGen · any HTTP client · Claude Desktop · OpenCode**
 
 ---
 
@@ -291,6 +291,35 @@ Restart Claude Code. Memory tools will appear automatically.
 </details>
 
 <details>
+<summary><strong>OpenCode</strong></summary>
+
+Start the HTTP API:
+
+```bash
+MCP_ALLOW_ANONYMOUS_ACCESS=true memory server --http
+```
+
+Install the local plugin:
+
+```bash
+git clone https://github.com/doobidoo/mcp-memory-service.git
+cd mcp-memory-service
+mkdir -p ~/.config/opencode/plugins
+cp opencode/memory-plugin.js ~/.config/opencode/plugins/
+cp opencode/memory-plugin.config.example.json ~/.config/opencode/memory-plugin.json
+```
+
+OpenCode automatically loads local plugins from `~/.config/opencode/plugins/` and `.opencode/plugins/`.
+
+See [OpenCode integration guide](opencode/README.md) for configuration, project-local installs, and current limitations.
+
+> The current OpenCode integration ships as repository files for the local plugin directory. If you installed only the PyPI package, clone the repository once to copy the plugin files.
+>
+> The plugin defaults to `http://127.0.0.1:8000`, but `memoryService.endpoint` and `OPENCODE_MEMORY_ENDPOINT` let you target any reachable HTTP deployment.
+
+</details>
+
+<details>
 <summary><strong>🌐 claude.ai (Browser — Remote MCP)</strong></summary>
 
 No local installation required on the client — works directly in your browser:
@@ -400,21 +429,19 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.35.0** (April 8, 2026)
+## Latest Release: **v10.36.0** (April 9, 2026)
 
-**feat: session-level memory ingestion — LongMemEval R@5 86.0% (+5.6% vs turn-level)**
+**feat: OpenCode memory awareness integration + lite package version sync fix**
 
 **What's New:**
-- **`memory_store_session` MCP tool**: Stores a full conversation as a single memory unit — all turns concatenated as `[role] content`, stored with `memory_type=session` and auto-tagged `session:<id>`.
-- **`POST /api/sessions` HTTP endpoint**: REST endpoint for session-level ingestion mirroring the MCP tool.
-- **LongMemEval session-mode results**: R@5 86.0% (+5.6% vs turn-level), with biggest gains in multi-session (+15.2%) and temporal-reasoning (+10.6%) categories.
-- **`--ingestion-mode session|turn|both`** flag for LongMemEval benchmark for direct strategy comparison.
-- **`session` and `conversation_turn` memory types** added to the ontology.
-- **1,537 tests** passing (+17 new: 10 handler + 7 HTTP endpoint tests).
+- **OpenCode integration** (`opencode/memory-plugin.js`): New community-contributed plugin that injects memories into OpenCode sessions via the HTTP API — session-start retrieval, system-context injection, and compaction-context injection. Includes setup docs and example config. (by @irizzant)
+- **Lite package version sync fix**: `mcp-memory-service-lite` was stuck at 8.76.0 on PyPI. Synced to current version, added `pyproject-lite.toml` to release automation, and added CI fallback sync step.
+- **1,537 tests** passing.
 
 ---
 
 **Previous Releases**:
+- **v10.35.0** - feat: session-level memory ingestion — `memory_store_session` MCP tool + `POST /api/sessions` — LongMemEval R@5 86.0% (+5.6%) (PR #666, 1,537 tests)
 - **v10.34.0** - feat: LongMemEval benchmark — R@5 80.4%, R@10 90.4%, NDCG@10 82.2%, MRR 89.1% (PR #665, 1,520 tests)
 - **v10.33.0** - refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage (PR #663, 1,520 tests)
 - **v10.32.0** - feat: transport health endpoint + configurable timeouts + optional DCR registration key protection (community PRs #656, #657, 1,520 tests)
@@ -586,6 +613,7 @@ If you encounter issues during migration:
 ## 📚 Documentation & Resources
 
 - **[Agent Integration Guides](docs/agents/)** 🆕 – LangGraph, CrewAI, AutoGen, HTTP generic
+- **[OpenCode Integration](opencode/README.md)** 🆕 – Local plugin for memory retrieval and context injection
 - **[Remote MCP Setup (claude.ai)](docs/remote-mcp-setup.md)** 🆕 – Browser integration via HTTPS + OAuth
 - **[Setup Guide](docs/setup-guide.md)** – Decision tree + step-by-step paths for all use cases
 - **[Configuration Guide](docs/mastery/configuration-guide.md)** – Backend options and customization
