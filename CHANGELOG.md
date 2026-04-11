@@ -10,6 +10,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.36.4] - 2026-04-10
+
+### Fixed
+
+- **[#687] `Get-McpApiKey` returned first character of API key instead of full key**: A Gemini-suggested refactor in v10.36.3 replaced a working implementation with `($matches[1], $matches[2], $matches[3] | Where-Object { $_ -ne $null })[0]`. Unmatched regex capture groups are absent from `$matches` (not `$null`), so when only one group matched the comma expression produced a single-element string, which PowerShell enumerated to its `Char` array — making `[0]` return `'b'` instead of `bxvWZwrI...`. This broke `manage_service.ps1 status` for all Windows users: Version and Backend showed `(unavailable - set MCP_API_KEY in .env for details)` even when the key was correctly configured. Fixed by replacing the comma expression with an explicit `if/elseif` chain using `$matches.ContainsKey(N)` and `[string]` casts. Verified live: returns full 43-character key string, `manage_service.ps1 status` correctly displays Version and Backend.
+
+## [10.36.3] - 2026-04-10
+
+### Fixed
+
+- **[#685] Dashboard Settings modal version row showed N/A permanently**: `SYSTEM_INFO_CONFIG.settingsVersion` in `app.js` was still configured to fetch from `api: 'health'` (the public endpoint). The v10.21.0 security hardening (GHSA-73hc-m4hx-79pj) removed `version`, `timestamp`, and `uptime_seconds` from `/api/health`, so the Settings modal Version row had been displaying `N/A` for ~4 months. Fixed by pointing the config entry to `'detailedHealth'`, consistent with the header version badge which was already migrated. (PR #685)
+- **[#685] `manage_service.ps1 status` showed blank Version and Backend**: `Get-ServerStatus` parsed `version` and `storage_backend` from the public `/api/health` response, fields that no longer exist since v10.21.0. Migrated to `/api/health/detailed` with Bearer auth when `MCP_API_KEY` is available; `Show-Status` now displays real version/backend values or a clear hint when the key is not configured. Introduced `Get-McpApiKey` helper in `lib/server-config.ps1` that parses `MCP_API_KEY` from `.env` with support for trailing comments, quoting, and whitespace — keys containing `#` inside quoted values are handled correctly. Falls back to `$null` gracefully when key is absent. (PR #685, regression introduced by GHSA-73hc-m4hx-79pj)
+
+### Documentation
+
+- Added English-language policy to issue templates (bug, feature, performance) and CONTRIBUTING.md (PR #683)
+
+## [10.36.2] - 2026-04-10
+
+### Fixed
+
+- **[#682] Hardcoded server URLs in Windows management scripts**: All 5 Windows PowerShell management scripts (`manage_service.ps1`, `run_http_server_background.ps1`, `install_scheduled_task.ps1`, `uninstall_scheduled_task.ps1`, `update_and_restart.ps1`) used a hardcoded `http://127.0.0.1:8000` URL regardless of `.env` configuration. Health checks failed silently as soon as a user enabled HTTPS (`MCP_HTTPS_ENABLED=true`) or changed the port (`MCP_HTTP_PORT`). Introduced `scripts/service/windows/lib/server-config.ps1` as a shared helper that parses `.env` for `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, and `MCP_HTTPS_ENABLED` and returns a `BaseUrl`/`HealthUrl` hashtable. All scripts now dot-source this helper. Falls back to `http://127.0.0.1:8000` if `.env` is absent or variables are unset — fully backward-compatible. (PR #682)
+- **[#682] Silent Python stdout/stderr dropout in background server wrapper**: `run_http_server_background.ps1` used .NET `OutputDataReceived` event handlers that referenced `$script:LogFile`, a variable not captured in the event handler runspace. Every line of Python stdout and stderr was silently discarded. When Python crashed during initialization, no error was ever surfaced in the log. Replaced with `Start-Process -RedirectStandardOutput`/`-RedirectStandardError` which writes directly to `http-server-python.log` and a `.err` sidecar, eliminating the runspace capture problem entirely. (PR #682)
+- **[#682] Log overwrite destroys crash evidence in restart loop**: `Start-Process` overwrites the redirect target file on each invocation. The previous size-based rotation (`> 10MB`) meant that on a crash-restart cycle, the crash output from attempt N was silently destroyed by attempt N+1 before it could be inspected. Rotation is now unconditional at the start of each loop iteration: the current log is renamed to `.old` before `Start-Process` is called, preserving the most recent crash output. (PR #682, Gemini review feedback)
+
+### Changed
+
+- **[#682] `.env` regex strips trailing inline comments**: The `.env` parser in `server-config.ps1` now uses `([^#\r\n]*?)` to capture values, so `MCP_HTTP_PORT=8001 # my custom port` parses correctly as `8001` rather than failing `[int]::TryParse`. (PR #682, Gemini review feedback)
+- **[#682] TLS protocol uses additive `-bor` instead of replacement**: `Enable-McpSelfSignedCertBypass` previously replaced the session's `SecurityProtocol` with `Tls12` outright, which would have disabled TLS 1.3 if already enabled. Now uses `-bor` to add `Tls12` to the existing protocol set without removing newer protocols. (PR #682, Gemini review feedback)
+
+## [10.36.1] - 2026-04-10
+
+### Fixed
+
+- **[#678] SQLite-vec segfault under concurrent worker-thread access**: The `sqlite-vec` extension is not thread-safe; `check_same_thread=False` only disables Python's safety check. Concurrent calls to `self.conn` from multiple `asyncio.to_thread()` workers could crash inside the C extension. Added a per-storage `threading.Lock` (`_conn_lock`) and a `_run_in_thread()` helper that serializes every worker-thread DB call. Routed `_execute_with_retry`, migrations, FTS5 init, embedding-dimension probe, and conflict detection through the new helper. Observed as `Fatal Python error: Segmentation fault` in `_get_stats` on Ubuntu CI. (PR #678)
+- **[#678] SQLite-vec use-after-close segfault on hybrid shutdown**: `HybridStorage.close()` cancels background sync tasks, but cancellation only delivers `CancelledError` to the outer coroutine — an `asyncio.to_thread()` worker mid-query keeps running. The subsequent `primary.close()` then freed the connection underneath the worker, crashing sqlite3/sqlite-vec. `SqliteVecMemoryStorage.close()` now acquires `_conn_lock` before closing, so any in-flight worker finishes first. (PR #678)
+- **[#678] Corrupt `connection_types` in conflict graph edges**: `_record_conflicts` stored `connection_types` as the bare string `"semantic"` instead of a JSON-encoded list, which then crashed downstream graph readers with `JSONDecodeError`. Encoded as `json.dumps(["semantic"])` and hardened `GraphStorage.get_subgraph()` to tolerate legacy corrupt rows instead of crashing the request. (PR #678)
+
+### Tests
+
+- **[#678] Thread-safety test rewrite**: `test_execute_with_retry_does_not_block_loop` previously asserted that two DB operations run truly in parallel on a shared connection — exactly the pattern that caused the segfault. Rewritten to verify the actual property (the asyncio event loop stays responsive while a slow DB op runs in a worker thread), using a 5×50 ms `asyncio.sleep` probe. (PR #678)
+- **[#678] Stale ontology type count**: Bumped `test_total_type_count` from 75 → 77 after new burst types were added without updating the assertion. (PR #678)
+- **[#678] Semantic dedup collision in graph edge cleanup test**: `test_delete_by_tag_removes_graph_edges` stored near-duplicate content ("Tagged mem 1"/"Tagged mem 2") which dedup dropped when the embedding model was loaded by prior tests in the suite. Passed `skip_semantic_dedup=True` since the test's subject is edge cleanup, not dedup semantics. (PR #678)
+
 ## [10.36.0] - 2026-04-09
 
 ### Added

@@ -182,13 +182,13 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 
 ### vs. MCP-Native Alternatives
 
-[MemPalace](https://github.com/milla-jovovich/mempalace) (~20k ⭐) is a strong MCP-native alternative worth knowing about.
+[MemPalace](https://github.com/milla-jovovich/mempalace) is an MCP-native alternative that went viral in April 2026 with strong LongMemEval claims. A [community code review (Issue #27)](https://github.com/milla-jovovich/mempalace/issues/27) subsequently showed that the headline numbers reflect the underlying vector store rather than the advertised Palace architecture, and the maintainers acknowledged most points. We keep the comparison here for transparency, but readers should interpret the scores with that context in mind.
 
 | | **MemPalace** | **mcp-memory-service** |
 |---|---|---|
-| LongMemEval R@5 (zero LLM) | **96.6%** | 86.0% (session) / 80.4% (turn) |
-| LongMemEval R@5 (with reranking) | **100%**¹ | — |
-| Storage granularity | Session-level | **Turn-level** |
+| LongMemEval R@5 (raw ChromaDB, zero LLM) | 96.6%¹ | 86.0% (session) / 80.4% (turn) |
+| LongMemEval R@5 (with reranking) | 100%² | — |
+| Storage granularity | Session-level | **Turn-level + session-level** |
 | Team / multi-device sync | ❌ Local only | **✅ Cloudflare sync** |
 | REST API / Web dashboard | ❌ | **✅** |
 | OAuth 2.1 + multi-user | ❌ | **✅** |
@@ -197,9 +197,14 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 | Compatible AI tools | Claude-focused | **13+ tools** |
 | License | MIT | **Apache 2.0** |
 
-**Why the benchmark gap?** MemPalace stores each conversation as a single unit (session-level). LongMemEval asks "which session contains the answer?" — a question that session-level storage answers structurally. mcp-memory-service defaults to turn-level storage (one entry per message), which enables fine-grained retrieval ("what exactly did the user say about X?") but spreads a session's signal across many entries. Using `memory_store_session` (session-level ingestion, added in v10.35.0) brings our score to **86.0% R@5** — closing the gap significantly. The remaining difference is primarily due to MemPalace's larger embedding model.
+**Why the benchmark gap?** Two independent factors:
 
-> ¹ 100% result uses optional LLM reranking (~500 API calls) and includes a partially tuned test set. Clean held-out score: **98.4% R@5**.
+1. **Ingestion granularity.** MemPalace stores each conversation as a single unit (session-level). LongMemEval asks "which session contains the answer?" — a question that session-level storage answers structurally. mcp-memory-service defaults to turn-level storage (one entry per message), which enables fine-grained retrieval ("what exactly did the user say about X?") but spreads a session's signal across many entries. Using `memory_store_session` (added in v10.35.0) brings our score to **86.0% R@5**.
+2. **What the 96.6% actually measures.** Per Issue #27, MemPalace's headline number is produced in "raw mode" — plain text stored in ChromaDB with default embeddings. The Palace architecture (Wings, Rooms, Halls) is **not active** in that configuration; "Halls" exist only as metadata strings with no effect on ranking. The 96.6% is therefore a ChromaDB + default-embedding baseline, not a measurement of MemPalace's structural retrieval features. A direct "apples-to-apples" architectural comparison is not possible with the published numbers.
+
+> ¹ Measured in MemPalace "raw mode" (plain text in ChromaDB with default embeddings). Per [Issue #27](https://github.com/milla-jovovich/mempalace/issues/27), the Palace structural features are bypassed in this configuration.
+>
+> ² 100% result uses optional LLM reranking (~500 API calls) on a partially tuned test set. Clean held-out score (as reported by the maintainers): **98.4% R@5**.
 
 ---
 
@@ -429,18 +434,21 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.36.0** (April 9, 2026)
+## Latest Release: **v10.36.4** (April 10, 2026)
 
-**feat: OpenCode memory awareness integration + lite package version sync fix**
+**fix(windows): hotfix for Get-McpApiKey returning first char instead of full API key**
 
-**What's New:**
-- **OpenCode integration** (`opencode/memory-plugin.js`): New community-contributed plugin that injects memories into OpenCode sessions via the HTTP API — session-start retrieval, system-context injection, and compaction-context injection. Includes setup docs and example config. (by @irizzant)
-- **Lite package version sync fix**: `mcp-memory-service-lite` was stuck at 8.76.0 on PyPI. Synced to current version, added `pyproject-lite.toml` to release automation, and added CI fallback sync step.
-- **1,537 tests** passing.
+**What's Fixed:**
+- **`Get-McpApiKey` returned first character of API key (regression from v10.36.3)**: A Gemini-suggested refactor introduced a PowerShell array-enumeration trap — `($matches[1], $matches[2], $matches[3] | Where-Object { $_ -ne $null })[0]` returned `'b'` instead of the full key. Fixed with an explicit `if/elseif` chain using `$matches.ContainsKey()` and `[string]` casts. `manage_service.ps1 status` now correctly shows Version and Backend for all Windows users.
+- **1,537 tests** passing. (PR #687)
 
 ---
 
 **Previous Releases**:
+- **v10.36.3** - fix(dashboard): restore version badge after v10.21.0 security hardening — Settings modal version row fixed, `manage_service.ps1 status` shows real Version/Backend (PR #685, 1,537 tests)
+- **v10.36.2** - fix(windows): env-aware management scripts + reliable stdout logging — hardcoded URLs eliminated, Python stdout reliably captured, log rotation per restart (PR #682, 1,537 tests)
+- **v10.36.1** - fix: SQLite-vec segfault under concurrent worker-thread access + use-after-close crash on hybrid shutdown + corrupt connection_types in conflict graph edges (PR #678, 1,537 tests)
+- **v10.36.0** - feat: OpenCode memory awareness integration (@irizzant, PR #673) + lite package version sync fix (PR #675, 1,537 tests)
 - **v10.35.0** - feat: session-level memory ingestion — `memory_store_session` MCP tool + `POST /api/sessions` — LongMemEval R@5 86.0% (+5.6%) (PR #666, 1,537 tests)
 - **v10.34.0** - feat: LongMemEval benchmark — R@5 80.4%, R@10 90.4%, NDCG@10 82.2%, MRR 89.1% (PR #665, 1,520 tests)
 - **v10.33.0** - refactor: eliminate event-loop blocking + fix silent conflict data loss in SQLite storage (PR #663, 1,520 tests)
