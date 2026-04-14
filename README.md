@@ -434,17 +434,20 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.36.4** (April 10, 2026)
+## Latest Release: **v10.36.7** (April 14, 2026)
 
-**fix(windows): hotfix for Get-McpApiKey returning first char instead of full API key**
+**security: Bump pygments to 2.20.0 (CVE-2026-4539)**
 
 **What's Fixed:**
-- **`Get-McpApiKey` returned first character of API key (regression from v10.36.3)**: A Gemini-suggested refactor introduced a PowerShell array-enumeration trap — `($matches[1], $matches[2], $matches[3] | Where-Object { $_ -ne $null })[0]` returned `'b'` instead of the full key. Fixed with an explicit `if/elseif` chain using `$matches.ContainsKey()` and `[string]` casts. `manage_service.ps1 status` now correctly shows Version and Backend for all Windows users.
-- **1,537 tests** passing. (PR #687)
+- **CVE-2026-4539** (GHSA-5239-wwwm-4pmq): Bumped `pygments` to 2.20.0 to fix a ReDoS vulnerability via inefficient regex for GUID matching. Transitive dependency via rich. (PR #698)
+- **1,537 tests** passing.
 
 ---
 
 **Previous Releases**:
+- **v10.36.6** - security: bump cryptography to 46.0.7 (CVE-2026-39892) — buffer overflow fix in non-contiguous buffer handling (PR #690, 1,537 tests)
+- **v10.36.5** - fix: Cloudflare Vectorize API v1 to v2 + test script fixes — fixed error 1010 "incorrect_api_version", content_hash arg, sys.path correction (PR #689, @mychaelgo, 1,537 tests)
+- **v10.36.4** - fix(windows): hotfix for Get-McpApiKey returning first char instead of full API key — PowerShell array-enumeration trap fixed (PR #687, 1,537 tests)
 - **v10.36.3** - fix(dashboard): restore version badge after v10.21.0 security hardening — Settings modal version row fixed, `manage_service.ps1 status` shows real Version/Backend (PR #685, 1,537 tests)
 - **v10.36.2** - fix(windows): env-aware management scripts + reliable stdout logging — hardcoded URLs eliminated, Python stdout reliably captured, log rotation per restart (PR #682, 1,537 tests)
 - **v10.36.1** - fix: SQLite-vec segfault under concurrent worker-thread access + use-after-close crash on hybrid shutdown + corrupt connection_types in conflict graph edges (PR #678, 1,537 tests)
