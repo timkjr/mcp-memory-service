@@ -190,9 +190,9 @@ else
     fi
 
     # Always create config from example if it doesn't exist (handles new/reset nodes)
-    if [ ! -f "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" ] && [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" ]; then
+    if [ ! -f "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" ] && [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" ]; then
         logger -t "$LOG_TAG" "Creating memory-plugin.json from example config..."
-        cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.example.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
+        cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
         echo "SUCCESS: Created memory-plugin.json from example"
     fi
 fi

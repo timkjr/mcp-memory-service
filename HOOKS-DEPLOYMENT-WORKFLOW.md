@@ -90,7 +90,7 @@ The OpenCode Memory Awareness Plugin provides automatic memory context injection
 
 ### Plugin Files
 - **Plugin binary**: `memory-plugin.js` → deployed to `~/.config/opencode/plugins/`
-- **Example config**: `memory-plugin.config.example.json` → deployed to same directory
+- **Example config**: `memory-plugin.config.json` → deployed to same directory
 - **User config**: `memory-plugin.json` → created from example on first sync (preserved if exists)
 
 ### Configuration

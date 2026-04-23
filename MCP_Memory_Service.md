@@ -42,7 +42,7 @@ The plugin is deployed automatically via the deployment scripts:
 mcp-memory-service repo
     └── opencode/
         ├── memory-plugin.js          # Plugin binary
-        └── memory-plugin.config.example.json  # Default config template
+        └── memory-plugin.config.json  # Default config template
 ```
 
 Deployed to: `~/.config/opencode/plugins/memory-plugin.js`
