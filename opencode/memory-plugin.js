@@ -349,6 +349,10 @@ export const OpenCodeMemoryPlugin = async ({ client, directory }, options = {}) 
   const healthState = { checked: false }
   const appLog = client.app.log.bind(client.app)
 
+  const logDebug = async (message) => {
+    await appLog({ body: { service: "opencode-memory", level: "info", message: `[DEBUG] ${message}` } }).catch(() => {})
+  }
+
   const logInfo = async (message) => {
     if (!config.output.verbose) return
     await appLog({ body: { service: "opencode-memory", level: "info", message } }).catch(() => {})
@@ -358,6 +362,8 @@ export const OpenCodeMemoryPlugin = async ({ client, directory }, options = {}) 
     if (!config.output.verbose) return
     await appLog({ body: { service: "opencode-memory", level: "warn", message } }).catch(() => {})
   }
+
+  await logDebug(`Plugin initialized. directory=${directory}, endpoint=${config.memoryService.endpoint}`)
 
   const refreshSession = (sessionID, sessionDirectory) => {
     const existingState = sessionState.get(sessionID)
@@ -422,7 +428,9 @@ export const OpenCodeMemoryPlugin = async ({ client, directory }, options = {}) 
 
   return {
     event: async ({ event }) => {
+      await logDebug(`Event received: ${event.type}`)
       if (event.type === "session.created") {
+        await logDebug(`Session created: ${JSON.stringify(event.properties?.info)}`)
         refreshSession(event.properties.info.id, event.properties.info.directory || directory)
       }
 
