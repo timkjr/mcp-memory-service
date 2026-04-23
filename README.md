@@ -358,6 +358,9 @@ Choose from:
 - **SQLite** (local, fast, single-user)
 - **Cloudflare** (cloud, multi-device sync)
 - **Hybrid** (best of both: 5ms local + background cloud sync)
+- **Milvus** (dedicated vector DB — Milvus Lite file, self-hosted, or Zilliz Cloud)
+
+> ℹ️ For long-lived services (MCP servers, web backends, notebook sessions), prefer Docker Milvus or Zilliz Cloud over Milvus Lite. See [docs/milvus-backend.md](docs/milvus-backend.md#which-uri-to-use) for why.
 
 </details>
 
@@ -434,17 +437,22 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.39.1** (April 19, 2026)
+## Latest Release: **v10.40.1** (April 21, 2026)
 
-**hotfix: plugin.json author field format — unblocks `/plugin install mcp-memory-service`**
+**fix(sync): CF hybrid sync reliability + reporting accuracy**
 
 **What's New:**
-- **Hotfix for v10.39.0 plugin install**: `plugin.json` `author` field now uses the required object format (`{"name": "..."}`) instead of a string. Users who hit `Validation errors: author: Invalid input: expected object, received string` on `/plugin install mcp-memory-service` should upgrade to v10.39.1. Thanks @yingzhi0808 for the report (#738) and fix (#739).
-- **1,547 Python tests** passing.
+- **`POST /api/sync/force` reliably completes**: Deduplication now skips already-synced memories before embedding, eliminating "0 synced / N failed" from CF Workers AI rate-limit exhaustion. (PR #753)
+- **Sync status flag reflects current health**: `sync_ok` no longer latches `False` from historical errors — it tracks the most-recent sync attempt. (PR #751)
+- **CF stats exclude tombstones**: Remote memory totals no longer inflate with soft-deleted records. (PR #751)
+- **Reduced timezone-mismatch log noise**: Spurious drift warnings from UTC vs naive-datetime comparisons are suppressed. (PR #751)
+- **1,675 Python tests** passing.
 
 ---
 
 **Previous Releases**:
+- **v10.40.0** - feat: Milvus storage backend (Lite / self-hosted / Zilliz Cloud), OAuth XSS hardening, plugin shape validation (PRs #721, #745, #740)
+- **v10.39.1** - hotfix: plugin.json author field object format — unblocks `/plugin install mcp-memory-service` (#738, #739)
 - **v10.39.0** - feat: Claude Code plugin install (`/plugin marketplace add doobidoo/mcp-memory-service`) + MemoryClient.storeMemory() protocol-native writes (PRs #736, #735)
 - **v10.38.4** - fix(mcp): return HTTP 202 for JSON-RPC notifications — fixes Codex/strict-client handshake (PR #733)
 - **v10.38.3** - fix: Server tab auto-check, list_memories total_pages, knowledge graph edge rendering (PRs #728, #731, #730)
