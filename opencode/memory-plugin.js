@@ -270,7 +270,7 @@ async function searchMemories(config, query, tags, limit) {
     payload.tags = tags
   }
 
-  const result = await requestJson(config, "/api/memories/search", {
+  const result = await requestJson(config, "/api/search", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
