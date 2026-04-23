@@ -127,7 +127,7 @@ function buildHeaders(config, extraHeaders = {}) {
   }
 
   if (config.memoryService.apiKey) {
-    headers.Authorization = `Bearer ${config.memoryService.apiKey}`
+    headers["X-API-Key"] = config.memoryService.apiKey
   }
 
   return headers
