@@ -10,6 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **[#759] `memory_graph` tool for streamable-http MCP server**: Knowledge graph operations (find connected memories, shortest path, subgraph extraction) are now available in the FastMCP streamable-http server, matching the capabilities already present in stdio mode. Introduces a shared `GraphService` business-logic layer under `src/mcp_memory_service/services/graph_service.py` so both server variants reuse the same traversal + error-handling code paths. Graph operations require `sqlite_vec` or `hybrid` storage backends; `milvus` and `cloudflare` backends return a structured unavailability error instead of crashing. 14 unit tests for `GraphService`. Thanks to @henry201605 for the contribution. (PR #759)
+
+### Fixed
+
+- **[#759] Test isolation: `test_graph_service.py` no longer pollutes `sys.modules`**: The lightweight stub used to import `GraphService` without heavy dependencies previously replaced `mcp_memory_service.storage.graph` unconditionally at module-import time. This caused cascading `TypeError: _StubGraphStorage() takes no arguments` failures in `tests/test_graph_traversal.py` and `tests/web/api/test_analytics_graph.py` whenever `test_graph_service.py` was collected first. The stub is now only installed if the real module fails to import, preserving isolation in CI where dependencies are available.
+- **[#759] Removed unused `List` import in `graph_service.py`**: CodeQL alert #391 (unused import).
+
+## [10.40.3] - 2026-04-24
+
+### Fixed
+
+- **claude-hooks: socket hang-up on multi-phase retrieval eliminated** (`memory-client.js`): Node.js HTTPS agent defaults to `keepAlive: true`, which causes Uvicorn to close idle sockets after ~5 s. The hook is a one-shot CLI process — keepAlive provides zero benefit and caused subsequent phase requests to reuse dead sockets, producing `ECONNRESET` ("socket hang up"). Added `agent: false` and `Connection: close` header to `_attemptHealthCheck`, `storeMemoryHTTP`, and `_performApiPost`. Also added a 10 s request timeout + timeout handler to `_performApiPost` (previously unset) for consistency with the other two paths and to ensure slow semantic-search queries fail fast rather than starving the overall HOOK_TIMEOUT. Intermittent silent partial-injection failures are resolved.
+- **claude-hooks: HOOK_TIMEOUT raised from 9.5 s to 28 s** (`session-start.js`): Phase 0 (git query) + Phase 1 (recent memories) + Phase 2 (tagged memories) with a cold Python cache takes 12–15 s total. The 9.5 s budget expired before `formatMemoriesForContext()` ran, so memories were fetched but the injection block was never written — the hook appeared to "not work" in the Claude Code VSCode extension. Internal constant raised to 28 000 ms.
+- **claude-hooks installer: outer process timeout raised from 10 s to 30 s** (`install_hooks.py`): The `timeout` field written into `~/.claude/settings.json` is Claude Code's hard kill limit for the hook process. Must be ≥ internal HOOK_TIMEOUT plus cleanup buffer; was 10 s (less than the old internal limit of 9.5 s leaving no headroom). Updated to 30 s.
+
+## [10.40.2] - 2026-04-23
+
+### Fixed
+
+- **[#756] Docker: ONNX model pre-download now actually executes at build time**: The `python -c "..."` one-liner in `tools/docker/Dockerfile.slim` used `try/except` compound statements with backslash continuations — a construct Python rejects with `SyntaxError`. The shell `|| echo` fallback was silently swallowing the error, so the model cache was never populated. Replaced with a simple expression chain (`import; call; print`) and let the shell `||` fallback handle genuine download failures as originally intended. Cold-start time on `Dockerfile.slim` drops from ~30s to ~3s; prevents Fly.io 40s health-check grace-period timeouts. `Dockerfile` (non-slim) gets the same fix for its `onnxruntime` availability check. Thanks to @netizen1119 for the report, root-cause analysis, and verified fix. (PR #757)
+
 ## [10.40.1] - 2026-04-21
 
 ### Fixed

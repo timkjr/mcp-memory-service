@@ -437,20 +437,21 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.40.1** (April 21, 2026)
+## Latest Release: **v10.40.3** (April 24, 2026)
 
-**fix(sync): CF hybrid sync reliability + reporting accuracy**
+**fix(claude-hooks): eliminate socket hang-up and raise hook timeout**
 
 **What's New:**
-- **`POST /api/sync/force` reliably completes**: Deduplication now skips already-synced memories before embedding, eliminating "0 synced / N failed" from CF Workers AI rate-limit exhaustion. (PR #753)
-- **Sync status flag reflects current health**: `sync_ok` no longer latches `False` from historical errors — it tracks the most-recent sync attempt. (PR #751)
-- **CF stats exclude tombstones**: Remote memory totals no longer inflate with soft-deleted records. (PR #751)
-- **Reduced timezone-mismatch log noise**: Spurious drift warnings from UTC vs naive-datetime comparisons are suppressed. (PR #751)
+- **Socket hang-up eliminated**: Node.js HTTPS agent `keepAlive` caused dead-socket reuse across multi-phase retrieval — hook silently dropped memories. Fixed with `agent: false` + `Connection: close` on all HTTP paths.
+- **Hook timeout raised 9.5 s → 28 s**: Multi-phase retrieval (git + recent + tagged) takes 12–15 s cold; old budget expired before the injection block was written. Claude Code VSCode extension now reliably shows the memory-context block.
+- **Installer outer timeout raised 10 s → 30 s**: `~/.claude/settings.json` kill limit now matches the new internal budget.
 - **1,675 Python tests** passing.
 
 ---
 
 **Previous Releases**:
+- **v10.40.2** - fix(docker): correct invalid Python one-liner in ONNX pre-download (PR #757)
+- **v10.40.1** - fix(sync): CF hybrid sync reliability + reporting accuracy (PRs #751, #753)
 - **v10.40.0** - feat: Milvus storage backend (Lite / self-hosted / Zilliz Cloud), OAuth XSS hardening, plugin shape validation (PRs #721, #745, #740)
 - **v10.39.1** - hotfix: plugin.json author field object format — unblocks `/plugin install mcp-memory-service` (#738, #739)
 - **v10.39.0** - feat: Claude Code plugin install (`/plugin marketplace add doobidoo/mcp-memory-service`) + MemoryClient.storeMemory() protocol-native writes (PRs #736, #735)
