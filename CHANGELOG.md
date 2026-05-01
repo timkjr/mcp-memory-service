@@ -10,14 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.41.0] - 2026-04-28
+
 ### Added
 
+- **[#766] OAuth 2.1 `refresh_token` grant with rotation (MCP SEP-2207)**: Clients that include the `offline_access` scope in their authorization request now receive a refresh token alongside the access token (RFC 6749 §6, OAuth 2.1 §4.3.1). Every successful refresh issues a new access token AND a rotated refresh token while atomically revoking the presented one, preventing replay attacks. Replay detection walks the full `parent_token` chain to the root and bulk-revokes all descendant tokens in a single `UPDATE`, ensuring a stolen token cannot be reused even after the legitimate client has already rotated past it. Discovery (`/.well-known/oauth-authorization-server`) now advertises `refresh_token` in `grant_types_supported` and `offline_access` in `scopes_supported`. Both the Memory and SQLite OAuth storage backends implement the new contract; the SQLite backend uses additive schema changes only (no destructive `ALTER TABLE`). New env vars: `MCP_OAUTH_REFRESH_TOKEN_EXPIRE_DAYS` (default 30, range 1–365). Clients that do not request `offline_access` receive the same response shape as before — zero breaking changes. 17 new unit tests in `tests/unit/test_oauth_refresh.py`; storage parity tests extended in `tests/unit/test_oauth_storage_backends.py`. Documentation updated: `docs/oauth-setup.md`, `README.md`. Thanks to @netizen1119 for the contribution. (PR #766)
 - **[#759] `memory_graph` tool for streamable-http MCP server**: Knowledge graph operations (find connected memories, shortest path, subgraph extraction) are now available in the FastMCP streamable-http server, matching the capabilities already present in stdio mode. Introduces a shared `GraphService` business-logic layer under `src/mcp_memory_service/services/graph_service.py` so both server variants reuse the same traversal + error-handling code paths. Graph operations require `sqlite_vec` or `hybrid` storage backends; `milvus` and `cloudflare` backends return a structured unavailability error instead of crashing. 14 unit tests for `GraphService`. Thanks to @henry201605 for the contribution. (PR #759)
+- **MilvusGraphStorage: graph operations for Milvus backend**: New `MilvusGraphStorage` class (`storage/milvus_graph.py`) implements the same graph interface as SQLite `GraphStorage` using a dedicated Milvus scalar collection (`{collection}_graph`) and application-layer BFS. Supports symmetric/asymmetric edges, find_connected, shortest_path, get_subgraph, upsert semantics, and all CRUD operations. Backend detection in `mcp_server.py` and `handlers/graph.py` automatically selects the correct implementation. 25 unit tests.
+- **BM25 full-text search for Milvus backend**: `MilvusMemoryStorage.retrieve()` now runs hybrid vector + BM25 search using `RRFRanker` when Milvus 2.5+ BM25 function index is available. Graceful fallback to vector-only search for pre-existing collections without BM25. New collections automatically get `sparse_vector` field + BM25 function.
 
 ### Fixed
 
 - **[#759] Test isolation: `test_graph_service.py` no longer pollutes `sys.modules`**: The lightweight stub used to import `GraphService` without heavy dependencies previously replaced `mcp_memory_service.storage.graph` unconditionally at module-import time. This caused cascading `TypeError: _StubGraphStorage() takes no arguments` failures in `tests/test_graph_traversal.py` and `tests/web/api/test_analytics_graph.py` whenever `test_graph_service.py` was collected first. The stub is now only installed if the real module fails to import, preserving isolation in CI where dependencies are available.
 - **[#759] Removed unused `List` import in `graph_service.py`**: CodeQL alert #391 (unused import).
+
+## [10.40.4] - 2026-04-28
+
+### Fixed
+
+- **[#764] quality: ONNX cross-encoder scalar logits no longer silently return 0.5 placeholder score**: The cross-encoder scoring path in `ONNXRankerModel.rerank()` assumed logits always had shape `(N,)`, but the ONNX model can output shape `(1, 1)` for a single-pair input, causing a `TypeError` when indexing with `[i]`. The outer `except Exception` handler swallowed the error and fell back to a neutral 0.5, making quality-boosted search silently rank all results equal. The fix squeezes the logit tensor to 1-D before indexing, making the scorer shape-agnostic. Thanks to @thewusman2025 for the root-cause analysis and patch. (PR #765)
 
 ## [10.40.3] - 2026-04-24
 
