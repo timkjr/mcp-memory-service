@@ -10,14 +10,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.47.1] - 2026-05-01
+
+### Fixed
+
+- **[#729] `/server/update` no longer silently fails**: The dashboard's *Update & Restart* button used to show a generic success toast even when `git pull` aborted on a dirty working tree, when `pip install` failed, or when the process never actually restarted. Three changes fix this end-to-end: (1) `/api/server/update` now refuses to pull on a dirty working tree (HTTP 409 with the offending paths) unless the new `force=true` flag is set; (2) git/pip failures now return HTTP 500 with the real stderr in `detail` instead of HTTP 200 with `status: "error"` in the body that the frontend never read; (3) `/api/server/restart` and `/api/server/update` now return `pre_restart_pid` + `pre_restart_version`, and the dashboard polls `/api/server/status` after restart to verify the process actually rolled over (pid or version changed). The restart overlay surfaces a clear warning if the process never restarted instead of reloading to the same stale build. The dashboard also offers a force-retry confirmation dialog when a dirty tree blocks an update. 8 new tests in `tests/web/api/test_server_management.py`. Closes #729. (PR #807)
+- **[Security] CodeQL log injection fix**: Inline CR/LF sanitization on all user-controlled strings written to `server.py` audit logs, preventing log-forging via malicious input.
+- **[Frontend] `apiCall` now attaches `.status` to thrown errors**: `app.js` error objects surface the HTTP status code so callers can branch on specific failure codes (e.g. 409 dirty-tree vs 500 subprocess failure).
+- **[Tests] `test_server_management.py` monkeypatch switched to module-object refs**: Fixes `uvx`/isolated-env CI failures where dotted-string patch targets resolved to the wrong module copy.
+
+## [10.47.0] - 2026-05-01
+
+### Added
+
+- **[#799] `memory_quality(action='maintain')` — one-call maintenance orchestrator**: New `maintain` action runs cleanup → conflict detection → stale detection → quality snapshot in a single cycle. `dry_run=true` by default so the tool is always safe to call. New `maintain_status` action returns last-run stats. Auto-resolve is opt-in via `MCP_MAINTAIN_AUTO_RESOLVE` (default `false`); when enabled, conflict pairs are auto-resolved when three signals all pass: cosine similarity ≥ `MCP_MAINTAIN_AUTO_RESOLVE_THRESHOLD` (default `0.95`), same `memory_type`, and age delta > `MCP_MAINTAIN_AUTO_RESOLVE_AGE_DAYS` (default `7`). Winner is the newer memory (`created_at`). New env vars: `MCP_MAINTAIN_STALE_DAYS`, `MCP_MAINTAIN_AUTO_RESOLVE`, `MCP_MAINTAIN_AUTO_RESOLVE_THRESHOLD`, `MCP_MAINTAIN_AUTO_RESOLVE_AGE_DAYS`. 10 new tests. Closes #799. Thanks to @filhocf for the contribution. (PR #802)
+
+### Changed
+
+- **[#793] Quantize deberta quality classifier at Docker build time**: New `tools/docker/scripts/quantize_quality_models.py` runs after the existing ONNX export in `Dockerfile.quality-cpu`. Produces fp16 (`onnxconverter-common`) and dynamic int8 (`onnxruntime.quantization.quantize_dynamic` on MatMul + Gather) variants of `nvidia-quality-classifier-deberta`, benchmarks each against the fp32 baseline (file size, mean inference latency, and Pearson correlation on 100 sample texts), and replaces `model.onnx` in place with the smallest variant whose correlation is ≥ 0.98. The correlation reduction mirrors the production scoring path in `onnx_ranker.py::score_quality` (softmax + weighted sum `[High=1.0, Medium=0.5, Low=0.0]`) so the metric reflects the score that actually drives quality decisions at runtime. Cleanup deletes the fp32 external-weights sidecar (`model.onnx_data`, ~700 MB) along with rejected variants. Falls back to fp32 (no build failure) if no variant meets the gate; pass `--strict` to make a missed gate hard-fail. Strategy is overridable at build time via `--build-arg QUANTIZE_MODE={fp16|int8|best}` and `--build-arg QUANTIZE_MIN_CORR=<float>`. Expected size delta vs `:slim` drops from ~1.7 GB to ~600 MB on the next tagged build. `ms-marco-MiniLM-L-6-v2` is intentionally not quantized (already ~80 MB). Closes #793. (PR #803)
+
+## [10.46.0] - 2026-04-30
+
+### Added
+
+- **[#784] `stale_days` filter for `memory_list`**: Adds an optional `stale_days` integer parameter to the `memory_list` tool and REST endpoint. Memories whose `COALESCE(last_accessed, created_at)` timestamp falls strictly before `now - stale_days * 86400 seconds` are considered stale. Memories accessed exactly at the threshold are NOT stale (strict `<` semantics). Memories that have never been read (`last_accessed IS NULL`) fall back to `created_at`, so never-accessed memories are included in stale results when their creation date is old enough. The filter composes freely with the existing `tags`, `memory_type`, and pagination parameters. Backend coverage: fully implemented in SQLite-vec; Cloudflare, Hybrid, and Milvus backends accept the parameter but ignore it (returning all memories as before — no silent wrong results). Refactors `_apply_stale_days_filter` as a static helper shared between `get_all_memories` and `count_all_memories` to avoid duplication (per code review). 8 new tests in `tests/storage/test_stale_days.py`. Closes #784. Thanks to @filhocf for the contribution. (PR #796)
+
+## [10.45.1] - 2026-04-30
+
+### Fixed
+
+- **[#794] Remove redundant `import json` inside `mistake_note_add()`**: The `json` module was already imported at the top of `memory_service.py`; the duplicate import inside the function body was flagged by CodeQL alert #393. One-line cleanup with no behavioral change. Thanks to @filhocf. (PR #794)
+
+### Tests
+
+- **[#795] Regression coverage for soft-delete UPDATE guards** (`tests/storage/test_soft_delete_guards.py`): 6 new tests verifying that the `AND deleted_at IS NULL` guards added in PR #783 silently skip tombstoned rows. Covers `_persist_access_metadata_batch`, `_record_conflicts`, `resolve_conflict` (deleted winner and deleted loser), `_touch`, and `update_memory_versioned`. Closes #791. Thanks to @filhocf. (PR #795)
+
+## [10.45.0] - 2026-04-30
+
+### Added
+
+- **[#790] OpenAI-compatible quality scoring provider (LiteLLM / Ollama / MLX / vLLM)**: Adds `openai-compatible` as a new `MCP_QUALITY_AI_PROVIDER` value so homelab and self-hosted users can point quality scoring at any OpenAI `/v1/chat/completions`-compatible endpoint without a cloud API key or the ONNX model. Three new env vars: `MCP_QUALITY_AI_BASE_URL` (required), `MCP_QUALITY_AI_MODEL` (required), `MCP_QUALITY_AI_API_KEY` (optional). Config validation raises `ValueError` if the provider is set without the required vars. New Tier 2 in the fallback chain: local ONNX → openai-compatible → Groq → Gemini → implicit signals. Endpoint failures fall through silently — no exception bubbles to the storage path. 18 new tests in `tests/test_openai_compat_quality.py`. (PR #790)
+
+### Fixed
+
+- **[#783] Soft-delete UPDATE guards — 7 remaining UPDATE statements in `sqlite_vec.py`**: Seven `UPDATE memories SET ...` statements were missing the `AND deleted_at IS NULL` guard, meaning they could operate on soft-deleted (tombstoned) rows. All seven have been patched. No behavioral change for live rows. Continues the series from PRs #557, #558, #562. Follow-up testing tracked in #791. Thanks to @filhocf for the contribution. (PR #783)
+
+## [10.44.0] - 2026-04-29
+
+### Added
+
+- **[#786] Mistake Notes — structured error replay for learning from failures**: Two new MCP tools (`mistake_note_add`, `mistake_note_search`) that store mistake patterns as regular memories with `memory_type='mistake'`. Reuses the existing memory store — no new tables, works on all backends. `mistake_note_add` auto-deduplicates: if a similar pattern exists above the configurable similarity threshold (`MCP_MISTAKE_NOTE_DEDUP_THRESHOLD`, default 0.85), it increments `failure_count` in metadata instead of creating a duplicate. `mistake_note_search` retrieves mistake notes by semantic similarity, filtered to `memory_type='mistake'`. Inspired by [Mistake Notebook Learning](https://arxiv.org/abs/2512.11485). 5 new tests in `tests/services/test_mistake_notes.py`. `models/ontology.py` updated to register `mistake` as subtype of `error`. Thanks to @filhocf for the contribution. (PR #786)
+
+### Changed
+
+- **[#789] CI: ignore glama.ai in markdown link-check** — glama.ai was causing intermittent link-check failures. Added to the ignore list in `.github/workflows/docs-link-check.yml`. (PR #789)
+
+## [10.43.0] - 2026-04-29
+
+### Added
+
+- **[#773] Reciprocal Rank Fusion (RRF) for SQLite-vec hybrid search**: The SQLite-vec backend now supports RRF as an alternative fusion method for hybrid search (vector + keyword). Set `MCP_HYBRID_FUSION_METHOD=rrf` to activate; the default remains `weighted_average` for full backward compatibility. Two additional env vars control RRF behaviour: `MCP_HYBRID_RRF_K` (smoothing constant, default `60` per Cormack, Clarke & Buettcher 2009) and `MCP_HYBRID_RRF_CONSENSUS_BOOST` (score bonus when both retrieval paths rank the same document, default `0.1`). 10 new tests in `tests/storage/test_rrf_fusion.py`. Thanks to @filhocf for the contribution. (PR #773)
+
+### Changed
+
+- **Dependency bumps (Dependabot)**: `actions/checkout` 3 → 6 (PR #777), `docker/login-action` 3 → 4 (PR #778), `actions/upload-artifact` 4 → 7 (PR #779), uv group bump (PR #780): `authlib` 1.6.11 → 1.7.0, `cryptography` 46.0.7 → 47.0.0, `fastapi` 0.135.3 → 0.136.1, `uvicorn` 0.44.0 → 0.46.0, `sse-starlette` 3.3.4 → 3.4.1, `setuptools` 80.10.2 → 82.0.1 (constraint bumped to `<83`), plus `click`, `python-multipart`, `ruff`, `wandb` patches.
+
+## [10.42.1] - 2026-04-29
+
+### Fixed
+
+- **[#775] Milvus: missing `anns_field` in `_check_semantic_duplicate` and `_run_search` causes silent failures on BM25-enabled collections**: Milvus collections with BM25 full-text search (pymilvus ≥ 2.5) contain two vector fields (`vector` dense + `sparse_vector` BM25-generated). Milvus rejects `search()` calls without an explicit `anns_field` when multiple vector fields exist. Two call sites swallowed the error in `except` blocks, causing completely silent failures: semantic deduplication was bypassed (duplicate memories stored silently), and pure vector-search fallback returned empty results on collections where `_has_bm25=False`, `_HYBRID_SEARCH_AVAILABLE=False`, or the hybrid search error-fallback path was taken. The hybrid search happy path (which already specified `anns_field` per `AnnSearchRequest`) was not affected. Does not manifest with Milvus Lite or pre-BM25 collections. Thanks to @henry201605 for the report and fix. (PR #775)
+
+## [10.42.0] - 2026-04-26
+
+### Added
+
+- **[#762] MilvusGraphStorage — knowledge graph for Milvus backend**: New `MilvusGraphStorage` class (~760 lines) stored in a dedicated `{collection}_graph` Milvus scalar collection. Implements the full graph interface: `add_association`, `remove_association`, `find_connected` (application-layer BFS), `shortest_path`, and `get_subgraph`. Edge IDs use `sha256(f"{src}:{tgt}")` — 64-char fixed length, deterministic, and Zilliz Cloud-compatible. The graph collection includes a `_dummy_vec` field (dim=2, `[0.0, 0.0]`) to satisfy Zilliz Cloud's requirement of at least one vector field per collection. (PR #762, @henry201605, verification by @zc277584121)
+- **[#762] BM25 hybrid search for Milvus 2.5+**: Milvus storage backend now creates a BM25 function index on the `content` field with `enable_analyzer=True` (required for Zilliz Cloud) and uses `RRFRanker` for combined vector + keyword search. Pre-existing collections without a `sparse_vector` field automatically fall back to vector-only search, so the upgrade is backward-compatible. Schema-level regression test (`test_bm25_content_field_has_enable_analyzer`) guards the `enable_analyzer` flag going forward. (PR #762, @henry201605)
+- **[#762] Consolidation integration for Milvus**: `DreamInspiredConsolidator` now detects a Milvus storage backend at consolidation time and initializes a `MilvusGraphStorage` instance via lazy async init guarded by `asyncio.Lock`, preventing races when multiple consolidation cycles overlap. Relationship inference during consolidation cycles now works end-to-end for Milvus deployments. (PR #762, @henry201605)
+- **[#762] Zilliz Cloud remote-compatibility test suite**: `TestRemoteMilvusCompat` (env-gated via `MILVUS_TEST_URI`) validates schema correctness against a real remote Milvus / Zilliz Cloud instance. `TestRealContentHashes` (5 tests) covers store/retrieve/delete with 64-char SHA-256 content hashes as used by the graph edge-ID scheme. 25 unit tests in `tests/test_milvus_graph.py` cover `MilvusGraphStorage` in isolation. (PR #762, @henry201605, @zc277584121)
+
 ## [10.41.0] - 2026-04-28
 
 ### Added
 
 - **[#766] OAuth 2.1 `refresh_token` grant with rotation (MCP SEP-2207)**: Clients that include the `offline_access` scope in their authorization request now receive a refresh token alongside the access token (RFC 6749 §6, OAuth 2.1 §4.3.1). Every successful refresh issues a new access token AND a rotated refresh token while atomically revoking the presented one, preventing replay attacks. Replay detection walks the full `parent_token` chain to the root and bulk-revokes all descendant tokens in a single `UPDATE`, ensuring a stolen token cannot be reused even after the legitimate client has already rotated past it. Discovery (`/.well-known/oauth-authorization-server`) now advertises `refresh_token` in `grant_types_supported` and `offline_access` in `scopes_supported`. Both the Memory and SQLite OAuth storage backends implement the new contract; the SQLite backend uses additive schema changes only (no destructive `ALTER TABLE`). New env vars: `MCP_OAUTH_REFRESH_TOKEN_EXPIRE_DAYS` (default 30, range 1–365). Clients that do not request `offline_access` receive the same response shape as before — zero breaking changes. 17 new unit tests in `tests/unit/test_oauth_refresh.py`; storage parity tests extended in `tests/unit/test_oauth_storage_backends.py`. Documentation updated: `docs/oauth-setup.md`, `README.md`. Thanks to @netizen1119 for the contribution. (PR #766)
 - **[#759] `memory_graph` tool for streamable-http MCP server**: Knowledge graph operations (find connected memories, shortest path, subgraph extraction) are now available in the FastMCP streamable-http server, matching the capabilities already present in stdio mode. Introduces a shared `GraphService` business-logic layer under `src/mcp_memory_service/services/graph_service.py` so both server variants reuse the same traversal + error-handling code paths. Graph operations require `sqlite_vec` or `hybrid` storage backends; `milvus` and `cloudflare` backends return a structured unavailability error instead of crashing. 14 unit tests for `GraphService`. Thanks to @henry201605 for the contribution. (PR #759)
-- **MilvusGraphStorage: graph operations for Milvus backend**: New `MilvusGraphStorage` class (`storage/milvus_graph.py`) implements the same graph interface as SQLite `GraphStorage` using a dedicated Milvus scalar collection (`{collection}_graph`) and application-layer BFS. Supports symmetric/asymmetric edges, find_connected, shortest_path, get_subgraph, upsert semantics, and all CRUD operations. Backend detection in `mcp_server.py` and `handlers/graph.py` automatically selects the correct implementation. 25 unit tests.
-- **BM25 full-text search for Milvus backend**: `MilvusMemoryStorage.retrieve()` now runs hybrid vector + BM25 search using `RRFRanker` when Milvus 2.5+ BM25 function index is available. Graceful fallback to vector-only search for pre-existing collections without BM25. New collections automatically get `sparse_vector` field + BM25 function.
 
 ### Fixed
 

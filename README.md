@@ -2,7 +2,7 @@
 
 ## Persistent Shared Memory for AI Agent Pipelines
 
-Open-source memory backend for multi-agent systems.
+Open-source memory backend for AI agents — **REST API, MCP, OAuth, CLI, dashboard**. One self-hosted service, every transport.
 Agents store decisions, share causal knowledge graphs, and retrieve
 context in 5ms — without cloud lock-in or API costs.
 
@@ -423,6 +423,26 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 🔒 **Privacy-First** – Local-first, you control your data
 📊 **Web Dashboard** – Visualize and manage memories at `http://localhost:8000`
 🧬 **Knowledge Graph** – Interactive D3.js visualization of memory relationships 🆕
+🏠 **Homelab Quality Scoring** – Point scoring at any OpenAI-compatible endpoint (Ollama, LiteLLM, vLLM) 🆕
+
+**Homelab / self-hosted quality scoring** (v10.45.0+): set `MCP_QUALITY_AI_PROVIDER=openai-compatible` to score memories with your local LLM instead of ONNX or a cloud API:
+
+```bash
+MCP_QUALITY_AI_PROVIDER=openai-compatible
+MCP_QUALITY_AI_BASE_URL=http://localhost:11434/v1   # Ollama
+MCP_QUALITY_AI_MODEL=qwen2.5:7b-instruct
+# MCP_QUALITY_AI_API_KEY=ollama                     # optional
+```
+
+Recommended models: `qwen2.5:7b-instruct` (Ollama), `mlx-community/Qwen2.5-7B-Instruct-4bit` (MLX), or any instruct model via LiteLLM proxy. On endpoint failure, scoring falls back to implicit signals automatically.
+
+**Docker `:quality-cpu` tag** — for users who want the built-in local ONNX quality scoring (`ms-marco-MiniLM-L-6-v2` and `nvidia-quality-classifier-deberta`) without managing the one-time ONNX export themselves, and without shipping `torch`/`transformers` in their container:
+
+```bash
+docker pull doobidoo/mcp-memory-service:quality-cpu
+```
+
+The `:quality-cpu` image pre-exports both models at build time and ships only `onnxruntime` at runtime — no PyTorch dependency at deploy time. See [`tools/docker/README.md`](tools/docker/README.md) for details.
 
 ### 🖥️ Dashboard Preview (v9.3.0)
 
@@ -437,20 +457,28 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 ---
 
 
-## Latest Release: **v10.41.0** (April 28, 2026)
+## Latest Release: **v10.47.1** (May 1, 2026)
 
-**feat(oauth): OAuth 2.1 refresh_token grant with rotation (MCP SEP-2207)**
+**fix(web): surface /server/update failures end-to-end**
 
-**What's New:**
-- **OAuth refresh tokens**: Clients requesting `offline_access` scope receive a refresh token with atomic rotation — every refresh issues a new token and revokes the old one, with full chain revocation on replay detection. (PR #766, @netizen1119)
-- **`memory_graph` tool on streamable-http server**: Knowledge graph queries (connected memories, shortest path, subgraph) now work in the FastMCP streamable-http transport, matching stdio parity. (PR #759, @henry201605)
-- **New env var**: `MCP_OAUTH_REFRESH_TOKEN_EXPIRE_DAYS` (default 30, range 1–365). Zero breaking changes.
-- **1,692 Python tests** passing.
-- Special thanks to @netizen1119 for the OAuth refresh token implementation.
+**What's Fixed:**
+- **`/server/update` no longer silently fails**: Dirty-tree check (HTTP 409), real stderr on git/pip failure (HTTP 500), post-restart PID/version polling, and force-retry dialog on dirty tree. 8 new tests. Closes #729. (PR #807)
+- **CodeQL log injection**: CR/LF sanitization on audit log inputs in `server.py`.
+- **Frontend status propagation**: `apiCall` in `app.js` now attaches `.status` to thrown errors for proper 409/500 branching.
+- **CI monkeypatch fix**: `test_server_management.py` uses module-object refs instead of dotted strings — fixes `uvx` isolated-env CI failures.
 
 ---
 
 **Previous Releases**:
+- **v10.47.0** - feat: memory_quality maintain orchestrator + Docker DeBERTa quantization (PRs #802, #803, @filhocf, closes #799, #793)
+- **v10.46.0** - feat: stale_days filter for memory_list — dormant memory detection (PR #796, @filhocf, closes #784)
+- **v10.45.1** - fix: CodeQL redundant import cleanup + soft-delete regression tests (PRs #794, #795, @filhocf)
+- **v10.45.0** - feat(quality): OpenAI-compatible provider for LiteLLM/Ollama/MLX + soft-delete UPDATE guards (PRs #790, #783, @filhocf)
+- **v10.44.0** - feat: Mistake Notes — structured error replay (`mistake_note_add`, `mistake_note_search`, PR #786, @filhocf)
+- **v10.43.0** - feat(search): Reciprocal Rank Fusion (RRF) for SQLite-vec hybrid search (PR #773, @filhocf)
+- **v10.42.1** - fix(milvus): add missing `anns_field` to search calls for BM25-enabled collections (PR #775, @henry201605)
+- **v10.42.0** - feat(milvus): MilvusGraphStorage, BM25 hybrid search, and consolidation integration (PR #762, @henry201605)
+- **v10.41.0** - feat(oauth): OAuth 2.1 refresh_token grant with rotation, memory_graph on streamable-http (PRs #766, #759)
 - **v10.40.4** - fix(quality): handle shape (1, 1) cross-encoder logits in ONNX ranker (PR #765)
 - **v10.40.3** - fix(claude-hooks): eliminate socket hang-up and raise hook timeout (PR #761)
 - **v10.40.2** - fix(docker): correct invalid Python one-liner in ONNX pre-download (PR #757)

@@ -1068,9 +1068,22 @@ if MCP_QUALITY_SYSTEM_ENABLED:
 # Enable hybrid BM25 + Vector search
 MCP_HYBRID_SEARCH_ENABLED = safe_get_bool_env('MCP_HYBRID_SEARCH_ENABLED', True)
 
+# Fusion method: 'weighted_average' (default, legacy) or 'rrf' (Reciprocal Rank Fusion)
+MCP_HYBRID_FUSION_METHOD = os.getenv('MCP_HYBRID_FUSION_METHOD', 'weighted_average').lower()
+if MCP_HYBRID_FUSION_METHOD not in ('weighted_average', 'rrf'):
+    logger.warning(f"Invalid fusion method: {MCP_HYBRID_FUSION_METHOD}. Using 'weighted_average'")
+    MCP_HYBRID_FUSION_METHOD = 'weighted_average'
+
+# RRF parameters (only used when fusion_method='rrf')
+MCP_HYBRID_RRF_K = safe_get_int_env('MCP_HYBRID_RRF_K', 60, min_value=1, max_value=1000)
+MCP_HYBRID_RRF_CONSENSUS_BOOST = float(os.getenv('MCP_HYBRID_RRF_CONSENSUS_BOOST', '0.1'))
+
 # Score fusion weights (must sum to 1.0)
 MCP_HYBRID_KEYWORD_WEIGHT = float(os.getenv('MCP_HYBRID_KEYWORD_WEIGHT', '0.3'))
 MCP_HYBRID_SEMANTIC_WEIGHT = float(os.getenv('MCP_HYBRID_SEMANTIC_WEIGHT', '0.7'))
+
+# Mistake Notes configuration
+MCP_MISTAKE_NOTE_DEDUP_THRESHOLD = max(0.0, min(1.0, float(os.getenv('MCP_MISTAKE_NOTE_DEDUP_THRESHOLD', '0.85'))))
 
 # Validate weights
 if not 0.0 <= MCP_HYBRID_KEYWORD_WEIGHT <= 1.0:
@@ -1090,8 +1103,10 @@ if abs(weight_sum - 1.0) > 0.01:
     MCP_HYBRID_SEMANTIC_WEIGHT /= total
 
 logger.info(f"Hybrid Search: enabled={MCP_HYBRID_SEARCH_ENABLED}, "
+            f"fusion={MCP_HYBRID_FUSION_METHOD}, "
             f"keyword_weight={MCP_HYBRID_KEYWORD_WEIGHT:.2f}, "
-            f"semantic_weight={MCP_HYBRID_SEMANTIC_WEIGHT:.2f}")
+            f"semantic_weight={MCP_HYBRID_SEMANTIC_WEIGHT:.2f}"
+            + (f", rrf_k={MCP_HYBRID_RRF_K}, consensus_boost={MCP_HYBRID_RRF_CONSENSUS_BOOST}" if MCP_HYBRID_FUSION_METHOD == 'rrf' else ''))
 
 # =============================================================================
 # End Hybrid Search Configuration
@@ -1197,6 +1212,22 @@ else:
 
 # =============================================================================
 # End Memory Type Ontology Configuration
+
+# =============================================================================
+# Maintenance Configuration (memory_quality action="maintain")
+# =============================================================================
+MAINTAIN_STALE_DAYS = safe_get_int_env('MCP_MAINTAIN_STALE_DAYS', 30, min_value=1, max_value=3650)
+# WARNING: auto_resolve=true enables automatic conflict resolution — memories above
+# the similarity threshold will be silently merged. Use with caution at scale.
+MAINTAIN_AUTO_RESOLVE = safe_get_bool_env('MCP_MAINTAIN_AUTO_RESOLVE', False)
+try:
+    MAINTAIN_AUTO_RESOLVE_THRESHOLD = float(os.getenv('MCP_MAINTAIN_AUTO_RESOLVE_THRESHOLD', '0.95'))
+except (ValueError, TypeError):
+    logger.error("Invalid value for MCP_MAINTAIN_AUTO_RESOLVE_THRESHOLD, using default 0.95")
+    MAINTAIN_AUTO_RESOLVE_THRESHOLD = 0.95
+# Two-signal guard: only auto-resolve when both memories share the same type
+# AND their age difference exceeds this threshold (prevents resolving recent updates)
+MAINTAIN_AUTO_RESOLVE_AGE_DAYS = safe_get_int_env('MCP_MAINTAIN_AUTO_RESOLVE_AGE_DAYS', 7, min_value=0, max_value=365)
 
 # =============================================================================
 # Configuration Validation

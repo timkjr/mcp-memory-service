@@ -841,6 +841,7 @@ class MilvusMemoryStorage(MemoryStorage):
                 "search",
                 collection_name=self.collection_name,
                 data=[embedding],
+                anns_field="vector",
                 filter=f"created_at > {cutoff}",
                 limit=1,
                 output_fields=["id"],
@@ -1023,6 +1024,7 @@ class MilvusMemoryStorage(MemoryStorage):
                 "search",
                 collection_name=self.collection_name,
                 data=[query_embedding],
+                anns_field="vector",
                 filter=tag_filter,
                 limit=fetch_n,
                 output_fields=list(self._OUTPUT_FIELDS),
@@ -1672,6 +1674,7 @@ class MilvusMemoryStorage(MemoryStorage):
         offset: int = 0,
         memory_type: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        stale_days: Optional[int] = None,
     ) -> List[Memory]:
         if not self._ensure_initialized():
             return []

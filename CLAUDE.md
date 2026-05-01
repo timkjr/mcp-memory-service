@@ -58,7 +58,7 @@ Before merging or releasing:
 
 MCP Memory Service is a semantic memory layer for AI applications, accessible via REST API and MCP transport. It provides persistent storage for 14+ AI clients including Claude Desktop, OpenCode, LangGraph, CrewAI, and any HTTP client. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
 
-**Current Version:** v10.41.0 - feat(oauth): refresh_token grant with rotation (SEP-2207, PR #766, @netizen1119) — 1,692 tests — see [CHANGELOG.md](CHANGELOG.md) for details
+**Current Version:** v10.47.1 - fix(web): surface /server/update failures end-to-end (PR #807, closes #729) — ~1,780 tests — see [CHANGELOG.md](CHANGELOG.md) for details
 
 > **🎯 v10.0.0 Milestone**: This major release represents a complete API consolidation - 34 tools unified into 12 with enhanced capabilities. All deprecated tools continue working with warnings until v11.0. See `docs/MIGRATION.md` for migration guide.
 
@@ -582,7 +582,10 @@ python scripts/validation/diagnose_backend_config.py          # Backend-specific
 - **CLAUDE.md** - Architecture changes, new patterns, development workflows
 - **README.md** - New features, installation changes, user-facing updates
 - **CHANGELOG.md** - Every version bump (use github-release-manager agent)
-- **docs/index.html** - Landing page: MINOR/MAJOR releases only (version badge, test count, features). Auto-deployed via GitHub Pages. Also re-publish to here.now (`--slug merry-realm-j835`)
+- **docs/index.html** - Landing page: MINOR/MAJOR releases only (version badge, test count, features). Auto-deployed via GitHub Pages. Also re-publish to here.now:
+  ```bash
+  cd docs && ~/.agents/skills/here-now/scripts/publish.sh index.html --slug merry-realm-j835
+  ```
 - **Wiki** - Detailed guides, troubleshooting, tutorials
 
 ## Additional Resources

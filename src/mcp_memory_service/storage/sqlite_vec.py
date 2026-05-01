@@ -399,7 +399,7 @@ class SqliteVecMemoryStorage(MemoryStorage):
 
         def batch_update():
             self.conn.executemany(
-                "UPDATE memories SET metadata = ? WHERE content_hash = ?",
+                "UPDATE memories SET metadata = ? WHERE content_hash = ? AND deleted_at IS NULL",
                 [(json.dumps(m.metadata), m.content_hash) for m in memories],
             )
             self.conn.commit()
@@ -1889,6 +1889,86 @@ SOLUTIONS:
 
         return (keyword_score * kw_weight) + (semantic_score * sem_weight)
 
+
+    async def _fuse_rrf(
+        self,
+        bm25_results,
+        vector_results,
+        n_results: int
+    ):
+        """Fuse results using Reciprocal Rank Fusion (RRF).
+
+        RRF operates on rank positions rather than raw scores, making it
+        robust to scale incompatibility between BM25 and vector similarity.
+
+        Formula: RRF_score(d) = sum(1/(k + rank_i(d))) + consensus_boost
+        Reference: Cormack, Clarke & Buettcher (2009)
+        """
+        from ..config import MCP_HYBRID_RRF_K, MCP_HYBRID_RRF_CONSENSUS_BOOST
+
+        k = MCP_HYBRID_RRF_K
+        boost = MCP_HYBRID_RRF_CONSENSUS_BOOST
+
+        bm25_hashes = [ch for ch, _ in bm25_results]
+        vector_hashes = [r.memory.content_hash for r in vector_results]
+        bm25_set = set(bm25_hashes)
+        vector_set = set(vector_hashes)
+        consensus = bm25_set & vector_set
+
+        scores = {}
+        for rank, ch in enumerate(vector_hashes, start=1):
+            scores[ch] = scores.get(ch, 0.0) + 1.0 / (k + rank)
+        for rank, ch in enumerate(bm25_hashes, start=1):
+            scores[ch] = scores.get(ch, 0.0) + 1.0 / (k + rank)
+        # Apply consensus boost once for items appearing in both lists
+        for ch in consensus:
+            scores[ch] += boost
+
+        vector_memories = {r.memory.content_hash: r.memory for r in vector_results}
+
+        bm25_only = [h for h in scores if h not in vector_memories]
+        fetched = {}
+        if bm25_only:
+            try:
+                for i in range(0, len(bm25_only), 999):
+                    batch = bm25_only[i:i+999]
+                    ph = ",".join("?" for _ in batch)
+                    def fetch_batch(ph=ph, b=batch):
+                        cur = self.conn.execute(
+                            f"SELECT content_hash, content, tags, memory_type, metadata, "
+                            f"created_at, updated_at, created_at_iso, updated_at_iso "
+                            f"FROM memories WHERE content_hash IN ({ph}) AND deleted_at IS NULL", b)
+                        return cur.fetchall()
+                    rows = await self._execute_with_retry(fetch_batch)
+                    for row in rows:
+                        m = self._row_to_memory(row)
+                        if m:
+                            fetched[m.content_hash] = m
+            except Exception as e:
+                logger.warning(f"RRF batch fetch failed: {e}")
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        results = []
+        for ch, rrf_score in ranked[:n_results]:
+            memory = vector_memories.get(ch) or fetched.get(ch)
+            if memory:
+                results.append(MemoryQueryResult(
+                    memory=memory,
+                    relevance_score=rrf_score,
+                    debug_info={
+                        "rrf_score": rrf_score,
+                        "in_semantic": ch in vector_set,
+                        "in_keyword": ch in bm25_set,
+                        "consensus": ch in consensus,
+                        "backend": "hybrid-rrf",
+                    },
+                ))
+
+        logger.info(f"RRF hybrid: {len(results)} results "
+                    f"(BM25: {len(bm25_results)}, Vec: {len(vector_results)}, "
+                    f"Consensus: {len(consensus)})")
+        return results
+
     async def retrieve_hybrid(
         self,
         query: str,
@@ -1917,6 +1997,11 @@ SOLUTIONS:
             vector_task = asyncio.create_task(self.retrieve(query, n_results * 2))
 
             bm25_results, vector_results = await asyncio.gather(bm25_task, vector_task)
+
+            # Check fusion method
+            from ..config import MCP_HYBRID_FUSION_METHOD
+            if MCP_HYBRID_FUSION_METHOD == 'rrf':
+                return await self._fuse_rrf(bm25_results, vector_results, n_results)
 
             # Build lookup maps
             bm25_scores = {}
@@ -3392,7 +3477,16 @@ SOLUTIONS:
             logger.error(f"Error converting row to memory: {str(e)}")
             return None
 
-    async def get_all_memories(self, limit: int = None, offset: int = 0, memory_type: Optional[str] = None, tags: Optional[List[str]] = None) -> List[Memory]:
+    @staticmethod
+    def _apply_stale_days_filter(conditions: list, params: list, stale_days: Optional[int], table_alias: str = "") -> None:
+        """Append stale_days WHERE clause. Uses COALESCE(last_accessed, created_at) for never-read memories."""
+        if stale_days is not None and stale_days > 0:
+            prefix = f"{table_alias}." if table_alias else ""
+            threshold = time.time() - stale_days * 86400
+            conditions.append(f'COALESCE({prefix}last_accessed, {prefix}created_at) < ?')
+            params.append(threshold)
+
+    async def get_all_memories(self, limit: int = None, offset: int = 0, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, stale_days: Optional[int] = None) -> List[Memory]:
         """
         Get all memories in storage ordered by creation time (newest first).
 
@@ -3439,6 +3533,10 @@ SOLUTIONS:
                 )
                 where_conditions.append(f"({tag_conditions})")
                 params.extend([f"*,{_escape_glob(tag)},*" for tag in stripped_tags])
+
+            # Add stale_days filter: memories not accessed in the last N days
+            # Uses COALESCE(last_accessed, created_at) for memories never read
+            self._apply_stale_days_filter(where_conditions, params, stale_days, table_alias="m")
 
             # Apply WHERE clause
             query += ' WHERE ' + ' AND '.join(where_conditions)
@@ -3580,7 +3678,7 @@ SOLUTIONS:
             logger.error(f"Error getting memory timestamps: {e}")
             return []
 
-    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None) -> int:
+    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, stale_days: Optional[int] = None) -> int:
         """
         Get total count of memories in storage.
 
@@ -3613,6 +3711,9 @@ SOLUTIONS:
                 )
                 conditions.append(f"({tag_conditions})")
                 params.extend([f"*,{_escape_glob(tag)},*" for tag in stripped_tags])
+
+            # Add stale_days filter
+            self._apply_stale_days_filter(conditions, params, stale_days)
 
             # Build final query (always exclude soft-deleted)
             conditions.append('deleted_at IS NULL')
@@ -3953,7 +4054,7 @@ SOLUTIONS:
                         if "conflict:unresolved" not in tags:
                             new_tags = f"{tags},conflict:unresolved" if tags else "conflict:unresolved"
                             self.conn.execute(
-                                "UPDATE memories SET tags = ? WHERE content_hash = ?",
+                                "UPDATE memories SET tags = ? WHERE content_hash = ? AND deleted_at IS NULL",
                                 (new_tags, h),
                             )
 
@@ -4042,13 +4143,13 @@ SOLUTIONS:
             def _do_resolve():
                 # Mark loser as superseded
                 self.conn.execute(
-                    "UPDATE memories SET superseded_by = ? WHERE content_hash = ?",
+                    "UPDATE memories SET superseded_by = ? WHERE content_hash = ? AND deleted_at IS NULL",
                     (winner_hash, loser_hash),
                 )
 
                 # Boost winner: confidence = 1.0, last_accessed = now
                 self.conn.execute(
-                    "UPDATE memories SET confidence = 1.0, last_accessed = ? WHERE content_hash = ?",
+                    "UPDATE memories SET confidence = 1.0, last_accessed = ? WHERE content_hash = ? AND deleted_at IS NULL",
                     (int(now), winner_hash),
                 )
 
@@ -4061,7 +4162,7 @@ SOLUTIONS:
                     if row and row[0]:
                         tags = [t.strip() for t in row[0].split(",") if t.strip() != "conflict:unresolved"]
                         self.conn.execute(
-                            "UPDATE memories SET tags = ? WHERE content_hash = ?",
+                            "UPDATE memories SET tags = ? WHERE content_hash = ? AND deleted_at IS NULL",
                             (",".join(tags), h),
                         )
 
@@ -4132,7 +4233,7 @@ SOLUTIONS:
         if hashes_to_touch:
             def _touch(hashes=hashes_to_touch, ts=now):
                 self.conn.executemany(
-                    "UPDATE memories SET last_accessed = ? WHERE content_hash = ?",
+                    "UPDATE memories SET last_accessed = ? WHERE content_hash = ? AND deleted_at IS NULL",
                     [(int(ts), h) for h in hashes],
                 )
                 self.conn.commit()
@@ -4225,7 +4326,7 @@ SOLUTIONS:
                     ''', (memory_rowid, serialize_float32(embedding)))
 
                     self.conn.execute(
-                        "UPDATE memories SET superseded_by = ? WHERE content_hash = ?",
+                        "UPDATE memories SET superseded_by = ? WHERE content_hash = ? AND deleted_at IS NULL",
                         (new_hash, old_hash),
                     )
                     self.conn.execute(f'RELEASE SAVEPOINT {_ev_sp}')
