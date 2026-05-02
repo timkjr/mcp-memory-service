@@ -204,6 +204,10 @@ async def mcp_endpoint(
             )
             return JSONResponse(content=response.model_dump(exclude_none=True))
 
+        elif request.method == "ping":
+            response = MCPResponse(id=request.id, result={})
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         else:
             response = MCPResponse(
                 id=request.id,
