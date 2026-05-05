@@ -10,6 +10,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.49.4] - 2026-05-05
+
+### Fixed
+
+- **[#853] Mistake-notes survive consolidation**: `_is_protected_memory()` in [`consolidation/base.py`](src/mcp_memory_service/consolidation/base.py) now shields memories with `memory_type='mistake'` and `failure_count >= 3` from decay and forgetting passes. High-value error-replay records no longer vanish during scheduled consolidation. 10 new tests in `tests/consolidation/test_mistake_lifecycle.py`. Closes #853. (PR #854, @filhocf)
+
+## [10.49.3] - 2026-05-05
+
+### Fixed
+
+- **[#847] OpenCode plugin API path and payload corrected**: The plugin was calling `/api/memories/search` (HTTP 405) instead of `/api/search`, and sending `limit` instead of `n_results` in the request body (per `SemanticSearchRequest` schema). Both issues caused all OpenCode memory searches to fail silently. Fix applied in PR #850. Closes #847.
+- **[#847] OpenCode plugin tag filter now enforced client-side**: `/api/search` ignores the `tags` field server-side, so project-scoped searches were returning unfiltered results. The plugin now over-fetches (`max(limit * 4, 20)`) when tags are present and filters client-side by tag intersection before trimming to the requested limit. Fix applied in PR #849 (Gemini review follow-up).
+- **CI version-drift detection**: `scripts/ci/check_versions.sh` updated to skip landing-page version checks for PATCH releases, matching the documented release protocol that landing-page updates are MINOR/MAJOR only. (PR #850)
+
+## [10.49.2] - 2026-05-05
+
+### Fixed
+
+- **[#842] Custom base types with empty subtype lists were silently dropped**: `_load_custom_types_from_config` in [`models/ontology.py`](src/mcp_memory_service/models/ontology.py) guarded registration with `if valid_subtypes:`, so a type declared as `MCP_CUSTOM_MEMORY_TYPES='{"foo": []}'` — the exact form documented in the v10.49.1 coercion warning and in the `memory_store` tool description — was never added to the ontology. The validator never saw `foo`, so `Memory.__post_init__` kept coercing it to `"observation"` even after the user had correctly configured the env var. Fix: register the base type unconditionally; emit a warning only when subtypes were supplied but all failed validation. Two regression tests added. Closes #842. (PR #846)
+
+## [10.49.1] - 2026-05-05
+
+### Fixed
+
+- **[#842 / #843] `memory_type` ontology coercion was invisible to callers**: When a user passed an unknown `memory_type` (e.g. `"foo"`), `Memory.__post_init__` silently rewrote it to `"observation"` and only logged a warning. The MCP/HTTP store responses still reported `success`, so the caller had no way to detect the rewrite — subsequent `memory_list` queries filtered on the original type returned 0 results and looked like a broken filter (#842). Fix: both the MCP `memory_store` handler ([`server/handlers/memory.py`](src/mcp_memory_service/server/handlers/memory.py)) and the HTTP `POST /memories` endpoint ([`web/api/memories.py`](src/mcp_memory_service/web/api/memories.py)) now compare the requested vs. effective `memory_type` and append a visible warning to the response when they diverge, including a hint to register the type via `MCP_CUSTOM_MEMORY_TYPES`. The default `"note"` (applied when the caller omits `type`) does not trigger a warning. Tool description for `memory_store` updated to enumerate the built-in base types and link to the new ontology guide. Closes #843.
+- **[#797] `/api/quality/memories/{hash}/evaluate` self-relevance loop returned 1.0 for everything**: When no request body was supplied, the endpoint defaulted the relevance query to the memory's own first 200 chars, collapsing the relevance prompt to "rate how relevant X is to X" — which any LLM scores at the ceiling. All `openai-compatible` AI tier evaluations on v10.45.0+ deployments returned `ai_score: 1.0` regardless of memory quality. Fix: pass an empty query through when none is supplied, so `_create_scoring_prompt` takes the absolute-quality branch which produces a calibrated 0.0–1.0 score with proper discrimination. Reported with full reproducer in #797. (PR #839)
+- **[#797] `gpt-5.x` family rejected from openai-compatible quality scorer**: `_score_with_openai_compatible` hardcoded `max_tokens=50` and `temperature=0.1`, both of which OpenAI's `gpt-5.x` family rejects with HTTP 400 ("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead"). The AI tier silently fell through to `implicit_signals`, so the provider _appeared_ to work but wasn't using the AI. Fix: branch on `model.startswith("gpt-5")` to use `max_completion_tokens=800` (sized for reasoning variants which spend ~200–400 tokens reasoning internally) and skip `temperature`. Non-gpt-5 models keep the original payload to preserve cost and determinism. Bug 2 reported and patched by @thewusman2025. 6 new tests in `tests/web/api/test_quality_evaluate.py` and `tests/test_openai_compat_quality.py`. Closes #797. (PR #839)
+
+### Changed
+
+- **`docs/deployment/production-guide.md` rewritten as a topology selector**: The previous version was a 56-line stub that hardcoded an example API key, referenced a non-existent `COMPLETE_SETUP_GUIDE.md`, and did not actually guide production deployments. The new version is a topology selector that routes readers to the correct concrete guide (Docker / dual-service / systemd / external-embeddings) plus a common production checklist (WAL pragma, API key generation, OAuth storage, health checks, backups, hybrid sync owner). Security: the example API key (also present in two `archive/` files where it is no longer load-bearing) was removed from the active doc. (PR #836, closes #835)
+
+### Documentation
+
+- **New: [`docs/memory-ontology.md`](docs/memory-ontology.md)**: Documents the built-in memory-type taxonomy (12 base types, ~60 subtypes), the rationale for ontology validation, the coercion warning surfaced in store responses, and the JSON format for `MCP_CUSTOM_MEMORY_TYPES`. Linked from the README documentation index and from the `memory_store` MCP tool description. `.env.example` expanded with concrete examples for the env var. (Issue #843)
+- **Housekeeping audit follow-up — wave 1 + wave 2** (closes #823): Archived 19 historical/superseded `docs/` files to `docs/archive/` (5 phase-2 code-quality artifacts, 3 historical development docs, 3 phase reports, 2 superseded release notes, 4 planning artifacts, 2 one-time artifacts). Added 13 inbound links from `docs/README.md` for legitimate orphan guides (gemini integration, groq integrations, deployment guides, natural-memory-triggers, architecture & design). Two new sections added to the docs index: "Natural Memory Triggers" and "Architecture & Design". (PRs #831, #832)
+- **Wiki cleanup**: TOC anchors fixed (commits `387db7f`, closes #824), macOS Intel link redirected to existing Platform Setup section (commit `80bdc17`, closes #825), Windows guide cluster consolidated into single `Windows-Hybrid-Setup.md` (closes #834), Cloudflare guide cluster consolidated by removing pre-hybrid `Cloudflare-Based-Multi-Machine-Sync.md` and adding deprecation guidance to `Cloudflare-Backup-Sync-Setup.md` (closes #833).
+- **`docs/BENCHMARKS.md` clarification**: benchmark run version (`v10.34.0`) now annotated with "(benchmark run version; latest release: vX.Y.Z)" to prevent new readers from interpreting the historical run version as current. (PR #829, closes #826)
+
+## [10.49.0] - 2026-05-04
+
+### Added
+- **CLI lifecycle commands**: Added `launch`, `stop`, `restart`, `info`, `health`, `logs` commands for background HTTP server management. These commands use the new `cli/lifecycle.py` module with cross-platform PID tracking and health polling.
+- **Lazy CLI command loading**: Ingestion commands (`ingest-document`, `ingest-directory`, `list-formats`) are now lazy-loaded — imported only when invoked, not at CLI startup.
+- **Lazy package imports**: Heavy dependencies (torch, transformers, sentence-transformers) are imported only when lazy-loaded attributes like `Memory`, `MemoryQueryResult`, or `MemoryStorage` are accessed.
+- **Unit tests for lazy loading**: Added targeted unit tests covering package lazy imports, CLI lazy command availability, and lifecycle command registration.
+
+### Changed
+- **CLI startup performance**: `memory --help` and lifecycle commands now start in under 3 seconds (was ~22s) by avoiding eager ML imports at module load time.
+- **HTTP host/port ergonomics**: `memory server --http` now supports `--http-host` and `--http-port`; lifecycle commands use `--host` and `--port` with environment fallbacks.
+- **`restart` inherits flags**: `restart` threads `--storage-backend` and `--debug` flags from the running server process automatically.
+- **Test conftest cleanup**: Removed Unicode emoji characters from `tests/conftest.py` to avoid `UnicodeEncodeError` on Windows cp1252 consoles.
+- **Test architecture**: `tests/test_memory_ontology_integration.py` rewritten to drop `sys.modules` shadow gymnastics; subprocess isolation for lazy-import assertions; qualified conftest imports in csv/json/semtools loader tests restored (+18 recovered tests, total ~1,803).
+
+### Security
+- **Fixed command injection in `launch`**: Replaced unsafe `-c` command string with safe argument list using `sys.executable -m uvicorn` with separate args for `--host` and `--port`. User-controlled host values no longer get interpolated into code strings. (PR #740)
+- **Fixed file handle leak in detached launch**: Parent process now explicitly closes stdout/stderr file handles immediately after spawning child process, preventing resource exhaustion. (PR #740)
+- **`MCP_ALLOW_ANONYMOUS_ACCESS` pass-through**: The env var is no longer forced to `true` internally; the actual environment value is now passed through to the launched server, restoring the intended security boundary.
+- **PR #438 test-safety protections preserved**: Windows test-safety positive allowlist is maintained alongside production indicators — the triple-safety system against production database deletion remains intact.
+
+### Fixed
+- **PID-reuse detection**: `stop` and `restart` commands detect PID reuse via `create_time` + `cmdline_hint` to avoid killing an unrelated process that inherited the same PID.
+- **Version lookup**: CLI `info` command now reads version from `_version.py` directly instead of `importlib.metadata`, avoiding stale cached values.
+- **Optimized log reading**: `logs` command uses streaming tail with `collections.deque(maxlen=lines)` instead of `read_text().splitlines()` to avoid loading the entire log file into memory. (PR #740)
+- **Security warnings in docs**: Added explicit security notice in `launch` command help text and `README.md` lifecycle section warning that binding to non-loopback hosts exposes the API. (PR #740)
+
+### Credits
+- Lead author: @creativelaides (Jose Velaides) — original PR #743; all 6 commits co-authored on the merged squash in PR #841.
+
+
+## [10.48.0] - 2026-05-02
+
+### Added
+
+- **[#732] `include_superseded` retrieval filter — opt in to see the full contradiction chain**: All retrieval paths (`memory_search`, `retrieve`, `retrieve_with_quality_boost`, `retrieve_hybrid`) and all storage backends (`sqlite_vec`, `cloudflare`, `hybrid`, `milvus`, `http_client`) now accept an `include_superseded: bool = False` parameter. Default behavior is unchanged — superseded memories stay filtered out — but callers can pass `include_superseded=True` to retrieve the complete contradiction chain. Partial implementation of RFC #732. Thanks to @filhocf. (PR #814)
+- **[#732] Auto-mark `superseded_by` on high-confidence contradiction**: The consolidator now automatically marks the older memory with `superseded_by` pointing to the newer one whenever a `contradicts` relationship is detected with confidence ≥ 0.75. Executed in a single batched transaction via the new `mark_superseded_batch()` storage method (thread-safe via `_conn_lock` / `_execute_with_retry`). No DB migration needed — uses existing `superseded_by` column from migration 011. 5 new tests in `tests/storage/test_superseded_filter.py`. Thanks to @filhocf. (PR #814)
+
+
+## [10.47.2] - 2026-05-02
+
+### Fixed
+
+- **[#808] Consolidation schedule defaults changed to `'disabled'` — operators must now opt in to automatic consolidation**: Previously, omitting `MCP_SCHEDULE_DAILY`, `MCP_SCHEDULE_WEEKLY`, and `MCP_SCHEDULE_MONTHLY` env vars silently activated automatic consolidation runs at `02:00` daily, `SUN 03:00` weekly, and `01 04:00` monthly. One affected deployment accumulated 1,369 unintended `compressed/` entries and had 76+ files silently archived in a monthly run they believed was disabled. The defaults are now `'disabled'` — automatic consolidation no longer runs unless the env vars are explicitly set. **If you relied on the prior automatic behavior**, add the following to your `.env` to restore it: `MCP_SCHEDULE_DAILY=02:00`, `MCP_SCHEDULE_WEEKLY=SUN 03:00`, `MCP_SCHEDULE_MONTHLY=01 04:00`. A new `CONSOLIDATION SCHEDULING` section in `.env.example` documents the syntax. Quarterly schedule format docstring corrected (caught by gemini-code-assist). Closes #808. (PR #821, commit `0d4a658`)
+
+### Added
+
+- **[#811] Docker `:slim` and `:quality-cpu` images missing `aiosqlite` and other core deps**: The hand-curated dependency lists in `tools/docker/Dockerfile.slim` and `tools/docker/Dockerfile.quality-cpu` had drifted from `pyproject.toml`'s `dependencies` block. Both Dockerfiles use `pip install -e . --no-deps` to skip the heavy ML stack (`torch`, `transformers`, `sentence-transformers`) but were also accidentally skipping `aiosqlite>=0.20.0` (the visible failure: `ModuleNotFoundError: No module named 'aiosqlite'` on first memory tool call with `MCP_MEMORY_STORAGE_BACKEND=sqlite_vec`), plus `apscheduler` (consolidation), `authlib`/`PyJWT[crypto]`/`cryptography` (OAuth), `httpx`/`requests`, `python-dotenv`, and `pypdf`. The list was also still installing the deprecated `PyPDF2` while the code imports `pypdf`. Both Dockerfiles now ship the full pyproject `dependencies` set minus the heavy ML deps, with `mcp` and `tokenizers` version specifiers re-aligned to pyproject. The `Dockerfile.slim` install step also strips uv/pip caches at the end of the RUN, mirroring `Dockerfile.quality-cpu`. Closes #811. (PR #815)
+
 ## [10.47.1] - 2026-05-01
 
 ### Fixed
@@ -165,6 +253,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Fixed
 
 - **plugin**: `plugin.json` `author` field now uses the Claude Code plugin spec's required object format (`{"name": "..."}`) instead of the pre-spec string form. Unblocks `/plugin install mcp-memory-service` — thanks @yingzhi0808 for the report (#738) and the fix (#739).
+
 
 ## [10.39.0] - 2026-04-19
 

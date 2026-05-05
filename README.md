@@ -182,7 +182,7 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 
 ### vs. MCP-Native Alternatives
 
-[MemPalace](https://github.com/milla-jovovich/mempalace) is an MCP-native alternative that went viral in April 2026 with strong LongMemEval claims. A [community code review (Issue #27)](https://github.com/milla-jovovich/mempalace/issues/27) subsequently showed that the headline numbers reflect the underlying vector store rather than the advertised Palace architecture, and the maintainers acknowledged most points. We keep the comparison here for transparency, but readers should interpret the scores with that context in mind.
+[MemPalace](https://github.com/MemPalace/mempalace) is an MCP-native alternative that went viral in April 2026 with strong LongMemEval claims. A [community code review (Issue #27)](https://github.com/MemPalace/mempalace/issues/27) subsequently showed that the headline numbers reflect the underlying vector store rather than the advertised Palace architecture, and the maintainers acknowledged most points. We keep the comparison here for transparency, but readers should interpret the scores with that context in mind.
 
 | | **MemPalace** | **mcp-memory-service** |
 |---|---|---|
@@ -202,7 +202,7 @@ A production-tested self-hosted deployment using Docker containers behind a Clou
 1. **Ingestion granularity.** MemPalace stores each conversation as a single unit (session-level). LongMemEval asks "which session contains the answer?" — a question that session-level storage answers structurally. mcp-memory-service defaults to turn-level storage (one entry per message), which enables fine-grained retrieval ("what exactly did the user say about X?") but spreads a session's signal across many entries. Using `memory_store_session` (added in v10.35.0) brings our score to **86.0% R@5**.
 2. **What the 96.6% actually measures.** Per Issue #27, MemPalace's headline number is produced in "raw mode" — plain text stored in ChromaDB with default embeddings. The Palace architecture (Wings, Rooms, Halls) is **not active** in that configuration; "Halls" exist only as metadata strings with no effect on ranking. The 96.6% is therefore a ChromaDB + default-embedding baseline, not a measurement of MemPalace's structural retrieval features. A direct "apples-to-apples" architectural comparison is not possible with the published numbers.
 
-> ¹ Measured in MemPalace "raw mode" (plain text in ChromaDB with default embeddings). Per [Issue #27](https://github.com/milla-jovovich/mempalace/issues/27), the Palace structural features are bypassed in this configuration.
+> ¹ Measured in MemPalace "raw mode" (plain text in ChromaDB with default embeddings). Per [Issue #27](https://github.com/MemPalace/mempalace/issues/27), the Palace structural features are bypassed in this configuration.
 >
 > ² 100% result uses optional LLM reranking (~500 API calls) on a partially tuned test set. Clean held-out score (as reported by the maintainers): **98.4% R@5**.
 
@@ -366,6 +366,39 @@ Choose from:
 
 ---
 
+## 🛠️ CLI Server Lifecycle Commands
+
+In addition to `memory server --http` (foreground mode), the CLI now includes
+server lifecycle commands for background HTTP management:
+
+```bash
+# Start HTTP server in background (default host=127.0.0.1, port=8000)
+memory launch
+
+# Start on a custom port
+memory launch --port 8192
+
+# Check status and health
+memory info --port 8192
+memory health --port 8192
+
+# View recent logs and stop server
+memory logs --lines 50
+memory stop --port 8192
+```
+
+These commands are optimized for fast startup and avoid loading heavy ML
+dependencies unless needed.
+
+⚠️  **Security Note**: By default, the server binds to `127.0.0.1` (localhost only).
+To expose the server on your network or allow remote access, you can use
+`--host 0.0.0.0` or set `MCP_HTTP_HOST=0.0.0.0`. However, **this exposes the
+API to your network** and should be done only in trusted environments with
+proper authentication and firewall rules in production. For untrusted networks,
+use TLS termination (reverse proxy with HTTPS) or VPN overlays.
+
+---
+
 ## 💡 Why You Need This
 
 ### The Problem
@@ -457,19 +490,23 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.47.1** (May 1, 2026)
+## Latest Release: **v10.49.4** (May 5, 2026)
 
-**fix(web): surface /server/update failures end-to-end**
+**fix(consolidation): protect high-value mistake notes from decay/forgetting (PR #854, @filhocf)**
 
-**What's Fixed:**
-- **`/server/update` no longer silently fails**: Dirty-tree check (HTTP 409), real stderr on git/pip failure (HTTP 500), post-restart PID/version polling, and force-retry dialog on dirty tree. 8 new tests. Closes #729. (PR #807)
-- **CodeQL log injection**: CR/LF sanitization on audit log inputs in `server.py`.
-- **Frontend status propagation**: `apiCall` in `app.js` now attaches `.status` to thrown errors for proper 409/500 branching.
-- **CI monkeypatch fix**: `test_server_management.py` uses module-object refs instead of dotted strings — fixes `uvx` isolated-env CI failures.
+**What's New:**
+- **Mistake notes survive consolidation**: `_is_protected_memory()` now shields `memory_type='mistake'` records with `failure_count >= 3` from decay and forgetting passes. Error-replay knowledge is no longer silently erased during scheduled consolidation. Closes #853.
 
 ---
 
 **Previous Releases**:
+- **v10.49.3** - fix(opencode): correct API path, payload field, and client-side tag filter (PRs #849, #850)
+- **v10.49.2** - fix(ontology): register custom base types with empty subtype lists (PR #846)
+- **v10.49.1** - fix: surface memory_type ontology coercion warnings + uvx CI flake fix (PR #844)
+- **v10.49.0** - feat(cli): lazy lifecycle commands and faster startup (PR #841, @creativelaides)
+- **v10.48.0** - feat: include_superseded retrieval filter + auto-mark on contradiction (PR #814, @filhocf)
+- **v10.47.2** - fix(consolidation): disable-by-default schedule prevents unintended automatic consolidation (PR #821, closes #808)
+- **v10.47.1** - fix(web): surface /server/update failures end-to-end (PR #807, closes #729)
 - **v10.47.0** - feat: memory_quality maintain orchestrator + Docker DeBERTa quantization (PRs #802, #803, @filhocf, closes #799, #793)
 - **v10.46.0** - feat: stale_days filter for memory_list — dormant memory detection (PR #796, @filhocf, closes #784)
 - **v10.45.1** - fix: CodeQL redundant import cleanup + soft-delete regression tests (PRs #794, #795, @filhocf)
@@ -646,6 +683,7 @@ If you encounter issues during migration:
 - **[Architecture Overview](docs/architecture.md)** – How it works under the hood
 - **[Team Setup Guide](docs/setup-guide.md#path-4-full-stack)** – OAuth and cloud collaboration
 - **[Knowledge Graph Dashboard](docs/features/knowledge-graph-dashboard.md)** 🆕 – Interactive graph visualization guide
+- **[Memory Type Ontology](docs/memory-ontology.md)** 🆕 – Built-in taxonomy and `MCP_CUSTOM_MEMORY_TYPES` env var
 - **[Troubleshooting](docs/troubleshooting/)** – Common issues and solutions
 - **[API Reference](https://github.com/doobidoo/mcp-memory-service/wiki)** – Programmatic usage
 - **[Wiki](https://github.com/doobidoo/mcp-memory-service/wiki)** – Complete documentation
