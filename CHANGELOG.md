@@ -10,6 +10,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.51.3] - 2026-05-08
+
+### Added
+
+- **Versioned memory update via `memory_update` tool** ([#865](https://github.com/doobidoo/mcp-memory-service/pull/865), @filhocf): Adds `versioned: bool = False` parameter to the `memory_update` MCP tool. When `True`, routes through `update_memory_versioned()` in sqlite_vec, storing `superseded_by` in the replaced memory's metadata for a full audit trail. Returns an explicit error message on backends that do not support versioning.
+- **Transitive inference and relationship suggestions in `memory_graph`** ([#866](https://github.com/doobidoo/mcp-memory-service/pull/866), @filhocf): Wires `infer` and `suggest` actions into the `memory_graph` MCP tool. `infer_transitive` computes the transitive closure of a starting node using a recursive CTE in `GraphStorage` (database-side traversal, no Python BFS), keeping large graph queries fast. `suggest_relationships` proposes new edges based on semantic proximity of existing associations.
+
+## [10.51.2] - 2026-05-08
+
+### Fixed
+
+- **OAuth CORS preflight failures and missing resource_metadata** ([#877](https://github.com/doobidoo/mcp-memory-service/pull/877), @ghelleks): Resolves three bugs in the OAuth remote connector flow. CORS headers were missing on the `oauth_app` sub-application; `OPTIONS` requests to `/mcp` were not handled, blocking browser-based preflight checks; and `WWW-Authenticate` headers lacked the `resource_metadata` field required by RFC 9728, causing Remote MCP clients to fail authentication discovery. Fixes issue [#876](https://github.com/doobidoo/mcp-memory-service/issues/876).
+- **Milvus consolidation returning 0 clusters/associations** ([#878](https://github.com/doobidoo/mcp-memory-service/pull/878), @henry201605): Adds `include_embedding: bool = False` opt-in parameter to Milvus read paths (`retrieve_memory`, `list_memories`). When `True`, raw embedding vectors are returned alongside memory data, enabling the consolidation pipeline to access embeddings during clustering and association discovery. Fixes consolidation silently returning 0 clusters and 0 associations on Milvus deployments.
+
+## [10.51.1] - 2026-05-07
+
+### Fixed
+
+- **Milvus consolidation failure** ([#872](https://github.com/doobidoo/mcp-memory-service/pull/872), @henry201605): Adds `delete_memory(hash) -> bool` alias to `MilvusMemoryStorage`. Without this method, `memory_consolidate` silently failed on the Milvus backend during Compression (stage 4) and Controlled Forgetting (stage 5) with `AttributeError`. No behaviour change for other backends.
+
+## [10.51.0] - 2026-05-07
+
+### Added
+
+- **Plugin fire points wired into MemoryService lifecycle** ([#864](https://github.com/doobidoo/mcp-memory-service/pull/864), @filhocf): Connects the plugin hook scaffolding (introduced in v10.50.0, PR #856) to actual lifecycle events in `MemoryService`. The four hooks — `on_store`, `on_delete`, `on_retrieve`, and `on_consolidate` — are now invoked at the appropriate call sites. Third-party plugins registered via `entry_points` will receive live events from this release onward.
+- **`GET /api/types` endpoint + dynamic type dropdowns in dashboard** ([#863](https://github.com/doobidoo/mcp-memory-service/pull/863), @filhocf): New REST endpoint returns all valid memory types (built-in + custom types from `MCP_CUSTOM_MEMORY_TYPES`). The web dashboard type filter and store-form dropdowns are now populated dynamically from this endpoint instead of being hardcoded, so custom ontology entries appear automatically in the UI.
+- **Audit-log example plugin** ([#867](https://github.com/doobidoo/mcp-memory-service/pull/867), @filhocf): Reference implementation in `examples/plugins/audit_log/` demonstrating all four lifecycle hooks. Shows how to write, package, and install a plugin using `entry_points` discovery. Serves as living documentation for the plugin API.
+
+## [10.50.0] - 2026-05-06
+
+### Added
+
+- **Plugin hook scaffolding** ([#856](https://github.com/doobidoo/mcp-memory-service/pull/856), @filhocf, refs [#732](https://github.com/doobidoo/mcp-memory-service/issues/732)): Introduces the plugin extension API for `mcp-memory-service`. Four lifecycle hooks are defined — `on_store`, `on_delete`, `on_retrieve`, and `on_consolidate` — with `entry_points` discovery so third-party packages can register hooks without modifying core. This is pure scaffolding; fire points will be wired into `MemoryService` in a follow-up PR. Enables the ecosystem extensibility roadmap item from canonical issue #732.
+
+### Changed
+
+- **Dependency bumps** (PRs [#858](https://github.com/doobidoo/mcp-memory-service/pull/858), [#859](https://github.com/doobidoo/mcp-memory-service/pull/859), [#860](https://github.com/doobidoo/mcp-memory-service/pull/860), [#861](https://github.com/doobidoo/mcp-memory-service/pull/861)):
+  - `actions/attest-build-provenance` 1 → 4
+  - `github/codeql-action` 3 → 4
+  - `hadolint/hadolint-action` 3.1.0 → 3.3.0
+  - `authlib` 1.7.0 → 1.7.1, `cryptography` 47 → 48, `torch` 2.10 → 2.11, `setuptools` 82 → 81 (uv group bump, 905 tests validated)
+
 ## [10.49.4] - 2026-05-05
 
 ### Fixed
