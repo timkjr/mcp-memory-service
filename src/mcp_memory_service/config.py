@@ -1233,6 +1233,13 @@ except (ValueError, TypeError):
 # AND their age difference exceeds this threshold (prevents resolving recent updates)
 MAINTAIN_AUTO_RESOLVE_AGE_DAYS = safe_get_int_env('MCP_MAINTAIN_AUTO_RESOLVE_AGE_DAYS', 7, min_value=0, max_value=365)
 
+# Insight Cards (Phase 3, #732) — opt-in, generates pattern/trend/gap insights during maintain
+MCP_INSIGHT_CARDS_ENABLED = safe_get_bool_env('MCP_INSIGHT_CARDS_ENABLED', False)
+
+# Maximum memories to scan per maintain cycle for entity extraction and insight cards.
+# 0 = unlimited (scans all memories — may be slow on large corpora).
+MAINTAIN_SCAN_LIMIT = safe_get_int_env('MCP_MAINTAIN_SCAN_LIMIT', 2000, min_value=0)
+
 # =============================================================================
 # Configuration Validation
 # =============================================================================

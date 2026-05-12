@@ -460,6 +460,9 @@ Export memories from mcp-memory-service → Import to shodh-cloudflare → Sync 
 📊 **Web Dashboard** – Visualize and manage memories at `http://localhost:8000`
 🧬 **Knowledge Graph** – Interactive D3.js visualization of memory relationships
 🏠 **Homelab Quality Scoring** – Point scoring at any OpenAI-compatible endpoint (Ollama, LiteLLM, vLLM)
+🔗 **Entity Extraction** – Auto-links @mentions, #tags, URLs, and file paths from memory content to a queryable entity graph
+💡 **Insight Cards** – Consolidation detects patterns, trends, and knowledge gaps across your memory corpus and surfaces them as structured insights
+🏷️ **Tag Match Filtering** – `tag_match=AND/OR` on `memory_search` for precise multi-tag queries
 
 **Homelab / self-hosted quality scoring** (v10.45.0+): set `MCP_QUALITY_AI_PROVIDER=openai-compatible` to score memories with your local LLM instead of ONNX or a cloud API:
 
@@ -493,17 +496,26 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.51.3** (May 8, 2026)
+## Latest Release: **v10.56.2** (May 12, 2026)
 
-**feat(memory_update + memory_graph): versioned update flag and transitive/suggest graph actions (PRs #865, #866, @filhocf)**
+**Compatibility fixes for Milvus and stale-process server upgrades**
 
-**What's New:**
-- **Versioned memory updates**: `memory_update` now accepts a `versioned: bool = False` parameter. When `True`, routes through `update_memory_versioned()` in sqlite_vec, storing `superseded_by` in metadata for full audit trail. Returns an explicit error on unsupported backends. (PR #865, @filhocf)
-- **Transitive inference and relationship suggestions**: `memory_graph` gains `infer` and `suggest` actions. Transitive closure uses a recursive CTE in GraphStorage (database-side, no Python BFS), making large graph traversals fast and efficient. (PR #866, @filhocf)
+**What's Fixed:**
+- `MilvusMemoryStorage.count_all_memories()` was missing `stale_days` parameter, causing `TypeError` when called with this argument (all other backends accept it). Now accepted and silently ignored (Milvus has no `last_accessed` field).
+- `quality.py` maintain handler now falls back gracefully when `MAINTAIN_SCAN_LIMIT` cannot be imported from a stale `sys.modules` cache after an in-place server upgrade. Falls back to `MCP_MAINTAIN_SCAN_LIMIT` env-var (default 2000).
 
 ---
 
 **Previous Releases**:
+- **v10.56.1** - fix(session): pass session_id as conversation_id to bypass semantic dedup
+- **v10.56.0** - feat(consolidation): configurable maintain scan limit + InsightGenerator gap filter
+- **v10.55.2** - fix(insights): handle None memory\_type and tags in InsightGenerator sort
+- **v10.55.1** - fix(entities): entity links always 0 in `maintain` Step 5 due to wrong graph accessor (PR #895)
+- **v10.55.0** - feat(reasoning+consolidation): entity extraction, memory-entity linking, and Insight Cards (PRs #868, #869, @filhocf)
+- **v10.54.0** - feat(search): tag_match parameter for memory_search AND/OR tag filtering (PR #890, @filhocf)
+- **v10.53.0** - feat(milvus): activate consolidation embedding hydration end-to-end; security: GitPython 3.1.50 (PRs #885, #886, @henry201605)
+- **v10.52.0** - feat(search): cascading fallback when semantic results are sparse; refactor(storage): include_embeddings on bulk-read ABC methods (PRs #883, #881, @filhocf, @henry201605)
+- **v10.51.3** - feat(memory_update): versioned flag; feat(memory_graph): infer_transitive and suggest_relationships (PRs #865, #866, @filhocf)
 - **v10.51.2** - fix(oauth): CORS preflight failures and missing resource_metadata; refactor(milvus): opt-in embedding hydration on read paths (PRs #877, #878)
 - **v10.51.1** - fix(milvus): add delete_memory proxy for consolidation protocol (PR #872, @henry201605)
 - **v10.51.0** - feat(plugins): live plugin hooks + dynamic type dropdowns + audit-log example (PRs #863, #864, #867, @filhocf)

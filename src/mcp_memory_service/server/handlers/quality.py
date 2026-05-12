@@ -491,6 +491,103 @@ async def handle_maintain(server, arguments: dict) -> List[types.TextContent]:
         report["errors"].append(f"quality: {e}")
         report["steps"]["quality"] = {"error": str(e)}
 
+    # Pre-fetch memories once; shared by Steps 5 and 6 to avoid duplicate DB calls.
+    # Fallback guards against stale sys.modules cache when server runs across upgrades.
+    try:
+        from ...config import MAINTAIN_SCAN_LIMIT, MCP_INSIGHT_CARDS_ENABLED
+    except ImportError:
+        MAINTAIN_SCAN_LIMIT = int(__import__('os').environ.get('MCP_MAINTAIN_SCAN_LIMIT', '2000') or '2000')
+        MCP_INSIGHT_CARDS_ENABLED = __import__('os').environ.get('MCP_INSIGHT_CARDS_ENABLED', '').lower() in ('1', 'true', 'yes')
+    _all_mems = await storage.get_all_memories()
+    _scan_slice = _all_mems if MAINTAIN_SCAN_LIMIT == 0 else _all_mems[:MAINTAIN_SCAN_LIMIT]
+
+    # Step 5: Batch entity extraction
+    try:
+        from mcp_memory_service.reasoning.entities import EntityExtractor
+        from .graph import get_graph_storage
+
+        extractor = EntityExtractor()
+        total_entities = 0
+        linked = 0
+
+        graph = await get_graph_storage() if not dry_run else None
+
+        for mem in _scan_slice:
+            content = mem.content if hasattr(mem, 'content') else ""
+            metadata = mem.metadata if hasattr(mem, 'metadata') else {}
+            if isinstance(metadata, str):
+                import json as _json
+                try:
+                    metadata = _json.loads(metadata)
+                except Exception:
+                    metadata = {}
+
+            entities = extractor.extract_entities(content, metadata)
+            total_entities += len(entities)
+
+            if graph:
+                for ent in entities:
+                    try:
+                        await graph.store_entity_link(
+                            mem.content_hash, ent.name, ent.entity_type
+                        )
+                        linked += 1
+                    except Exception:
+                        pass
+
+        scanned = len(_scan_slice)
+        if dry_run:
+            report["steps"]["entities"] = {
+                "skipped_dry_run": True,
+                "memories_scanned": scanned,
+                "entities_found": total_entities,
+            }
+        else:
+            report["steps"]["entities"] = {
+                "memories_scanned": scanned,
+                "entities_found": total_entities,
+                "links_stored": linked,
+            }
+    except Exception as e:
+        report["errors"].append(f"entities: {e}")
+        report["steps"]["entities"] = {"error": str(e)}
+
+    # Step 6: Insight Cards generation (opt-in)
+    if MCP_INSIGHT_CARDS_ENABLED:
+        try:
+            from ...consolidation.insights import InsightGenerator, store_insights
+
+            mem_dicts = []
+            for m in _scan_slice:
+                mem_dicts.append({
+                    "content_hash": m.content_hash,
+                    "tags": m.tags if isinstance(m.tags, list) else [t.strip() for t in (m.tags or "").split(",") if t.strip()],
+                    "memory_type": m.memory_type,
+                    "created_at": m.created_at,
+                })
+
+            generator = InsightGenerator()
+            insights = generator.generate_insights(mem_dicts, [])
+
+            if dry_run:
+                report["steps"]["insights"] = {
+                    "skipped_dry_run": True,
+                    "candidates": len(insights),
+                    "types": {t: sum(1 for i in insights if i.insight_type == t) for t in ("pattern", "trend", "gap")},
+                }
+            else:
+                stored = await store_insights(insights, storage)
+                report["steps"]["insights"] = {
+                    "generated": len(insights),
+                    "stored": len(stored),
+                    "types": {t: sum(1 for i in insights if i.insight_type == t) for t in ("pattern", "trend", "gap")},
+                }
+        except Exception as e:
+            report["errors"].append(f"insights: {e}")
+            report["steps"]["insights"] = {"error": str(e)}
+    else:
+        report["steps"]["insights"] = {"skipped": True, "reason": "MCP_INSIGHT_CARDS_ENABLED=false"}
+
     elapsed = round(time.time() - start, 2)
     report["elapsed_seconds"] = elapsed
     report["completed_at"] = datetime.now(timezone.utc).isoformat()

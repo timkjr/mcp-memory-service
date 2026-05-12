@@ -10,6 +10,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.56.2] - 2026-05-12
+
+### Fixed
+
+- **fix(milvus): add missing `stale_days` param to `count_all_memories`** ([#901](https://github.com/doobidoo/mcp-memory-service/pull/901), @henry201605): `MilvusMemoryStorage.count_all_memories()` was missing the `stale_days: Optional[int] = None` parameter present on all other backends, causing a `TypeError` when callers passed this argument. The parameter is now accepted and silently ignored (Milvus has no `last_accessed` field).
+- **fix(quality): graceful fallback for `MAINTAIN_SCAN_LIMIT` on stale server process**: Wrapped the `from ...config import MAINTAIN_SCAN_LIMIT, MCP_INSIGHT_CARDS_ENABLED` import in a `try/except ImportError` block. On in-place upgrades where the server process has a stale `sys.modules` cache, the import can fail; the handler now falls back to reading `MCP_MAINTAIN_SCAN_LIMIT` from the environment (default: 2000) so maintain cycles continue working without a full server restart.
+
+## [10.56.1] - 2026-05-12
+
+### Fixed
+
+- **fix(session): pass `session_id` as `conversation_id` to bypass semantic dedup** ([#898](https://github.com/doobidoo/mcp-memory-service/pull/898), @henry201605): `memory_store_session` calls were incorrectly blocked by semantic deduplication against topically-similar atomic memories — a category error (session logs vs atomic facts). Fixed by setting `skip_dedup = bool(conversation_id) or (memory_type == "session")` in `memory_service.store_memory()`.
+- **fix(maintain): hoist `get_all_memories()` and `scan_slice` before Steps 5 & 6** (addresses code review on [#899](https://github.com/doobidoo/mcp-memory-service/pull/899)): Eliminates a duplicate DB call and a latent `NameError` where `MAINTAIN_SCAN_LIMIT` was only defined inside Step 5's try block and would have raised `NameError` in Step 6 if Step 5 failed before reaching the import.
+
+## [10.56.0] - 2026-05-12
+
+### Added
+
+- **`MCP_MAINTAIN_SCAN_LIMIT` env var** (default: 2000, 0 = unlimited): Controls how many memories are scanned per maintain cycle for entity extraction (Step 5) and insight card generation (Step 6). Previously hardcoded to 500 — large deployments can now tune or remove the cap entirely.
+
+### Fixed
+
+- **InsightGenerator gap detector skips metadata/status tags**: The `_detect_gaps` method now ignores tags that are operational markers rather than knowledge domains (`conflict:unresolved`, `automated`, `__test__`, `temporary`, `processed`, `auto-generated`, `insight-card`), eliminating false-positive "Decision gap" insight cards for these system tags.
+
+## [10.55.2] - 2026-05-12
+
+### Fixed
+
+- **fix(insights): handle None memory\_type and tags in InsightGenerator sort**: Fixed `TypeError: '<' not supported between instances of 'str' and 'NoneType'` in `InsightGenerator` when memories have `None` values for `memory_type` or `tags` fields. `dict.get(key, default)` does not fall back to the default when the key is present with a `None` value; fixed with `or ""` / `or []` idiom. Step 6 (Insight Cards) in the `maintain` cycle now runs without errors.
+
+## [10.55.1] - 2026-05-11
+
+### Fixed
+
+- **`maintain` Step 5: entity links always 0 due to wrong graph accessor** ([#895](https://github.com/doobidoo/mcp-memory-service/pull/895)): `quality.py` Step 5 checked `storage.graph`, which is never set on storage objects, so `links_stored` was always `0` even when `entities_found > 0`. Fixed by using `get_graph_storage()` — the same accessor pattern used by all other graph handlers.
+
+## [10.55.0] - 2026-05-11
+
+### Added
+
+- **Entity extraction and memory-entity linking** ([#868](https://github.com/doobidoo/mcp-memory-service/pull/868), @filhocf): Phase 2 of the #732 reasoning roadmap. Introduces `EntityExtractor` that detects @mentions, #tags, URLs, and file paths inside memory content. `memory_search` gains an `entity` filter parameter for targeted retrieval; `memory_graph` gains `action="extract_entities"` to surface entities from a memory. Entity extraction also runs as Step 5 in the `maintain` consolidation cycle, continuously indexing entities from new memories.
+
+- **Insight Cards — automated pattern/trend/gap detection** ([#869](https://github.com/doobidoo/mcp-memory-service/pull/869), @filhocf): Phase 3 of the #732 reasoning roadmap. Adds `InsightGenerator` that analyses the memory corpus and produces three insight types: patterns (recurring knowledge clusters), trends (frequency changes over time), and gaps (under-represented topic areas). Runs as Step 6 in the `maintain` consolidation cycle. Opt-in via `MCP_INSIGHT_CARDS_ENABLED` (default: `false`) to avoid performance impact on existing deployments.
+
+### Changed
+
+- **Bump urllib3 2.6.3 → 2.7.0** ([#893](https://github.com/doobidoo/mcp-memory-service/pull/893)): Routine dependency update.
+
+## [10.54.0] - 2026-05-10
+
+### Added
+
+- **`tag_match` parameter for `memory_search` MCP tool** ([#890](https://github.com/doobidoo/mcp-memory-service/pull/890), @filhocf, closes [#889](https://github.com/doobidoo/mcp-memory-service/issues/889)): Extends the AND/OR tag filtering already present in `memory_delete` to the `memory_search` tool. Accepts `tag_match: "any"` (OR, default — existing behavior unchanged) or `tag_match: "all"` (AND — only memories matching every supplied tag are returned). Implemented across `server_impl.py`, `server/handlers/memory.py`, and `storage/base.py`.
+
+## [10.53.0] - 2026-05-09
+
+### Added
+
+- **Milvus consolidation embedding hydration end-to-end** ([#885](https://github.com/doobidoo/mcp-memory-service/pull/885), @henry201605): Completes a 4-PR series (#872, #878, #881, #885) that fixes a production failure on Milvus-backed deployments where consolidation produced 0 clusters and 0 associations. Root cause: the `vector` column was dropped during bulk reads, leaving every `Memory` with `embedding=None`. `consolidator._get_memories_for_horizon` now passes `include_embeddings=True` to both `get_all_memories` and `get_memories_by_time_range`. Supporting changes: `sqlite_vec.get_memories_by_time_range` gains a conditional LEFT JOIN on `memory_embeddings`; `hybrid.py` forwards the kwarg to the primary backend; `cloudflare.py` accepts the kwarg on both methods (ignores it — vectors live in Vectorize); `milvus._coerce_vector` now explicitly rejects `str`/`bytes`/`dict` types and `_log_hydration_stats` receives a pre-computed count for O(n) efficiency. Covered by 24 unit tests (`test_milvus_hydration.py`) and 5 Milvus Lite integration tests (`test_milvus_consolidation.py`).
+
+### Security
+
+- **Bump GitPython 3.1.47 → 3.1.50** ([#886](https://github.com/doobidoo/mcp-memory-service/pull/886)): Resolves 3 high-severity vulnerabilities in transitive dependency (`wandb → GitPython`): path traversal allowing arbitrary file write/delete outside the repository ([GHSA-7545-fcxq-7j24](https://github.com/advisories/GHSA-7545-fcxq-7j24)), newline injection in `config_writer().set_value()` enabling RCE via `core.hooksPath` ([GHSA-v87r-6q3f-2j67](https://github.com/advisories/GHSA-v87r-6q3f-2j67)), and newline injection in `config_writer()` section parameter bypassing the prior CVE patch ([GHSA-mv93-w799-cj2w](https://github.com/advisories/GHSA-mv93-w799-cj2w)).
+
+## [10.52.0] - 2026-05-08
+
+### Added
+
+- **Cascading search fallback when semantic results are sparse** ([#883](https://github.com/doobidoo/mcp-memory-service/pull/883), @filhocf, closes [#873](https://github.com/doobidoo/mcp-memory-service/issues/873)): Adds a two-tier fallback to `retrieve_memories` for deployments where vector similarity produces fewer results than requested. When enabled (`fallback=True`, opt-in), the system first attempts a BM25 exact-match pass over stored content, then a tag-intersection pass, and merges de-duplicated results up to `n_results`. Default is `fallback=False` so existing callers are unaffected.
+
+### Changed
+
+- **`MemoryStorage` ABC — `include_embeddings` parameter on bulk-read methods** ([#881](https://github.com/doobidoo/mcp-memory-service/pull/881), @henry201605): `get_all_memories` and `get_memories_by_time_range` in the base class (and all concrete backends) now accept `include_embeddings: bool = False`. When `True`, raw embedding vectors are hydrated into the returned `Memory` objects, enabling consolidation pipelines that need embedding data without a separate fetch. Default preserves existing behaviour for all callers.
+
+### Fixed
+
+- **CI fork-PR label/comment automation** ([#882](https://github.com/doobidoo/mcp-memory-service/pull/882)): Workflow triggers that write labels or post comments now use `pull_request_target` instead of `pull_request`, resolving `403` read-only-token failures that broke automation for all fork-originated PRs.
+
 ## [10.51.3] - 2026-05-08
 
 ### Added

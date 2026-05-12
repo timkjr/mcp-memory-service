@@ -1488,6 +1488,12 @@ Examples:
                                     ],
                                     "description": "Filter to memories with any of these tags"
                                 },
+                                "tag_match": {
+                                    "type": "string",
+                                    "enum": ["any", "all"],
+                                    "default": "any",
+                                    "description": "Match ANY tag (OR, default) or ALL tags (AND)"
+                                },
                                 "quality_boost": {
                                     "type": "number",
                                     "minimum": 0,
@@ -1515,6 +1521,15 @@ Examples:
                                     "type": "boolean",
                                     "default": False,
                                     "description": "Include memories that have been superseded by newer contradicting memories. Default: false (superseded memories are hidden)."
+                                },
+                                "entity": {
+                                    "type": "string",
+                                    "description": "Filter by linked entity name. Returns only memories that have been linked to this entity via entity extraction. Use after running maintain to populate entity links."
+                                },
+                                "fallback": {
+                                    "type": "boolean",
+                                    "default": False,
+                                    "description": "Enable cascading fallback when semantic results are sparse. When true and fewer than 3 results are found with scores below 0.4, automatically attempts BM25 keyword match and tag intersection. Each result includes match_method field. Default: false."
                                 }
                             }
                         },
