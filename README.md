@@ -496,17 +496,22 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.56.2** (May 12, 2026)
+## Latest Release: **v10.57.0** (May 13, 2026)
 
-**Compatibility fixes for Milvus and stale-process server upgrades**
+**Tag-match filtering for `memory_list` + automatic session chunking**
+
+**What's New:**
+- `memory_list` now accepts `tag_match="any"` (OR, default) / `tag_match="all"` (AND) — harmonizes with `memory_search` and `memory_delete` filtering. Implemented across all three backends (sqlite_vec, cloudflare, hybrid) (PR #904, @filhocf).
+- `memory_store_session` automatically splits long sessions at turn boundaries. Configure with `SESSION_CHUNK_SIZE` (default 1500 chars, 0=disabled); chunks are tagged `chunk:N/M` for easy retrieval (PR #912, @filhocf).
 
 **What's Fixed:**
-- `MilvusMemoryStorage.count_all_memories()` was missing `stale_days` parameter, causing `TypeError` when called with this argument (all other backends accept it). Now accepted and silently ignored (Milvus has no `last_accessed` field).
-- `quality.py` maintain handler now falls back gracefully when `MAINTAIN_SCAN_LIMIT` cannot be imported from a stale `sys.modules` cache after an in-place server upgrade. Falls back to `MCP_MAINTAIN_SCAN_LIMIT` env-var (default 2000).
+- CI: `pr-contributor-welcome` workflow now guarded against non-PR event triggers to prevent crash on push events.
 
 ---
 
 **Previous Releases**:
+- **v10.56.3** - feat(milvus): get_memory_connections() via graph collection + fix(quality): MAINTAIN_SCAN_LIMIT fallback hardening
+- **v10.56.2** - fix(milvus): missing `stale_days` param in `count_all_memories` + fix(quality): graceful `MAINTAIN_SCAN_LIMIT` fallback
 - **v10.56.1** - fix(session): pass session_id as conversation_id to bypass semantic dedup
 - **v10.56.0** - feat(consolidation): configurable maintain scan limit + InsightGenerator gap filter
 - **v10.55.2** - fix(insights): handle None memory\_type and tags in InsightGenerator sort
