@@ -389,9 +389,9 @@ async def test_get_all_memories_and_count(storage):
     assert await storage.count_all_memories(tags=["g-1"]) == 1
     assert await storage.count_all_memories(memory_type="note") == 3
     assert await storage.count_all_memories(memory_type="reminder") == 0
-    # stale_days is accepted but ignored (Milvus has no last_accessed field)
-    assert await storage.count_all_memories(stale_days=7) == 3
-    assert await storage.count_all_memories(memory_type="note", stale_days=30) == 3
+    # stale_days filtering: memories just created are NOT stale
+    assert await storage.count_all_memories(stale_days=7) == 0
+    assert await storage.count_all_memories(memory_type="note", stale_days=30) == 0
 
 
 @pytest.mark.asyncio
@@ -463,6 +463,87 @@ async def test_get_memory_connections_with_graph_data(storage):
     client.drop_collection(collection_name=graph_collection)
 
 
+# -- Access tracking ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_access_collection_created_on_init(storage):
+    """_access collection is created during initialize()."""
+    assert storage._has_access_collection is True
+    assert storage.client.has_collection(collection_name=storage._access_collection)
+
+
+@pytest.mark.asyncio
+async def test_touch_access_creates_record(storage, sample_memory):
+    """retrieve() triggers _touch_access which creates a record in _access."""
+    await storage.store(sample_memory)
+    # Trigger retrieve to update last_accessed
+    await storage.retrieve("fastapi", n_results=1)
+    import asyncio
+    await asyncio.sleep(0.2)  # let async task complete
+
+    patterns = await storage.get_access_patterns()
+    assert sample_memory.content_hash in patterns
+
+
+@pytest.mark.asyncio
+async def test_touch_access_updates_timestamp(storage, sample_memory):
+    """Multiple retrieves update the timestamp."""
+    await storage.store(sample_memory)
+
+    await storage.retrieve("fastapi", n_results=1)
+    import asyncio
+    await asyncio.sleep(0.2)
+    patterns1 = await storage.get_access_patterns()
+    ts1 = patterns1.get(sample_memory.content_hash)
+    assert ts1 is not None
+
+    await asyncio.sleep(0.1)
+    await storage.retrieve("fastapi", n_results=1)
+    await asyncio.sleep(0.2)
+    patterns2 = await storage.get_access_patterns()
+    ts2 = patterns2.get(sample_memory.content_hash)
+    assert ts2 is not None
+    assert ts2 >= ts1
+
+
+@pytest.mark.asyncio
+async def test_get_access_patterns_returns_correct_format(storage, sample_memory):
+    """get_access_patterns returns Dict[str, datetime]."""
+    from datetime import datetime as dt
+    await storage.store(sample_memory)
+    await storage.retrieve("fastapi", n_results=1)
+    import asyncio
+    await asyncio.sleep(0.2)
+
+    patterns = await storage.get_access_patterns()
+    assert isinstance(patterns, dict)
+    for k, v in patterns.items():
+        assert isinstance(k, str)
+        assert isinstance(v, dt)
+
+
+@pytest.mark.asyncio
+async def test_delete_cleans_access_record(storage, sample_memory):
+    """Deleting a memory also removes its _access record."""
+    await storage.store(sample_memory)
+    await storage.retrieve("fastapi", n_results=1)
+    import asyncio
+    await asyncio.sleep(0.2)
+
+    # Verify access record exists
+    patterns = await storage.get_access_patterns()
+    assert sample_memory.content_hash in patterns
+
+    # Delete the memory
+    ok, _ = await storage.delete(sample_memory.content_hash)
+    assert ok
+
+    # Access record should be gone
+    patterns_after = await storage.get_access_patterns()
+    assert sample_memory.content_hash not in patterns_after
+
+
 # -- Update / stats ---------------------------------------------------------
 
 
@@ -496,6 +577,65 @@ async def test_update_rejects_bad_tag_type(storage, sample_memory):
     )
     assert not ok
     assert "list of strings" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_update_preserves_updated_at(storage, sample_memory):
+    """Regression: updating only metadata (not tags/type/content) with
+    preserve_timestamps=True must NOT bump updated_at.
+
+    This guards against consolidation's _update_consolidation_timestamps
+    incorrectly refreshing updated_at for all memories, which breaks the
+    Forgetting engine's access_boost fallback logic.
+    """
+    await storage.store(sample_memory)
+    original = await storage.get_by_hash(sample_memory.content_hash)
+    original_updated_at = original.updated_at
+
+    # Simulate what consolidation does: update metadata only, same tags/type
+    import asyncio
+    await asyncio.sleep(0.1)  # ensure time passes
+    ok, _ = await storage.update_memory_metadata(
+        sample_memory.content_hash,
+        updates={
+            "tags": sample_memory.tags,  # same tags, no change
+            "memory_type": sample_memory.memory_type,  # same type
+            "metadata": {"last_consolidated_at": 9999999999.0},
+        },
+        preserve_timestamps=True,
+    )
+    assert ok
+
+    refreshed = await storage.get_by_hash(sample_memory.content_hash)
+    assert refreshed.updated_at == original_updated_at, (
+        f"updated_at was bumped from {original_updated_at} to {refreshed.updated_at} "
+        f"despite preserve_timestamps=True and no structural change"
+    )
+
+
+@pytest.mark.asyncio
+async def test_structural_change_bumps_updated_at(storage, sample_memory):
+    """When tags actually change, updated_at SHOULD be bumped even with preserve_timestamps=True."""
+    await storage.store(sample_memory)
+    original = await storage.get_by_hash(sample_memory.content_hash)
+    original_updated_at = original.updated_at
+
+    import asyncio
+    await asyncio.sleep(0.1)
+    ok, _ = await storage.update_memory_metadata(
+        sample_memory.content_hash,
+        updates={
+            "tags": ["completely", "different", "tags"],
+            "metadata": {"reason": "user edit"},
+        },
+        preserve_timestamps=True,
+    )
+    assert ok
+
+    refreshed = await storage.get_by_hash(sample_memory.content_hash)
+    assert refreshed.updated_at > original_updated_at, (
+        "updated_at should be bumped when tags actually change"
+    )
 
 
 @pytest.mark.asyncio

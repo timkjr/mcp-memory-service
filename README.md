@@ -496,20 +496,19 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.57.0** (May 13, 2026)
+## Latest Release: **v10.57.3** (May 14, 2026)
 
-**Tag-match filtering for `memory_list` + automatic session chunking**
+**Milvus: last_accessed tracking via `_access` side-collection**
 
 **What's New:**
-- `memory_list` now accepts `tag_match="any"` (OR, default) / `tag_match="all"` (AND) — harmonizes with `memory_search` and `memory_delete` filtering. Implemented across all three backends (sqlite_vec, cloudflare, hybrid) (PR #904, @filhocf).
-- `memory_store_session` automatically splits long sessions at turn boundaries. Configure with `SESSION_CHUNK_SIZE` (default 1500 chars, 0=disabled); chunks are tagged `chunk:N/M` for easy retrieval (PR #912, @filhocf).
-
-**What's Fixed:**
-- CI: `pr-contributor-welcome` workflow now guarded against non-PR event triggers to prevent crash on push events.
+- `feat(milvus)`: `_access` side-collection records retrieve-hit timestamps, fixing the Forgetting engine's `access_boost` (was falling back to `updated_at`), `count_all_memories(stale_days=N)` (was silently ignored), and `memory_quality(action="maintain")` stale detection. Fire-and-forget via `asyncio.create_task` with graceful degradation (PR #925, @henry201605). Closes #923.
 
 ---
 
 **Previous Releases**:
+- **v10.57.2** - fix(deps): pin pymilvus<3.0.0 to restore Milvus Docker CI (PR #921)
+- **v10.57.1** - fix(sqlite): LIKE ESCAPE tag matching + fix(milvus): preserve_timestamps value comparison (PRs #916, #918)
+- **v10.57.0** - feat(memory_list): tag_match AND/OR filtering + feat(session): automatic chunking at turn boundaries (PRs #904, #912, @filhocf)
 - **v10.56.3** - feat(milvus): get_memory_connections() via graph collection + fix(quality): MAINTAIN_SCAN_LIMIT fallback hardening
 - **v10.56.2** - fix(milvus): missing `stale_days` param in `count_all_memories` + fix(quality): graceful `MAINTAIN_SCAN_LIMIT` fallback
 - **v10.56.1** - fix(session): pass session_id as conversation_id to bypass semantic dedup

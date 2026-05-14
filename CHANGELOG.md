@@ -10,6 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.57.3] - 2026-05-14
+
+### Added
+
+- **feat(milvus): last_accessed tracking via `_access` side-collection** ([#925](https://github.com/doobidoo/mcp-memory-service/pull/925), @henry201605): Implements a lightweight `{collection_name}_access` side-collection that records retrieve-hit timestamps. Fixes the Forgetting engine's `access_boost` (was always falling back to `updated_at`), fixes `count_all_memories(stale_days=N)` where `stale_days` was silently ignored, and fixes `memory_quality(action="maintain")` stale detection. `_touch_access()` is fire-and-forget via `asyncio.create_task` (non-blocking) with graceful degradation if the collection is unavailable. Closes [#923](https://github.com/doobidoo/mcp-memory-service/issues/923).
+
+## [10.57.2] - 2026-05-14
+
+### Fixed
+
+- **fix(deps): pin pymilvus<3.0.0 to restore Milvus Docker CI** ([#921](https://github.com/doobidoo/mcp-memory-service/pull/921)): Added `<3.0.0` upper bound to the `pymilvus` dependency in `pyproject.toml` and re-locked to `2.6.13` in `uv.lock`. pymilvus 3.0.0 introduced breaking API changes that silently broke the Milvus Docker CI job when the dependency was upgraded. Full pymilvus 3.x migration is tracked in [#922](https://github.com/doobidoo/mcp-memory-service/issues/922).
+
+## [10.57.1] - 2026-05-14
+
+### Fixed
+
+- **fix(sqlite): replace GLOB with LIKE ESCAPE for tag matching** ([#916](https://github.com/doobidoo/mcp-memory-service/pull/916)): Replaced `_escape_glob` with `_escape_like` in `sqlite_vec.py`. All 13 tag-filtering query sites migrated from `GLOB ?` to `LIKE ? ESCAPE '\'`, fixing fragility when tags contain `%`, `_`, or `\` characters. Closes [#914](https://github.com/doobidoo/mcp-memory-service/issues/914).
+- **fix(milvus): compare values in structural change detection for `preserve_timestamps`** ([#918](https://github.com/doobidoo/mcp-memory-service/pull/918), @henry201605): In `_compute_update_timestamps()`, replaced key-presence checks with value comparisons. Prevents consolidation runs from incorrectly bumping `updated_at` for all memories and fixes the Forgetting engine's `access_boost` fallback logic on Milvus.
+
 ## [10.57.0] - 2026-05-13
 
 ### Added
