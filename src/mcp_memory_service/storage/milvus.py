@@ -966,6 +966,362 @@ class MilvusMemoryStorage(MemoryStorage):
     # should pick one of the two tuples above explicitly.
     _OUTPUT_FIELDS = _OUTPUT_FIELDS_BASE
 
+    # -- Conflict detection --------------------------------------------------
+
+    # Thresholds matching sqlite_vec behavior:
+    # Conflict = cosine similarity > 0.95 AND Levenshtein divergence > 0.20
+    _CONFLICT_SIMILARITY_THRESHOLD = 0.95
+    _CONFLICT_DIVERGENCE_THRESHOLD = 0.20
+
+    # Cached graph storage instance for conflict operations. Avoids creating
+    # a new MilvusClient + gRPC connection on every store() call.
+    # Stored as an instance attribute (_graph_storage) via _get_graph_storage().
+
+    async def _get_graph_storage(self):
+        """Get or create a cached MilvusGraphStorage instance (thread-safe)."""
+        from .milvus_graph import MilvusGraphStorage
+
+        # Fast path: already initialized
+        if getattr(self, "_graph_storage", None) is not None:
+            return self._graph_storage
+
+        # Slow path: initialize under lock to prevent concurrent creation
+        async with self._write_lock:
+            # Double-check after acquiring lock
+            if getattr(self, "_graph_storage", None) is not None:
+                return self._graph_storage
+
+            graph = MilvusGraphStorage(
+                uri=self.uri,
+                token=self.token,
+                collection_name=self.collection_name,
+            )
+            await graph.initialize()
+            self._graph_storage = graph
+            return graph
+
+    async def _detect_conflicts(
+        self, new_hash: str, new_content: str, embedding: List[float]
+    ) -> List[Dict[str, Any]]:
+        """Detect conflicting active memories for a newly stored memory.
+
+        Mirrors sqlite_vec's _detect_conflicts logic:
+        Conflict = cosine similarity > 0.95 AND text divergence > 0.20.
+        Returns list of conflict info dicts.
+        """
+        from difflib import SequenceMatcher
+
+        if not self._ensure_initialized():
+            return []
+
+        # Find top-5 nearest memories (excluding self)
+        try:
+            results = await self._call_client(
+                "search",
+                collection_name=self.collection_name,
+                data=[embedding],
+                anns_field="vector",
+                filter=f'id != "{new_hash}"',
+                limit=5,
+                output_fields=["id", "content"],
+                search_params={"metric_type": "COSINE"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Conflict detection search failed: %s", exc)
+            return []
+
+        if not results or not results[0]:
+            return []
+
+        conflicts = []
+        for hit in results[0]:
+            # Milvus COSINE metric returns similarity directly as distance
+            similarity = float(hit.get("distance", 0.0))
+            if similarity < self._CONFLICT_SIMILARITY_THRESHOLD:
+                continue
+
+            # Extract candidate content
+            entity = hit.get("entity", {})
+            cand_hash = entity.get("id") or hit.get("id", "")
+            cand_content = entity.get("content") or ""
+
+            if not cand_content:
+                continue
+
+            # Compute text divergence (1 - SequenceMatcher ratio)
+            ratio = SequenceMatcher(
+                None, new_content.lower(), cand_content.lower()
+            ).ratio()
+            divergence = 1.0 - ratio
+            if divergence < self._CONFLICT_DIVERGENCE_THRESHOLD:
+                continue
+
+            conflicts.append({
+                "existing_hash": cand_hash,
+                "existing_content": cand_content,
+                "similarity": round(similarity, 4),
+                "divergence": round(divergence, 4),
+            })
+
+        return conflicts
+
+    async def _record_conflicts(
+        self, new_hash: str, conflicts: List[Dict[str, Any]]
+    ) -> None:
+        """Record conflict edges in the graph collection and tag memories.
+
+        Stores bidirectional 'contradicts' edges in MilvusGraphStorage and
+        adds 'conflict:unresolved' tag to both memories.
+        """
+        try:
+            graph = await self._get_graph_storage()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot init graph storage for conflicts: %s", exc)
+            return
+
+        now = time.time()
+
+        # Fetch new_hash memory once (constant across all conflicts)
+        try:
+            new_mem = await self.get_by_hash(new_hash)
+        except Exception:  # noqa: BLE001
+            new_mem = None
+
+        # Tag new_hash once if needed
+        if new_mem and "conflict:unresolved" not in new_mem.tags:
+            try:
+                new_tags = list(new_mem.tags) + ["conflict:unresolved"]
+                await self.update_memory_metadata(
+                    content_hash=new_hash,
+                    updates={"tags": new_tags},
+                    preserve_timestamps=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to tag conflict on %s: %s", new_hash[:8], exc)
+
+        # Batch-fetch all existing_hash memories to avoid N+1 queries
+        existing_hashes = [c["existing_hash"] for c in conflicts]
+        mem_map: Dict[str, Any] = {}
+        if existing_hashes:
+            try:
+                fetched = await self._call_client(
+                    "get",
+                    collection_name=self.collection_name,
+                    ids=existing_hashes,
+                    output_fields=list(self._OUTPUT_FIELDS),
+                )
+                for row in (fetched or []):
+                    m = self._entity_to_memory(row)
+                    if m:
+                        mem_map[m.content_hash] = m
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Batch fetch for conflict tagging failed: %s", exc)
+
+        for c in conflicts:
+            existing_hash = c["existing_hash"]
+            metadata = {
+                "divergence": c["divergence"],
+                "detected_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            }
+
+            # Store bidirectional contradicts edge
+            try:
+                await graph.store_association(
+                    source_hash=new_hash,
+                    target_hash=existing_hash,
+                    similarity=c["similarity"],
+                    connection_types=["semantic"],
+                    metadata=metadata,
+                    created_at=now,
+                    relationship_type="contradicts",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to store conflict edge %s↔%s: %s",
+                    new_hash[:8], existing_hash[:8], exc,
+                )
+                continue
+
+            # Tag existing memory with conflict:unresolved
+            existing_mem = mem_map.get(existing_hash)
+            if existing_mem and "conflict:unresolved" not in existing_mem.tags:
+                try:
+                    new_tags = list(existing_mem.tags) + ["conflict:unresolved"]
+                    await self.update_memory_metadata(
+                        content_hash=existing_hash,
+                        updates={"tags": new_tags},
+                        preserve_timestamps=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Failed to tag conflict on %s: %s", existing_hash[:8], exc)
+
+        logger.info(
+            "Recorded %d conflict(s) for %s", len(conflicts), new_hash[:8]
+        )
+
+    async def get_conflicts(self) -> List[Dict[str, Any]]:
+        """Return unresolved conflict pairs from the graph collection.
+
+        Queries the graph collection for edges with relationship_type='contradicts',
+        then batch-fetches all referenced memories to avoid N+1 queries.
+        """
+        if not self._ensure_initialized():
+            return []
+
+        try:
+            graph = await self._get_graph_storage()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot init graph storage for get_conflicts: %s", exc)
+            return []
+
+        try:
+            # Query all contradicts edges
+            rows = await graph._call_client(
+                "query",
+                collection_name=graph.collection_name,
+                filter='relationship_type == "contradicts"',
+                output_fields=[
+                    "source_hash", "target_hash", "similarity", "metadata",
+                ],
+                limit=_MILVUS_MAX_LIMIT,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to query conflict edges: %s", exc)
+            return []
+
+        if not rows:
+            return []
+
+        # Deduplicate and collect all unique hashes
+        pair_rows: List[Dict[str, Any]] = []
+        all_hashes: set = set()
+        seen: set = set()
+
+        for row in rows:
+            src = row.get("source_hash", "")
+            tgt = row.get("target_hash", "")
+            pair_key = tuple(sorted([src, tgt]))
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+            pair_rows.append(row)
+            if src:
+                all_hashes.add(src)
+            if tgt:
+                all_hashes.add(tgt)
+
+        # Batch-fetch all memories in one call to avoid N+1 queries
+        mem_map: Dict[str, Any] = {}
+        if all_hashes:
+            try:
+                fetched = await self._call_client(
+                    "get",
+                    collection_name=self.collection_name,
+                    ids=list(all_hashes),
+                    output_fields=list(self._OUTPUT_FIELDS),
+                )
+                for r in (fetched or []):
+                    m = self._entity_to_memory(r)
+                    if m:
+                        mem_map[m.content_hash] = m
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Batch fetch for get_conflicts failed: %s", exc)
+                return []
+
+        results: List[Dict[str, Any]] = []
+        for row in pair_rows:
+            src = row.get("source_hash", "")
+            tgt = row.get("target_hash", "")
+            mem_a = mem_map.get(src)
+            mem_b = mem_map.get(tgt)
+            if not mem_a or not mem_b:
+                continue
+            if (
+                "conflict:unresolved" not in mem_a.tags
+                and "conflict:unresolved" not in mem_b.tags
+            ):
+                continue
+
+            meta_raw = row.get("metadata", "{}")
+            meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+
+            results.append({
+                "hash_a": src,
+                "hash_b": tgt,
+                "content_a": mem_a.content,
+                "content_b": mem_b.content,
+                "similarity": row.get("similarity", 0.0),
+                "divergence": meta.get("divergence"),
+                "detected_at": meta.get("detected_at"),
+            })
+
+        return results
+
+    async def resolve_conflict(
+        self, winner_hash: str, loser_hash: str
+    ) -> Tuple[bool, str]:
+        """Resolve a conflict: mark loser as superseded, boost winner.
+
+        - Loser gets metadata 'superseded_by' = winner_hash
+        - Winner gets quality_score boosted to max(current, 0.8)
+        - Both have 'conflict:unresolved' tag removed
+        - The contradicts edge is deleted from the graph
+        """
+        if not self._ensure_initialized():
+            return False, "Milvus storage not initialized"
+
+        # Verify both exist
+        winner = await self.get_by_hash(winner_hash)
+        loser = await self.get_by_hash(loser_hash)
+        if not winner:
+            return False, f"Winner memory {winner_hash} not found"
+        if not loser:
+            return False, f"Loser memory {loser_hash} not found"
+
+        # Mark loser as superseded
+        loser_meta = dict(loser.metadata or {})
+        loser_meta["superseded_by"] = winner_hash
+        loser_tags = [t for t in loser.tags if t != "conflict:unresolved"]
+        try:
+            ok, msg = await self.update_memory_metadata(
+                content_hash=loser_hash,
+                updates={"tags": loser_tags, "metadata": loser_meta},
+                preserve_timestamps=True,
+            )
+            if not ok:
+                return False, f"Failed to update loser: {msg}"
+        except Exception as exc:
+            return False, f"Failed to update loser: {exc}"
+
+        # Boost winner confidence / quality
+        winner_meta = dict(winner.metadata or {})
+        winner_meta["quality_score"] = max(
+            winner_meta.get("quality_score", 0.5), 0.8
+        )
+        winner_tags = [t for t in winner.tags if t != "conflict:unresolved"]
+        try:
+            ok, msg = await self.update_memory_metadata(
+                content_hash=winner_hash,
+                updates={"tags": winner_tags, "metadata": winner_meta},
+                preserve_timestamps=True,
+            )
+            if not ok:
+                return False, f"Failed to update winner: {msg}"
+        except Exception as exc:
+            return False, f"Failed to update winner: {exc}"
+
+        # Delete the contradicts edge from graph
+        try:
+            graph = await self._get_graph_storage()
+            await graph.delete_association(winner_hash, loser_hash)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to delete conflict edge (non-fatal): %s", exc)
+
+        logger.info(
+            "Conflict resolved: %s wins over %s", winner_hash[:8], loser_hash[:8]
+        )
+        return True, f"Conflict resolved: {winner_hash[:8]} supersedes {loser_hash[:8]}"
+
     # -- Semantic dedup ------------------------------------------------------
 
     async def _check_semantic_duplicate(
@@ -977,8 +1333,10 @@ class MilvusMemoryStorage(MemoryStorage):
         """Look for a recently stored memory that is semantically similar.
 
         Returns ``(is_duplicate, existing_hash)``. Mirrors the sqlite_vec
-        implementation: search the top-1 neighbour inside the time window and
-        compare its cosine similarity against the threshold.
+        implementation: search the top-N nearest neighbours without a
+        server-side time filter (some Milvus Lite versions raise
+        ``Method not implemented`` for filtered ANN searches) and applies
+        the time-window cut-off on the client instead.
         """
         if not self._ensure_initialized():
             return False, None
@@ -996,10 +1354,10 @@ class MilvusMemoryStorage(MemoryStorage):
                 collection_name=self.collection_name,
                 data=[embedding],
                 anns_field="vector",
-                filter=f"created_at > {cutoff}",
-                limit=1,
-                output_fields=["id"],
+                limit=10,
+                output_fields=["id", "created_at"],
                 search_params={"metric_type": "COSINE"},
+                consistency_level="Session",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Semantic dedup search failed: %s", exc)
@@ -1007,10 +1365,16 @@ class MilvusMemoryStorage(MemoryStorage):
 
         if not results or not results[0]:
             return False, None
-        hit = results[0][0]
-        similarity = float(hit.get("distance", 0.0))
-        if similarity >= similarity_threshold:
-            return True, hit.get("id") or hit.get("entity", {}).get("id")
+
+        for hit in results[0]:
+            entity = hit.get("entity") or hit
+            hit_created = float(entity.get("created_at") or 0.0)
+            if hit_created < cutoff:
+                continue
+            similarity = float(hit.get("distance", 0.0))
+            if similarity >= similarity_threshold:
+                hit_id = entity.get("id") or hit.get("id")
+                return True, hit_id
         return False, None
 
     # -- Store ---------------------------------------------------------------
@@ -1051,7 +1415,22 @@ class MilvusMemoryStorage(MemoryStorage):
             )
 
             logger.info("Stored memory %s", memory.content_hash)
-            return True, "Memory stored successfully"
+
+            # --- Conflict detection (post-commit) ---
+            try:
+                conflict_infos = await self._detect_conflicts(
+                    memory.content_hash, memory.content, embedding
+                )
+                if conflict_infos:
+                    await self._record_conflicts(memory.content_hash, conflict_infos)
+                    conflict_msg = f" {len(conflict_infos)} conflict(s) detected."
+                else:
+                    conflict_msg = ""
+            except Exception as e:  # noqa: BLE001 — conflict detection is best-effort
+                logger.warning("Conflict detection failed (non-fatal): %s", e)
+                conflict_msg = ""
+
+            return True, f"Memory stored successfully{conflict_msg}"
 
         except Exception as exc:  # noqa: BLE001 — contract requires (bool, str) not a raise
             logger.error("Failed to store memory: %s\n%s", exc, traceback.format_exc())
@@ -1313,7 +1692,15 @@ class MilvusMemoryStorage(MemoryStorage):
             hits = await self._run_hybrid_search(query, query_embedding, tag_filter, fetch_n)
         else:
             hits = await self._run_search(query_embedding, tag_filter, fetch_n)
-        results = self._rank_and_trim(hits, query, n_results, min_confidence)
+
+        # Rank all hits, filter superseded before trimming to preserve result count
+        results = self._rank_and_trim(hits, query, len(hits), min_confidence)
+        if not include_superseded:
+            results = [
+                r for r in results
+                if not r.memory.metadata.get("superseded_by")
+            ]
+        results = results[:n_results]
 
         # Async update last_accessed for hit memories (non-blocking)
         if results:
@@ -2198,21 +2585,32 @@ class MilvusMemoryStorage(MemoryStorage):
         return connections
 
     def _drain_graph_edges(self, graph_collection: str) -> List[Dict[str, Any]]:
-        """Sync helper that drains all edges from the graph collection."""
+        """Sync helper that drains all edges from the graph collection.
+
+        Deduplicates by primary-key ``id`` to defend against the same Milvus
+        Lite double-batch bug handled in :meth:`_drain_query_iterator`.
+        """
         assert self.client is not None
         iterator = self.client.query_iterator(
             collection_name=graph_collection,
             filter="",
-            output_fields=["source_hash", "target_hash"],
+            output_fields=["id", "source_hash", "target_hash"],
             batch_size=self._QUERY_ITER_BATCH,
         )
         rows: List[Dict[str, Any]] = []
+        seen_ids: set = set()
         try:
             while True:
                 batch = iterator.next()
                 if not batch:
                     break
-                rows.extend(batch)
+                for row in batch:
+                    row_id = row.get("id")
+                    if row_id is not None:
+                        if row_id in seen_ids:
+                            continue
+                        seen_ids.add(row_id)
+                    rows.append(row)
         finally:
             try:
                 iterator.close()
@@ -2322,7 +2720,12 @@ class MilvusMemoryStorage(MemoryStorage):
         filter_expr: str,
         include_embeddings: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Sync helper that drains a ``QueryIterator`` into a plain list."""
+        """Sync helper that drains a ``QueryIterator`` into a plain list.
+
+        Deduplicates by primary-key ``id`` to defend against a Milvus Lite bug
+        where the last batch of records is returned a second time before the
+        iterator signals end-of-data with an empty batch.
+        """
         assert self.client is not None
         fields = (
             self._OUTPUT_FIELDS_WITH_VECTOR
@@ -2336,12 +2739,19 @@ class MilvusMemoryStorage(MemoryStorage):
             batch_size=self._QUERY_ITER_BATCH,
         )
         rows: List[Dict[str, Any]] = []
+        seen_ids: set = set()
         try:
             while True:
                 batch = iterator.next()
                 if not batch:
                     break
-                rows.extend(batch)
+                for row in batch:
+                    row_id = row.get("id")
+                    if row_id is not None:
+                        if row_id in seen_ids:
+                            continue
+                        seen_ids.add(row_id)
+                    rows.append(row)
         finally:
             try:
                 iterator.close()

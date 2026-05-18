@@ -496,16 +496,20 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.57.3** (May 14, 2026)
+## Latest Release: **v10.59.2** (May 17, 2026)
 
-**Milvus: last_accessed tracking via `_access` side-collection**
+**OAuth redirect_uri AnyUrl fix — IDE schemes now actually work**
 
 **What's New:**
-- `feat(milvus)`: `_access` side-collection records retrieve-hit timestamps, fixing the Forgetting engine's `access_boost` (was falling back to `updated_at`), `count_all_memories(stale_days=N)` (was silently ignored), and `memory_quality(action="maintain")` stale detection. Fire-and-forget via `asyncio.create_task` with graceful degradation (PR #925, @henry201605). Closes #923.
+- `fix(oauth)`: `redirect_uri` fields in `AuthorizationRequest` and `TokenRequest` changed from `Optional[HttpUrl]` to `Optional[AnyUrl]` — `HttpUrl` silently rejected `cursor://`, `vscode://`, `vscode-insiders://` before reaching the scheme whitelist, making the v10.59.0 IDE scheme feature a no-op in practice. 8 regression tests added (#942, reported by @tkislan).
 
 ---
 
 **Previous Releases**:
+- **v10.59.1** - fix(oauth): reflect state parameter verbatim per RFC 6749 §4.1.2, fixes Cursor OAuth (#944, @tkislan)
+- **v10.59.0** - feat(oauth): PEM key files + IDE redirect URI schemes; fix(hooks): symmetric project-affinity (PRs #926, #942, #941)
+- **v10.58.0** - feat(insights): configurable exclusion, automated-type heuristic, acknowledgement flow (PR #939); feat(harvest): locale YAML plugins (PR #935, @filhocf); feat(plugin): smart-tagger example (PR #932, @filhocf)
+- **v10.57.3** - feat(milvus): last_accessed tracking via `_access` side-collection (PR #925, @henry201605)
 - **v10.57.2** - fix(deps): pin pymilvus<3.0.0 to restore Milvus Docker CI (PR #921)
 - **v10.57.1** - fix(sqlite): LIKE ESCAPE tag matching + fix(milvus): preserve_timestamps value comparison (PRs #916, #918)
 - **v10.57.0** - feat(memory_list): tag_match AND/OR filtering + feat(session): automatic chunking at turn boundaries (PRs #904, #912, @filhocf)

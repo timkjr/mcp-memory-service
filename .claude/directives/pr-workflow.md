@@ -42,6 +42,29 @@ pytest tests/
 @agent code-quality-guard "Analyze complexity and security for staged files"
 ```
 
+## 🚫 Community PR Review Policy (MANDATORY)
+
+A submitted PR is a commitment to a complete, reviewable piece of work. Incomplete PRs slow the project and have caused real incidents (e.g. v10.59.0 merged a partial OAuth fix that required two follow-up patch releases).
+
+### Hard Rules
+
+| Situation | Action |
+|-----------|--------|
+| PR description is empty or placeholder | CHANGES_REQUESTED — ask author to fill Description + Motivation before any review |
+| PR is in Draft status | Do not review or merge. Comment: "Please mark as Ready for Review when complete." |
+| PR has TODO / "coming in follow-up" / half-wired code | CHANGES_REQUESTED — no dead code, no deferred wiring (Lean-MCP checklist) |
+| We decide to implement the PR ourselves | Trace the **full call path end-to-end**, not just the diff. Every validation layer must be covered. |
+
+### When to redirect to an Issue
+
+If the author cannot complete the implementation, ask them to open an Issue instead:
+> "This looks like it needs more work before it's ready to merge. Would you mind opening an Issue describing the problem and your proposed approach? That way the community can help shape the solution."
+
+### Why this exists
+
+- **v10.59.0 incident**: PR #942 (cursor/vscode OAuth schemes) was merged with an empty description. The `ALLOWED_SCHEMES` whitelist change was correct, but `AuthorizationRequest` and `TokenRequest` still used Pydantic `HttpUrl`, silently rejecting `cursor://` before the whitelist was reached. Two follow-up patch releases (v10.59.1, v10.59.2) were needed to actually deliver working Cursor OAuth.
+- Root cause: "CI green + looks small" is not sufficient. Full call-path analysis is required.
+
 ## 🔀 Merging Multiple PRs That Touch the Same Files
 
 When batch-merging several PRs (e.g. community contributions), conflicts arise if they modify the same file.

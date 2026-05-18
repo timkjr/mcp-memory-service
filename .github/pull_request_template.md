@@ -1,5 +1,9 @@
 # Pull Request
 
+> **Before submitting**: This PR must be complete and ready for review.
+> Draft PRs and PRs with empty descriptions will receive an immediate `changes requested` review.
+> If your work is not finished, please open an **Issue** instead and link it here once your PR is ready.
+
 ## Description
 
 <!-- Provide a clear and concise description of the changes -->

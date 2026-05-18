@@ -10,6 +10,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.59.2] - 2026-05-17
+
+### Fixed
+
+- **fix(oauth): use AnyUrl for redirect_uri in AuthorizationRequest and TokenRequest** ([#942](https://github.com/doobidoo/mcp-memory-service/issues/942), reported by @tkislan): `HttpUrl` only accepts `http`/`https` — `cursor://`, `vscode://`, `vscode-insiders://` were silently rejected by Pydantic before reaching the `ALLOWED_SCHEMES` whitelist in `registration.py`, making the scheme addition in v10.59.0 a no-op in practice. Fixed: `redirect_uri` fields in `AuthorizationRequest` and `TokenRequest` changed from `Optional[HttpUrl]` to `Optional[AnyUrl]` in `src/mcp_memory_service/web/oauth/models.py`. `ErrorResponse.error_uri` keeps `HttpUrl`. 8 regression tests added in `tests/unit/test_oauth_native_clients.py`.
+
+## [10.59.1] - 2026-05-17
+
+### Fixed
+
+- **fix(oauth): reflect OAuth state parameter verbatim per RFC 6749 §4.1.2** ([#944](https://github.com/doobidoo/mcp-memory-service/pull/944), @tkislan): `_sanitize_state()` stripped non-`[A-Za-z0-9-_.]` characters and truncated to 128 chars before reflecting `state` back to the client. RFC 6749 §4.1.2 requires returning `state` exactly as received. This broke Cursor OAuth (base64url padding `=`, JWTs, values >128 chars all got mangled). Fix: remove `_sanitize_state()` entirely and reflect `state` verbatim. 5 parametrized regression tests added in `tests/unit/test_oauth_native_clients.py`.
+
+## [10.59.0] - 2026-05-16
+
+### Added
+
+- **feat(oauth): file-based PEM key loading via `MCP_OAUTH_PRIVATE_KEY_PATH` / `MCP_OAUTH_PUBLIC_KEY_PATH`** ([#926](https://github.com/doobidoo/mcp-memory-service/pull/926), co-authored by aria-inboxia): New `_load_pem_from_env()` helper in `config.py` reads PEM content from a file path when the corresponding `_PATH` env var is set. Inline env vars continue to take precedence. When a `_PATH` var is set but the file cannot be read, startup aborts with `ValueError` — fail-hard prevents silent JWT invalidation on restart. 6 unit tests added in `tests/test_config.py`.
+- **feat(oauth): allow `cursor`, `vscode`, `vscode-insiders` as OAuth redirect URI schemes** ([#942](https://github.com/doobidoo/mcp-memory-service/pull/942), co-authored by tkislan): `src/mcp_memory_service/web/oauth/registration.py` now accepts IDE deep-link schemes (`cursor://`, `vscode://`, `vscode-insiders://`) as valid OAuth redirect URIs, enabling OAuth callbacks for Cursor and VS Code extensions.
+
+### Fixed
+
+- **fix(hooks): symmetric project-affinity check in `memory-scorer.js`** ([#941](https://github.com/doobidoo/mcp-memory-service/issues/941), reported by minecraft-mattsource): Added `projectName.includes(tag)` as the inverse check so short memory tags (e.g. `wing:hoi4`) are matched when the project name is a superset (e.g. `hoi4coach`). Previously all memories were zeroed by the affinity filter in this case.
+
+## [10.58.0] - 2026-05-16
+
+### Added
+
+- **feat(insights): configurable tag exclusion, metadata heuristic, and acknowledgement flow** ([#939](https://github.com/doobidoo/mcp-memory-service/pull/939), discussion [#897](https://github.com/doobidoo/mcp-memory-service/discussions/897)): Three improvements to the InsightGenerator based on real-corpus observations. (1) **`MCP_INSIGHT_EXCLUDE_TAGS`** env var — comma-separated list of tags to exclude from gap detection in addition to the built-in set (`conflict:unresolved`, `automated`, `__test__`, `temporary`, `processed`, `auto-generated`, `insight-card`). Example: `MCP_INSIGHT_EXCLUDE_TAGS=ci,radar`. (2) **Automated-type heuristic** — gap detection is skipped for tags where >90% of memories have an automated `memory_type` (`session`, `auto-generated`, `temporary`), catching status markers not in the exclusion list. Normal types like `observation` are not treated as automated. (3) **Insight card acknowledgement** — tagging an insight card with `acknowledged` causes `store_insights` to materialise a stable sentinel (hash independent of source memories) so the card is never regenerated, even if the original card is later deleted. 8 new tests covering all three paths.
+- **feat(harvest): locale-based pattern plugins for multilingual extraction** ([#935](https://github.com/doobidoo/mcp-memory-service/pull/935), @filhocf): Replaces hardcoded English regex in the harvest extractor with a YAML-based pattern system. Patterns are loaded at startup via `HARVEST_LOCALE` env var (default: `"en"`, backward compatible). New files: `harvest/patterns/__init__.py` (loader with additive locale merging), `harvest/patterns/en.yaml`, `harvest/patterns/pt_BR.yaml` (Portuguese), `harvest/patterns/de.yaml` (German). `PatternExtractor` now stores patterns as `self._patterns` (instance-level). Unknown locales log a warning and are skipped. Non-English users see up to 8x improvement in harvest candidates. Closes [#908](https://github.com/doobidoo/mcp-memory-service/issues/908).
+- **feat(plugin): smart-tagger example plugin — auto-tagging + mistake-note boost** ([#932](https://github.com/doobidoo/mcp-memory-service/pull/932), @filhocf): Second reference plugin in `examples/plugin-smart-tagger/`, alongside `plugin-audit-log`. Uses the `mcp_memory_service.plugins` entry-point mechanism with `on_store` (auto-tags content by regex: decision, bug, convention, database, infra, frontend, backend) and `on_retrieve` hooks (boosts score for `mistake-note`/`error-replay` tagged memories). Configurable via `MCP_PLUGIN_SMART_TAGGER_ENABLED` (default: `true`) and `MCP_PLUGIN_SMART_TAGGER_BOOST` (default: `0.15`). No external dependencies.
+
+### Fixed
+
+- **fix(milvus): deduplicate `_drain_graph_edges` against Milvus Lite double-batch bug** (commit 6f7e1f82): `_drain_graph_edges` (used by `get_memory_connections`) had the same QueryIterator last-batch duplication issue as `_drain_query_iterator`. Added `seen_ids` set and `"id"` to `output_fields` so graph edges are correctly deduplicated. Fixes `test_get_memory_connections_with_graph_data`.
+- **fix(milvus): use `consistency_level="Session"` in semantic-dedup ANN search** (commit 6f7e1f82): Milvus's default `Bounded` consistency does not guarantee that a memory stored earlier in the same session is visible to an immediately following `search()`. `_check_semantic_duplicate` now passes `consistency_level="Session"` so near-duplicates are reliably detected. Fixes `test_semantic_dedup_blocks_near_duplicate`.
+- **fix(triage): use existing `daily-triage` label; create missing `automated` label** (commit 6f7e1f82): `triage_discussions.py` was passing `--label 'triage,automated'` to `gh issue create`, but neither label existed, causing the workflow to fail. Changed to `daily-triage` (already present) and created the `automated` label via API.
+- **fix(milvus): deduplicate QueryIterator results to defend against Milvus Lite double-batch bug** (commit 96bfbd87): `_drain_query_iterator` now tracks seen primary-key `id` values and skips duplicate rows. Milvus Lite returns the last batch a second time before signalling end-of-data with an empty batch, causing `get_all_memories()`, `count_all_memories()`, and `query_memories()` to return inflated result sets. Fixes `test_get_all_memories_and_count`, `test_query_memories_returns_most_recent_first`, `test_query_memories_pagination`.
+- **fix(milvus): remove server-side time filter from semantic-dedup ANN search** (commit 96bfbd87): Some Milvus Lite versions raise `Method not implemented` for filtered ANN searches. `_check_semantic_duplicate` now issues an unfiltered `limit=10` ANN search and applies the time-window cut-off on the client over the returned results.
+- **fix(ci): repair YAML parse error in `pr-contributor-welcome` workflow** (commit 96bfbd87): The welcome message was built with a JS template literal whose body lines started at column 0, terminating the YAML block scalar prematurely and causing GitHub to report a workflow file issue on every push. Replaced with a JS array `.join("\n")` so all content stays within the YAML block indentation.
+- **fix(test): raise performance threshold to 500ms for CI stability** ([#939](https://github.com/doobidoo/mcp-memory-service/pull/939)): `test_api_search_by_tag_time_filter_performance` was using a 200ms threshold that was too tight for slow GitHub Actions runners. Raised to 500ms. Unrelated to feature changes.
+
 ## [10.57.3] - 2026-05-14
 
 ### Added
