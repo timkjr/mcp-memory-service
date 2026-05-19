@@ -23,7 +23,8 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional, Set
+from collections import deque
+from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
@@ -31,7 +32,7 @@ from fastapi import Request
 from sse_starlette import EventSourceResponse
 import logging
 
-from ..config import SSE_HEARTBEAT_INTERVAL
+from ..config import SSE_HEARTBEAT_INTERVAL, SSE_EVENT_REPLAY_BUFFER_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,20 @@ class SSEEvent:
 
 class SSEManager:
     """Manages Server-Sent Event connections and broadcasting."""
-    
-    def __init__(self, heartbeat_interval: int = SSE_HEARTBEAT_INTERVAL):
+
+    def __init__(
+        self,
+        heartbeat_interval: int = SSE_HEARTBEAT_INTERVAL,
+        replay_buffer_size: int = SSE_EVENT_REPLAY_BUFFER_SIZE,
+    ):
         self.connections: Dict[str, Dict[str, Any]] = {}
         self.heartbeat_interval = heartbeat_interval
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._running = False
+        # Bounded ring of recently broadcast events for Last-Event-ID replay.
+        # Connection-scoped events (welcome/close) and heartbeats are excluded;
+        # only events every consumer sees are eligible. maxlen=0 disables replay.
+        self._replay_buffer: deque = deque(maxlen=max(0, replay_buffer_size))
         
     async def start(self):
         """Start the SSE manager and heartbeat task."""
@@ -88,10 +97,23 @@ class SSEManager:
         
         logger.info("SSE Manager stopped")
     
-    async def add_connection(self, connection_id: str, request: Request) -> asyncio.Queue:
-        """Add a new SSE connection."""
+    async def add_connection(
+        self,
+        connection_id: str,
+        request: Request,
+        last_event_id: Optional[str] = None,
+    ) -> asyncio.Queue:
+        """Add a new SSE connection.
+
+        If last_event_id is supplied and is present in the replay buffer, all
+        broadcast events stored after it are pushed into the new queue ahead
+        of any live events, matching EventSource resume semantics from the
+        HTML Living Standard. Buffer overflow (id is too old or unknown) is
+        surfaced in the welcome event so clients can detect it and fall back
+        to their own catch-up strategy.
+        """
         queue = asyncio.Queue()
-        
+
         self.connections[connection_id] = {
             'queue': queue,
             'request': request,
@@ -100,21 +122,67 @@ class SSEManager:
             'user_agent': request.headers.get('User-Agent', 'Unknown'),
             'client_ip': request.client.host if request.client else 'Unknown'
         }
-        
+
         logger.info(f"SSE connection added: {connection_id} from {self.connections[connection_id]['client_ip']}")
-        
-        # Send welcome event
-        welcome_event = SSEEvent(
-            event_type="connection_established",
-            data={
-                "connection_id": connection_id,
-                "message": "Connected to MCP Memory Service SSE stream",
-                "heartbeat_interval": self.heartbeat_interval
-            }
-        )
-        await queue.put(welcome_event)
-        
+
+        # Resolve replay (if requested) before sending the welcome so the
+        # welcome can describe the outcome to the client.
+        replay_meta, events_to_replay = self._resolve_replay(last_event_id)
+
+        welcome_data = {
+            "connection_id": connection_id,
+            "message": "Connected to MCP Memory Service SSE stream",
+            "heartbeat_interval": self.heartbeat_interval,
+        }
+        if replay_meta is not None:
+            welcome_data["replay"] = replay_meta
+        await queue.put(SSEEvent(event_type="connection_established", data=welcome_data))
+
+        # Replay AFTER the welcome so the welcome stays the first event a
+        # client sees (preserves the existing connection-established protocol).
+        for event in events_to_replay:
+            await queue.put(event)
+        if events_to_replay:
+            logger.info(
+                f"SSE replayed {len(events_to_replay)} event(s) to {connection_id} "
+                f"after Last-Event-ID={last_event_id}"
+            )
+
         return queue
+
+    def _resolve_replay(self, last_event_id: Optional[str]):
+        """Walk the replay buffer for last_event_id; return (welcome_meta, events).
+
+        welcome_meta is None when no replay was requested OR the buffer is
+        disabled. Otherwise it describes the outcome (resumed vs. overflow)
+        so the client can decide whether to trust the resume or do its own
+        catch-up (e.g. via search-by-tag).
+
+        Single-pass iteration over the deque — no full-buffer copy — so the
+        memory cost stays proportional to what actually needs replaying,
+        not to MCP_SSE_REPLAY_BUFFER_SIZE.
+        """
+        if not last_event_id or self._replay_buffer.maxlen == 0:
+            return None, []
+
+        oldest_id = self._replay_buffer[0].event_id if self._replay_buffer else None
+        to_replay: List[SSEEvent] = []
+        found = False
+        for event in self._replay_buffer:
+            if found:
+                to_replay.append(event)
+            elif event.event_id == last_event_id:
+                found = True
+
+        base_meta = {
+            "requested_last_event_id": last_event_id,
+            "events_replayed": len(to_replay),
+            "buffer_size": self._replay_buffer.maxlen,
+            "buffer_oldest_id": oldest_id,
+        }
+        if found:
+            return ({**base_meta, "status": "resumed"}, to_replay)
+        return ({**base_meta, "status": "id_not_in_buffer"}, [])
     
     async def _remove_connection(self, connection_id: str):
         """Remove an SSE connection."""
@@ -137,6 +205,20 @@ class SSEManager:
     
     async def broadcast_event(self, event: SSEEvent, connection_filter: Optional[Set[str]] = None):
         """Broadcast an event to all or filtered connections."""
+        # Buffer only globally broadcast, non-heartbeat events:
+        # - Filtered broadcasts targeted specific live connections; replaying
+        #   them to a different reconnecting client would expand the audience.
+        # - Heartbeats are liveness signals; they carry no value to a resuming
+        #   client and would dominate the buffer during quiet periods (every
+        #   SSE_HEARTBEAT_INTERVAL seconds; at 30s a 1000-slot buffer fills
+        #   with heartbeats in ~8h of no real traffic).
+        if (
+            connection_filter is None
+            and event.event_type != "heartbeat"
+            and self._replay_buffer.maxlen
+        ):
+            self._replay_buffer.append(event)
+
         if not self.connections:
             return
         
@@ -226,9 +308,14 @@ sse_manager = SSEManager()
 async def create_event_stream(request: Request):
     """Create an SSE event stream for a client."""
     connection_id = str(uuid.uuid4())
-    
+    # EventSource spec: clients send the id of the last event they processed
+    # in the Last-Event-ID header on reconnect. Honour it for resume; missing
+    # or stale ids fall through to a fresh stream with overflow surfaced in
+    # the welcome event.
+    last_event_id = request.headers.get('Last-Event-ID')
+
     async def event_generator():
-        queue = await sse_manager.add_connection(connection_id, request)
+        queue = await sse_manager.add_connection(connection_id, request, last_event_id)
         
         try:
             while True:

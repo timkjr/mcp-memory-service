@@ -10,6 +10,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.61.0] - 2026-05-19
+
+### Added
+
+- **feat(milvus): native `update_memory` and `update_memories_batch`** ([#966](https://github.com/doobidoo/mcp-memory-service/pull/966), part of [#888](https://github.com/doobidoo/mcp-memory-service/issues/888), @henry201605): Milvus backend now overrides `update_memory` (delegates to `update_memory_metadata` for a single-record update) and `update_memories_batch` (single batch fetch + batch embedding + single upsert — 1 round-trip instead of N per record). 15 new unit tests added.
+- **feat(sse): Last-Event-ID replay on `/api/events` reconnect** ([#953](https://github.com/doobidoo/mcp-memory-service/pull/953)): Bounded ring buffer of recently broadcast events lets SSE clients resume after a transient disconnect per the standard EventSource resume header. Buffer size configurable via `MCP_SSE_REPLAY_BUFFER_SIZE` (default 1000, 0 disables). Replay outcome (`status: resumed` or `status: id_not_in_buffer`) is surfaced in the `connection_established` welcome event so clients can detect overflow and fall back to their own catch-up strategy. Connection-scoped events (welcome, close) and heartbeats are not buffered; filtered broadcasts are excluded to avoid expanding the original audience on replay.
+
+## [10.60.2] - 2026-05-19
+
+### Fixed
+
+- **fix(milvus): replace ANN `search()` with brute-force `query()` in semantic dedup to fix growing-segment visibility on Milvus Lite** ([#964](https://github.com/doobidoo/mcp-memory-service/pull/964), closes [#938](https://github.com/doobidoo/mcp-memory-service/issues/938), @henry201605): Milvus Lite's ANN `search()` cannot find freshly inserted records in unsealed (growing) segments, causing the semantic deduplication check to silently miss near-duplicates. The fix replaces `search()` with `query(consistency_level="Strong")` + client-side cosine similarity computed from the pre-stored normalized embedding and a pre-computed query norm, restoring correct deduplication behaviour on Milvus Lite.
+
+## [10.60.1] - 2026-05-19
+
+### Fixed
+
+- **fix(milvus): add missing `tag_match` param to `get_all_memories`/`count_all_memories`** ([#958](https://github.com/doobidoo/mcp-memory-service/pull/958), @henry201605): Both methods were missing the `tag_match` parameter present in other backends, causing AND/OR tag filtering to be silently ignored in Milvus deployments.
+- **fix(hooks): apply protocol-correct port fallback to `session-end.js` `triggerQualityEvaluation`** ([#960](https://github.com/doobidoo/mcp-memory-service/pull/960), fixes [#957](https://github.com/doobidoo/mcp-memory-service/issues/957)): `session-end.js` was not updated alongside the `memory-client.js`/`memory-retrieval.js` fix from PR #952. Applies the same protocol-correct port resolution (omit port for `https://` or `http://` standard ports) to `triggerQualityEvaluation`, restoring hook functionality for Cloudflare Tunnel and reverse proxy deployments.
+- **fix(consolidation): repair broken contradiction detection** ([#961](https://github.com/doobidoo/mcp-memory-service/pull/961), fixes [#959](https://github.com/doobidoo/mcp-memory-service/issues/959)): Three bugs in `contradictions.py` caused the detection module to fail silently on every invocation: (1) `list_memories()` replaced by correct `get_all_memories()` call, (2) dataclass attribute access switched from `metadata.get()` dict-style to direct field access (`memory.tags`, `memory.memory_type`), (3) `search_memories()` parameter name and return-type handling corrected. Module now executes as designed.
+
+## [10.60.0] - 2026-05-18
+
+### Added
+
+- **feat(consolidation): temporal contradiction detection via embedding similarity band** ([#949](https://github.com/doobidoo/mcp-memory-service/pull/949), @filhocf): New module `src/mcp_memory_service/consolidation/contradictions.py`. Detects contradictions using a similarity band of 0.4–0.75 (too similar to be independent facts, too different to be duplicates). Emits a `CONTRADICTED_BY` graph edge and sets `superseded_by` on the older memory. Opt-in via `MCP_CONTRADICTION_DETECTION_ENABLED=true` and `MCP_CONTRADICTION_ON_STORE=true`. Integrated as Step 7 in `handlers/quality.py` maintain flow. 8 new tests in `tests/consolidation/test_contradictions.py`.
+- **feat(benchmarks): mem0 adapter — tested end-to-end with cloud API** ([#954](https://github.com/doobidoo/mcp-memory-service/pull/954), @filhocf): Adds `scripts/benchmarks/adapters/` with an abstract `BenchmarkAdapter` base class and a concrete `Mem0Adapter` implementation that wraps the mem0 cloud API. Validated end-to-end with the mem0 cloud service. Provides a foundation for systematic latency/quality comparisons between mcp-memory-service and alternative memory backends.
+
+### Fixed
+
+- **fix(milvus): instance-level graph cache + filter superseded in retrieve** ([#948](https://github.com/doobidoo/mcp-memory-service/pull/948), @henry201605): Replaces the class-variable `_graph_storage_cache` with an instance attribute protected by double-checked locking, preventing cross-instance contamination in tests. `retrieve()` now filters out `superseded_by` memories before trimming results to match the sqlite_vec behavior.
+- **fix(hooks): use protocol-correct default port for standard HTTPS/HTTP URLs** ([#952](https://github.com/doobidoo/mcp-memory-service/pull/952), fixes [#950](https://github.com/doobidoo/mcp-memory-service/issues/950)): `memory-client.js` and `memory-retrieval.js` used `url.port || 8443` (or `|| 8080`) as the default port. For standard `https://` URLs (e.g. Cloudflare Tunnel, reverse proxy) `url.port` is empty string — causing the fallback to always trigger and producing `https://host:8443/...` instead of the correct portless URL. Fix: use the protocol's default port (`443` for https, `80` for http) when `url.port` is absent, and omit the port from the constructed URL if it matches the protocol default. Resolves broken hook connectivity for all Cloudflare Tunnel and reverse proxy deployments.
+
 ## [10.59.2] - 2026-05-17
 
 ### Fixed

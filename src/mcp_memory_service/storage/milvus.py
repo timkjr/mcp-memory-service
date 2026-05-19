@@ -1324,6 +1324,16 @@ class MilvusMemoryStorage(MemoryStorage):
 
     # -- Semantic dedup ------------------------------------------------------
 
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Compute cosine similarity between two vectors (pure Python)."""
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
     async def _check_semantic_duplicate(
         self,
         content: str,
@@ -1332,11 +1342,15 @@ class MilvusMemoryStorage(MemoryStorage):
     ) -> Tuple[bool, Optional[str]]:
         """Look for a recently stored memory that is semantically similar.
 
-        Returns ``(is_duplicate, existing_hash)``. Mirrors the sqlite_vec
-        implementation: search the top-N nearest neighbours without a
-        server-side time filter (some Milvus Lite versions raise
-        ``Method not implemented`` for filtered ANN searches) and applies
-        the time-window cut-off on the client instead.
+        Returns ``(is_duplicate, existing_hash)``.
+
+        Uses ``query()`` (brute-force scan) instead of ``search()`` (ANN) to
+        guarantee visibility of data in growing segments on Milvus Lite.  ANN
+        search may not find freshly inserted records whose segment has not yet
+        been sealed/indexed — see GitHub issue #938.
+
+        The query fetches recent memories with their vectors, then computes
+        cosine similarity on the client side.
         """
         if not self._ensure_initialized():
             return False, None
@@ -1349,32 +1363,37 @@ class MilvusMemoryStorage(MemoryStorage):
             return False, None
 
         try:
-            results = await self._call_client(
-                "search",
+            rows = await self._call_client(
+                "query",
                 collection_name=self.collection_name,
-                data=[embedding],
-                anns_field="vector",
-                limit=10,
-                output_fields=["id", "created_at"],
-                search_params={"metric_type": "COSINE"},
-                consistency_level="Session",
+                filter=f"created_at >= {cutoff}",
+                output_fields=["id", "vector", "created_at"],
+                limit=50,
+                consistency_level="Strong",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Semantic dedup search failed: %s", exc)
+            logger.warning("Semantic dedup query failed: %s", exc)
             return False, None
 
-        if not results or not results[0]:
+        if not rows:
             return False, None
 
-        for hit in results[0]:
-            entity = hit.get("entity") or hit
-            hit_created = float(entity.get("created_at") or 0.0)
-            if hit_created < cutoff:
+        # Pre-compute query embedding norm once — it is constant across all candidates.
+        norm_embedding = math.sqrt(sum(x * x for x in embedding))
+        if norm_embedding == 0:
+            return False, None
+
+        for row in rows:
+            row_vec = row.get("vector")
+            if not row_vec:
                 continue
-            similarity = float(hit.get("distance", 0.0))
+            norm_row = math.sqrt(sum(x * x for x in row_vec))
+            if norm_row == 0:
+                continue
+            dot = sum(x * y for x, y in zip(embedding, row_vec))
+            similarity = dot / (norm_embedding * norm_row)
             if similarity >= similarity_threshold:
-                hit_id = entity.get("id") or hit.get("id")
-                return True, hit_id
+                return True, row.get("id")
         return False, None
 
     # -- Store ---------------------------------------------------------------
@@ -2170,6 +2189,151 @@ class MilvusMemoryStorage(MemoryStorage):
         summary = self._summarize_updated_fields(updates, self._PROTECTED_UPDATE_KEYS)
         return True, f"Updated fields: {', '.join(summary)}"
 
+    # -- update_memory / update_memories_batch --------------------------------
+
+    async def update_memory(self, memory: Memory) -> bool:
+        """Update an existing memory using Milvus native upsert.
+
+        Delegates to ``update_memory_metadata`` to reuse validation
+        (via ``_merge_updates``), timestamp handling, and entity construction.
+        Passes ``preserve_timestamps=False`` so ``updated_at`` is refreshed.
+        """
+        if not self._ensure_initialized():
+            return False
+
+        updates = {
+            "tags": memory.tags,
+            "memory_type": memory.memory_type,
+            "metadata": memory.metadata,
+        }
+        success, _ = await self.update_memory_metadata(
+            memory.content_hash, updates, preserve_timestamps=False
+        )
+        return success
+
+    async def update_memories_batch(
+        self, memories: List[Memory], preserve_timestamps: bool = False
+    ) -> List[bool]:
+        """Batch-update memories using a single Milvus upsert call.
+
+        Optimizations over the base-class fallback (``asyncio.gather`` of N
+        individual updates):
+
+        1. **Batch fetch**: Single ``client.get(ids=...)`` call instead of
+           N ``get_by_hash`` round-trips.
+        2. **Batch embedding**: Single ``SentenceTransformer.encode(texts)``
+           call instead of N sequential encodes.
+        3. **Batch upsert**: Single Milvus upsert with all entities.
+
+        Metadata is merged via ``_merge_updates`` for consistency with
+        ``update_memory_metadata``.
+
+        Args:
+            memories: List of Memory objects with updated fields.
+            preserve_timestamps: If True, do not advance ``updated_at``.
+
+        Returns:
+            List of booleans indicating success for each memory.
+        """
+        if not memories:
+            return []
+        if not self._ensure_initialized():
+            return [False] * len(memories)
+
+        results: List[bool] = [False] * len(memories)
+
+        # -- Step 1: Batch fetch all existing records in one call --
+        hashes = [m.content_hash for m in memories]
+        existing_map: Dict[str, Memory] = {}
+        try:
+            fetched = await self._call_client(
+                "get",
+                collection_name=self.collection_name,
+                ids=hashes,
+                output_fields=list(self._OUTPUT_FIELDS),
+            )
+            for row in (fetched or []):
+                mem = self._entity_to_memory(row)
+                if mem:
+                    existing_map[mem.content_hash] = mem
+        except Exception as exc:  # noqa: BLE001
+            logger.error("update_memories_batch: batch fetch failed: %s", exc)
+            return results
+
+        # -- Step 2: Merge updates and collect content for batch embedding --
+        # Track which indices have valid existing records and merged data.
+        valid_items: List[tuple] = []  # (idx, existing, merged, updates_dict)
+        for idx, memory in enumerate(memories):
+            existing = existing_map.get(memory.content_hash)
+            if existing is None:
+                logger.warning(
+                    "update_memories_batch: hash %s not found, skipping",
+                    memory.content_hash,
+                )
+                continue
+
+            updates = {
+                "tags": memory.tags,
+                "memory_type": memory.memory_type,
+                "metadata": memory.metadata,
+            }
+            merged, err = self._merge_updates(existing, updates)
+            if merged is None:
+                logger.warning(
+                    "update_memories_batch: merge failed for %s: %s",
+                    memory.content_hash, err,
+                )
+                continue
+
+            valid_items.append((idx, existing, merged, updates))
+
+        if not valid_items:
+            return results
+
+        # -- Step 3: Batch embedding generation --
+        contents = [existing.content or "" for (_, existing, _, _) in valid_items]
+        try:
+            if not self.embedding_model:
+                raise RuntimeError("Embedding model not loaded")
+            raw_embeddings = self.embedding_model.encode(contents, convert_to_numpy=True)
+            embeddings = [
+                e.tolist() if hasattr(e, "tolist") else list(e)
+                for e in raw_embeddings
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.error("update_memories_batch: batch embedding failed: %s", exc)
+            return results
+
+        # -- Step 4: Build entities --
+        entities: List[Dict[str, Any]] = []
+        entity_indices: List[int] = []
+
+        for i, (idx, existing, merged, updates) in enumerate(valid_items):
+            timestamps = self._compute_update_timestamps(
+                existing, updates, preserve_timestamps
+            )
+            embedding = embeddings[i]
+            entity = self._build_update_entity(existing, merged, timestamps, embedding)
+            entities.append(entity)
+            entity_indices.append(idx)
+
+        # -- Step 5: Single batch upsert --
+        if not entities:
+            return results
+
+        try:
+            await self._call_client(
+                "upsert",
+                collection_name=self.collection_name,
+                data=entities,
+            )
+            for idx in entity_indices:
+                results[idx] = True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("update_memories_batch: batch upsert failed: %s", exc)
+
+        return results
+
     # -- Stats / misc --------------------------------------------------------
 
     async def get_stats(self) -> Dict[str, Any]:
@@ -2255,6 +2419,7 @@ class MilvusMemoryStorage(MemoryStorage):
         offset: int = 0,
         memory_type: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        tag_match: str = "any",
         stale_days: Optional[int] = None,
         include_embeddings: bool = False,
     ) -> List[Memory]:
@@ -2266,14 +2431,26 @@ class MilvusMemoryStorage(MemoryStorage):
             safe_type = memory_type.replace('"', '\\"')
             filters.append(f'memory_type == "{safe_type}"')
         if tags:
-            tag_filter, matched = self._tag_like_clauses(tags, joiner="or")
+            joiner = "and" if tag_match == "all" else "or"
+            tag_filter, matched = self._tag_like_clauses(tags, joiner=joiner)
             if matched:
                 filters.append(tag_filter)
             else:
                 return []
 
+        filter_expr = self._combine_filter(*filters)
+
+        # When stale_days is set, perform cross-collection filtering.
+        # Fetch all matching memories first, filter for staleness, then
+        # apply pagination manually — mirrors count_all_memories logic.
+        if stale_days is not None and stale_days > 0:
+            return await self._get_stale_memories(
+                filter_expr, stale_days, limit=limit, offset=offset,
+                include_embeddings=include_embeddings,
+            )
+
         return await self._query_memories(
-            filter_expr=self._combine_filter(*filters),
+            filter_expr=filter_expr,
             limit=limit if limit is not None else _MILVUS_MAX_LIMIT,
             offset=offset,
             sort_desc_key="created_at",
@@ -2284,6 +2461,7 @@ class MilvusMemoryStorage(MemoryStorage):
         self,
         memory_type: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        tag_match: str = "any",
         stale_days: Optional[int] = None,
     ) -> int:
         if not self._ensure_initialized():
@@ -2294,7 +2472,8 @@ class MilvusMemoryStorage(MemoryStorage):
             safe_type = memory_type.replace('"', '\\"')
             filters.append(f'memory_type == "{safe_type}"')
         if tags:
-            tag_filter, matched = self._tag_like_clauses(tags, joiner="or")
+            joiner = "and" if tag_match == "all" else "or"
+            tag_filter, matched = self._tag_like_clauses(tags, joiner=joiner)
             if matched:
                 filters.append(tag_filter)
             else:
@@ -2364,6 +2543,79 @@ class MilvusMemoryStorage(MemoryStorage):
                     stale_count += 1
 
         return stale_count
+
+    async def _get_stale_memories(
+        self,
+        base_filter: str,
+        stale_days: int,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        include_embeddings: bool = False,
+    ) -> List[Memory]:
+        """Return memories not accessed in the last ``stale_days`` days.
+
+        Mirrors the cross-collection logic in ``_count_stale_memories`` but
+        returns full Memory objects instead of a count.  Pagination
+        (limit/offset) is applied *after* staleness filtering.
+        """
+        threshold = time.time() - stale_days * 86400
+
+        # Determine stale content_hashes via _access side-collection
+        try:
+            async with self._write_lock:
+                if self.client is None:
+                    return []
+                all_rows = await asyncio.to_thread(
+                    self._drain_main_ids_and_created_at, base_filter,
+                )
+                active_rows: List[Dict[str, Any]] = []
+                if self._has_access_collection:
+                    active_rows = await asyncio.to_thread(
+                        self._drain_active_hashes, threshold,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_get_stale_memories failed: %s", exc)
+            return []
+
+        if not all_rows:
+            return []
+
+        active_hashes = {row.get("id") for row in active_rows if row.get("id")}
+
+        # Collect stale hashes (not recently accessed AND created_at < threshold)
+        stale_hashes: List[str] = []
+        for row in all_rows:
+            rid = row.get("id")
+            if rid and rid not in active_hashes:
+                created_at = row.get("created_at", 0)
+                if created_at < threshold:
+                    stale_hashes.append(rid)
+
+        if not stale_hashes:
+            return []
+
+        # Apply pagination to the stale set
+        # Sort by created_at desc is implicit from _drain_main_ids_and_created_at order
+        paginated = stale_hashes[offset:]
+        if limit is not None:
+            paginated = paginated[:limit]
+
+        if not paginated:
+            return []
+
+        # Fetch full Memory objects for the paginated stale hashes
+        hash_filter_parts = [
+            f'id == "{h.replace(chr(34), "")}"' for h in paginated
+        ]
+        hash_filter = " or ".join(hash_filter_parts)
+
+        return await self._query_memories(
+            filter_expr=hash_filter,
+            limit=len(paginated),
+            sort_desc_key="created_at",
+            include_embeddings=include_embeddings,
+        )
 
     async def get_memories_by_time_range(
         self, start_time: float, end_time: float,
