@@ -40,7 +40,7 @@ class MockAdapter:
 class ClaudeAdapter:
     """Uses anthropic SDK. Import anthropic lazily in __init__."""
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514") -> None:
+    def __init__(self, model: str = "claude-sonnet-4-5") -> None:
         try:
             import anthropic  # noqa: F401
         except ImportError as e:
