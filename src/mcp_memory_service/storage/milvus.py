@@ -2334,6 +2334,555 @@ class MilvusMemoryStorage(MemoryStorage):
 
         return results
 
+    async def mark_superseded_batch(self, pairs: list[tuple[str, str]]) -> int:
+        """Mark memories as superseded in a single batch operation.
+
+        For each (winner_hash, loser_hash) pair, sets the loser's metadata
+        ``superseded_by`` field to the winner_hash. Uses batch fetch + batch
+        upsert for efficiency.
+
+        Args:
+            pairs: List of (winner_hash, loser_hash) tuples.
+
+        Returns:
+            Number of memories successfully marked.
+        """
+        if not pairs:
+            return 0
+        if not self._ensure_initialized():
+            return 0
+
+        # Collect all loser hashes for batch fetch
+        loser_hashes = list({loser for _, loser in pairs})
+
+        # Build a mapping: loser_hash -> winner_hash
+        # (if a loser appears multiple times, last winner wins)
+        loser_to_winner: Dict[str, str] = {loser: winner for winner, loser in pairs}
+
+        # -- Batch fetch all losers (including vectors to avoid re-encoding) --
+        existing_map: Dict[str, Memory] = {}
+        try:
+            fetched = await self._call_client(
+                "get",
+                collection_name=self.collection_name,
+                ids=loser_hashes,
+                output_fields=list(self._OUTPUT_FIELDS_WITH_VECTOR),
+            )
+            for row in (fetched or []):
+                mem = self._entity_to_memory(row, include_embedding=True)
+                if mem:
+                    existing_map[mem.content_hash] = mem
+        except Exception as exc:  # noqa: BLE001
+            logger.error("mark_superseded_batch: batch fetch failed: %s", exc)
+            return 0
+
+        if not existing_map:
+            return 0
+
+        # -- Build update entities (reuse existing vectors, no re-encoding) --
+        valid_losers: List[tuple] = []  # (loser_hash, existing, winner_hash)
+        for loser_hash, winner_hash in loser_to_winner.items():
+            existing = existing_map.get(loser_hash)
+            if existing is None:
+                logger.warning(
+                    "mark_superseded_batch: loser %s not found, skipping",
+                    loser_hash,
+                )
+                continue
+            valid_losers.append((loser_hash, existing, winner_hash))
+
+        if not valid_losers:
+            return 0
+
+        # Build entities with superseded_by in metadata, reusing existing vectors
+        entities: List[Dict[str, Any]] = []
+        for loser_hash, existing, winner_hash in valid_losers:
+            # Only pass the new field — _merge_updates handles merging internally
+            updates: Dict[str, Any] = {"metadata": {"superseded_by": winner_hash}}
+            merged, err = self._merge_updates(existing, updates)
+            if merged is None:
+                logger.warning(
+                    "mark_superseded_batch: merge failed for %s: %s",
+                    loser_hash, err,
+                )
+                continue
+
+            timestamps = self._compute_update_timestamps(
+                existing, updates, preserve_timestamps=True
+            )
+
+            # Reuse existing vector — content hasn't changed
+            embedding = existing.embedding
+            if not embedding:
+                # Fallback: generate embedding if vector wasn't fetched
+                try:
+                    embedding = self._generate_embedding(existing.content or "")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "mark_superseded_batch: embedding fallback failed for %s: %s",
+                        loser_hash, exc,
+                    )
+                    continue
+
+            entity = self._build_update_entity(existing, merged, timestamps, embedding)
+            entities.append(entity)
+
+        if not entities:
+            return 0
+
+        # -- Single batch upsert --
+        try:
+            await self._call_client(
+                "upsert",
+                collection_name=self.collection_name,
+                data=entities,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("mark_superseded_batch: batch upsert failed: %s", exc)
+            return 0
+
+        marked = len(entities)
+        logger.info("mark_superseded_batch: marked %d memories as superseded", marked)
+        return marked
+
+    # -- search_memories / retrieve_with_quality_boost / recall_memory --------
+
+    async def retrieve_with_quality_boost(
+        self,
+        query: str,
+        n_results: int = 10,
+        tags: Optional[List[str]] = None,
+        quality_boost: Optional[bool] = None,
+        quality_weight: Optional[float] = None,
+        include_superseded: bool = False,
+    ) -> List["MemoryQueryResult"]:
+        """Quality-boosted retrieval using Milvus native hybrid search.
+
+        Over-fetches 3x via the native Milvus retrieve (which already uses
+        hybrid BM25+vector when available), then reranks by a composite
+        score combining semantic similarity and quality_score from metadata.
+        """
+        from ..config import MCP_QUALITY_BOOST_ENABLED, MCP_QUALITY_BOOST_WEIGHT
+
+        if quality_boost is None:
+            quality_boost = MCP_QUALITY_BOOST_ENABLED
+        if quality_weight is None:
+            quality_weight = MCP_QUALITY_BOOST_WEIGHT
+
+        if not 0.0 <= quality_weight <= 1.0:
+            raise ValueError(f"quality_weight must be 0.0-1.0, got {quality_weight}")
+
+        if not quality_boost:
+            return await self.retrieve(
+                query, n_results, tags=tags, include_superseded=include_superseded
+            )
+
+        # Over-fetch for reranking pool
+        oversample = 3
+        candidates = await self.retrieve(
+            query, n_results * oversample, tags=tags, include_superseded=include_superseded
+        )
+        if not candidates:
+            return []
+
+        # Rerank by composite score
+        semantic_weight = 1.0 - quality_weight
+        for result in candidates:
+            semantic_score = result.relevance_score
+            q_score = result.memory.quality_score
+
+            result.relevance_score = (
+                semantic_weight * semantic_score + quality_weight * q_score
+            )
+            if result.debug_info is None:
+                result.debug_info = {}
+            result.debug_info.update({
+                "original_semantic_score": semantic_score,
+                "quality_score": q_score,
+                "quality_weight": quality_weight,
+                "semantic_weight": semantic_weight,
+                "reranked": True,
+            })
+
+        candidates.sort(key=lambda r: r.relevance_score, reverse=True)
+        return candidates[:n_results]
+
+    async def recall_memory(self, query: str, n_results: int = 5) -> List[Memory]:
+        """Recall memories with time-expression awareness.
+
+        Parses natural language time expressions from the query (e.g.,
+        "last week", "yesterday") and applies a Milvus time-range filter
+        on ``created_at``. Falls back to plain semantic retrieve if no
+        time expression is detected.
+        """
+        if not self._ensure_initialized():
+            return []
+
+        # Try to parse time expression from query
+        start_time = None
+        end_time = None
+        try:
+            from ..utils.time_parser import parse_time_expression
+            start_time, end_time = parse_time_expression(query)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse time expression from query, falling back to standard retrieve: %s", exc)
+
+        if start_time is not None or end_time is not None:
+            # Build time filter for Milvus
+            filters: List[str] = []
+            if start_time is not None:
+                filters.append(f"created_at >= {start_time}")
+            if end_time is not None:
+                filters.append(f"created_at <= {end_time}")
+            time_filter = " and ".join(filters)
+
+            # Use vector search with time filter
+            query_embedding = self._embed_query(query)
+            if query_embedding is None:
+                return []
+
+            fetch_n = self._retrieve_fetch_limit(n_results, time_filter)
+            if self._has_bm25:
+                hits = await self._run_hybrid_search(
+                    query, query_embedding, time_filter, fetch_n
+                )
+            else:
+                hits = await self._run_search(query_embedding, time_filter, fetch_n)
+
+            results = self._rank_and_trim(hits, query, n_results, 0.0)
+            return [r.memory for r in results[:n_results]]
+
+        # No time expression — fall back to standard retrieve
+        results = await self.retrieve(query, n_results)
+        return [r.memory for r in results]
+
+    async def search_memories(
+        self,
+        query: Optional[str] = None,
+        mode: str = "semantic",
+        time_expr: Optional[str] = None,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        tag_match: str = "any",
+        quality_boost: float = 0.0,
+        limit: int = 10,
+        include_debug: bool = False,
+        include_superseded: bool = False,
+    ) -> Dict[str, Any]:
+        """Unified memory search with Milvus-native filtering.
+
+        Pushes time and tag filters into Milvus filter expressions for
+        server-side filtering instead of Python-side post-filtering.
+        Supports all modes: semantic, exact, hybrid.
+        """
+        if not self._ensure_initialized():
+            return {"memories": [], "total": 0, "query": query, "mode": mode,
+                    "error": "Milvus storage not initialized"}
+
+        # Validate inputs
+        if mode not in ("semantic", "exact", "hybrid"):
+            return {"memories": [], "total": 0, "query": query, "mode": mode,
+                    "error": f"Invalid mode: {mode}"}
+        if not 0.0 <= quality_boost <= 1.0:
+            return {"memories": [], "total": 0, "query": query, "mode": mode,
+                    "error": f"Invalid quality_boost: {quality_boost}"}
+
+        # -- Parse time filters --
+        start_time: Optional[float] = None
+        end_time: Optional[float] = None
+
+        if time_expr:
+            try:
+                from ..utils.time_parser import parse_time_expression
+                start_time, end_time = parse_time_expression(time_expr)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to parse time_expr '%s', ignoring time filter: %s", time_expr, exc)
+
+        if not time_expr:
+            if after:
+                try:
+                    from datetime import datetime as _dt
+                    start_time = _dt.fromisoformat(after).timestamp()
+                except ValueError:
+                    return {"memories": [], "total": 0, "query": query, "mode": mode,
+                            "error": f"Invalid after date: {after}"}
+            if before:
+                try:
+                    from datetime import datetime as _dt
+                    end_time = _dt.fromisoformat(before).timestamp()
+                except ValueError:
+                    return {"memories": [], "total": 0, "query": query, "mode": mode,
+                            "error": f"Invalid before date: {before}"}
+
+        # -- Build Milvus filter expression (push filters server-side) --
+        filter_parts: List[str] = []
+        if start_time is not None:
+            filter_parts.append(f"created_at >= {start_time}")
+        if end_time is not None:
+            filter_parts.append(f"created_at <= {end_time}")
+        if tags:
+            tag_expr, matched = self._tag_like_clauses(
+                tags, joiner="and" if tag_match == "all" else "or"
+            )
+            if matched:
+                filter_parts.append(tag_expr)
+
+        combined_filter = " and ".join(filter_parts) if filter_parts else ""
+
+        # -- Execute search based on mode --
+        results: List[MemoryQueryResult] = []
+        pre_filter_count = 0
+
+        if mode == "exact":
+            if not query:
+                return {"memories": [], "total": 0, "query": query, "mode": mode,
+                        "error": "query required for exact mode"}
+
+            if self._has_content_lower and combined_filter:
+                # Push all filters (content + time + tags) to Milvus in one query
+                needle = query.lower().replace('"', '\\"')
+                content_filter = f'content_lower like "%{needle}%"'
+                final_filter = (
+                    f"({combined_filter}) and ({content_filter})"
+                    if combined_filter else content_filter
+                )
+                matched_memories = await self._query_memories(
+                    filter_expr=final_filter,
+                    limit=_MILVUS_MAX_LIMIT,
+                    sort_desc_key="created_at",
+                )
+                results = [
+                    MemoryQueryResult(memory=m, relevance_score=1.0, debug_info=None)
+                    for m in matched_memories
+                ]
+                pre_filter_count = len(results)
+            else:
+                # Fallback: fetch by content, then post-filter
+                matched_memories = await self.get_by_exact_content(query)
+                results = [
+                    MemoryQueryResult(memory=m, relevance_score=1.0, debug_info=None)
+                    for m in matched_memories
+                ]
+                pre_filter_count = len(results)
+                if start_time is not None:
+                    results = [r for r in results if r.memory.created_at and r.memory.created_at >= start_time]
+                if end_time is not None:
+                    results = [r for r in results if r.memory.created_at and r.memory.created_at <= end_time]
+                if tags:
+                    if tag_match == "all":
+                        results = [r for r in results if all(t in r.memory.tags for t in tags)]
+                    else:
+                        results = [r for r in results if any(t in r.memory.tags for t in tags)]
+
+        elif mode in ("semantic", "hybrid"):
+            if not query and not combined_filter:
+                return {"memories": [], "total": 0, "query": query, "mode": mode,
+                        "error": "At least one filter required (query, time, or tags)"}
+
+            if query:
+                fetch_limit = limit * 3 if quality_boost > 0 else limit
+                query_embedding = self._embed_query(query)
+                if query_embedding is None:
+                    return {"memories": [], "total": 0, "query": query, "mode": mode,
+                            "error": "Failed to generate query embedding"}
+
+                fetch_n = self._retrieve_fetch_limit(fetch_limit, combined_filter)
+                if self._has_bm25:
+                    hits = await self._run_hybrid_search(
+                        query, query_embedding, combined_filter, fetch_n
+                    )
+                else:
+                    hits = await self._run_search(query_embedding, combined_filter, fetch_n)
+
+                results = self._rank_and_trim(hits, query, len(hits), 0.0)
+                pre_filter_count = len(results)
+
+                # Apply quality boost reranking
+                if quality_boost > 0:
+                    semantic_weight = 1.0 - quality_boost
+                    for r in results:
+                        orig = r.relevance_score
+                        r.relevance_score = (
+                            semantic_weight * orig + quality_boost * r.memory.quality_score
+                        )
+                    results.sort(key=lambda r: r.relevance_score, reverse=True)
+            else:
+                # Time/tag only — use Milvus query with filter
+                try:
+                    rows = await self._call_client(
+                        "query",
+                        collection_name=self.collection_name,
+                        filter=combined_filter,
+                        output_fields=list(self._OUTPUT_FIELDS),
+                        limit=min(limit * 3, _MILVUS_MAX_LIMIT),
+                    )
+                    for row in (rows or []):
+                        mem = self._entity_to_memory(row)
+                        if mem:
+                            results.append(
+                                MemoryQueryResult(memory=mem, relevance_score=0.5, debug_info=None)
+                            )
+                    pre_filter_count = len(results)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("search_memories: query failed: %s", exc)
+
+        # Filter superseded
+        if not include_superseded:
+            results = [r for r in results if not r.memory.metadata.get("superseded_by")]
+
+        # Limit
+        results = results[:limit]
+
+        # Build response
+        memories = []
+        for r in results:
+            mem_dict = r.memory.to_dict()
+            mem_dict["similarity_score"] = r.relevance_score
+            if r.debug_info:
+                mem_dict["debug_info"] = r.debug_info
+            memories.append(mem_dict)
+
+        response: Dict[str, Any] = {
+            "memories": memories,
+            "total": len(memories),
+            "query": query,
+            "mode": mode,
+        }
+
+        if include_debug:
+            response["debug"] = {
+                "time_filter": {"time_expr": time_expr, "after": after, "before": before,
+                                "start_timestamp": start_time, "end_timestamp": end_time},
+                "tag_filter": tags,
+                "quality_boost": quality_boost,
+                "milvus_filter": combined_filter,
+                "pre_filter_count": pre_filter_count,
+                "post_filter_count": len(memories),
+                "limit": limit,
+            }
+
+        return response
+
+    # -- Low-priority optional overrides -------------------------------------
+
+    async def search_by_tag_chronological(
+        self, tags: List[str], limit: int = None, offset: int = 0
+    ) -> List[Memory]:
+        """Search memories by tags with chronological ordering (newest first).
+
+        Pushes tag filter + sort to Milvus instead of fetching all then
+        sorting in Python (base-class fallback).
+        """
+        if not tags or not self._ensure_initialized():
+            return []
+
+        tag_filter, matched = self._tag_like_clauses(tags, joiner="or")
+        if not matched:
+            return []
+
+        effective_limit = limit if limit is not None else _MILVUS_MAX_LIMIT
+        return await self._query_memories(
+            filter_expr=tag_filter,
+            limit=effective_limit,
+            offset=offset,
+            sort_desc_key="created_at",
+        )
+
+    async def count_memories_by_tag(self, tags: List[str]) -> int:
+        """Count memories matching any of the given tags.
+
+        Uses Milvus count query instead of fetching all rows and counting
+        in Python (base-class fallback).
+        """
+        if not tags or not self._ensure_initialized():
+            return 0
+
+        tag_filter, matched = self._tag_like_clauses(tags, joiner="or")
+        if not matched:
+            return 0
+
+        try:
+            rows = await self._call_client(
+                "query",
+                collection_name=self.collection_name,
+                filter=tag_filter,
+                output_fields=["count(*)"],
+            )
+            return self._extract_count(rows)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("count_memories_by_tag failed: %s", exc)
+            return 0
+
+    async def is_deleted(self, content_hash: str) -> bool:
+        """Check if a memory has been soft-deleted.
+
+        In Milvus, a soft-deleted memory has metadata.deleted_at set.
+        If the memory doesn't exist at all, returns False (not soft-deleted,
+        just gone).
+        """
+        if not self._ensure_initialized():
+            return False
+
+        existing = await self.get_by_hash(content_hash)
+        if existing is None:
+            return False
+
+        return existing.metadata.get("deleted_at") is not None
+
+    async def purge_deleted(self, older_than_days: int = 30) -> int:
+        """Permanently delete soft-deleted memories older than specified days.
+
+        Finds memories with metadata.deleted_at set and created_at older
+        than the threshold, then hard-deletes them from Milvus.
+        """
+        if not self._ensure_initialized():
+            return 0
+
+        import time as _time
+        cutoff = _time.time() - (older_than_days * 86400)
+
+        # Milvus can't filter on JSON sub-fields easily, so we need to
+        # scan for memories with deleted_at in metadata
+        try:
+            # Get all memories created before cutoff
+            rows = await self._call_client(
+                "query",
+                collection_name=self.collection_name,
+                filter=f"created_at <= {cutoff}",
+                output_fields=["id", "metadata"],
+                limit=_MILVUS_MAX_LIMIT,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("purge_deleted: query failed: %s", exc)
+            return 0
+
+        if not rows:
+            return 0
+
+        # Filter for those with deleted_at in metadata
+        to_purge: List[str] = []
+        for row in rows:
+            meta = _safe_json_loads(row.get("metadata", "{}"), "purge_deleted")
+            if meta.get("deleted_at") is not None:
+                to_purge.append(row["id"])
+
+        if not to_purge:
+            return 0
+
+        try:
+            await self._call_client(
+                "delete",
+                collection_name=self.collection_name,
+                ids=to_purge,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("purge_deleted: delete failed: %s", exc)
+            return 0
+
+        logger.info("purge_deleted: permanently removed %d tombstones", len(to_purge))
+        return len(to_purge)
+
     # -- Stats / misc --------------------------------------------------------
 
     async def get_stats(self) -> Dict[str, Any]:

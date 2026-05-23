@@ -16,6 +16,12 @@ PRN
 # Aider files
 .aider.*
 
+# Graphify output (regenerable knowledge graph artifacts)
+graphify-out/
+
+# Claude Code runtime locks
+.claude/scheduled_tasks.lock
+
 # Private/sensitive documents
 docs/saas-monetization-strategy.md
 
@@ -224,4 +230,9 @@ certs/key.pem
 
 # LoCoMo benchmark data (downloaded on demand)
 data/locomo/
-results/benchmarks/
+results/
+
+# Generated statistics (regenerate with docs/statistics/generate_charts.py)
+docs/statistics/charts/
+docs/statistics/data/
+docs/statistics/REPOSITORY_STATISTICS.md

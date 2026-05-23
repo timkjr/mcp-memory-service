@@ -10,6 +10,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.64.0] - 2026-05-22
+
+### Added
+
+- **feat(consolidation): incremental time horizon for `memory_consolidate`** ([#985](https://github.com/doobidoo/mcp-memory-service/pull/985), closes [#983](https://github.com/doobidoo/mcp-memory-service/issues/983), @filhocf): New `time_horizon="incremental"` mode processes only memories created since the last consolidation run, enabling safe invocation from session Stop hooks with bounded latency. Uses a DB-based atomic lock (`BEGIN IMMEDIATE` + `locked` column) to prevent concurrent runs across multiple processes. Enforces a 10-second timeout via `asyncio.wait_for` at the handler level. Skips decay and forgetting phases (those remain on monthly/yearly horizons); runs clustering, compression, and association discovery on the incremental window. Bootstraps with a 24-hour window on first run, then advances a `created_at > last_run_at` cursor. New `consolidation/run_tracker.py` module tracks run state. 15 new unit tests added. Relates to RFC [#732](https://github.com/doobidoo/mcp-memory-service/issues/732).
+- **docs(research): contradiction resolution approaches reference** ([#984](https://github.com/doobidoo/mcp-memory-service/pull/984), @rudi193-cmd / Sean Campbell): New `docs/research/contradiction-resolution-approaches.md` — a system-neutral survey of invalidation models, detection mechanisms, and a decision guide for implementors, written in support of RFC #732.
+
+### Fixed
+
+- **fix(web): repair `GET /api/quality/trends` AttributeError** ([#982](https://github.com/doobidoo/mcp-memory-service/pull/982), closes [#981](https://github.com/doobidoo/mcp-memory-service/issues/981), reported by @TonbiLX): The endpoint raised a 500 on every storage backend due to two stacked bugs: `recall_by_timeframe` is a server-tool handler, not a storage method, and `search_all_memories` has never existed on the storage interface. Fixed by replacing both with `get_memories_by_time_range` using a DB-side BETWEEN filter. Quality trends endpoint now returns correct data.
+
+### Maintenance
+
+- **chore: migrate binaries to Git LFS + remove generated statistics** ([e08e606c](https://github.com/doobidoo/mcp-memory-service/commit/e08e606c)): Binary assets moved to Git LFS; generated statistics files removed from version control.
+- **chore: remove stale archive directories** ([14c742ff](https://github.com/doobidoo/mcp-memory-service/commit/14c742ff)): Deleted obsolete archive directories that accumulated in the repository.
+- **fix(docs): remove dead links to deleted archive files** ([bde77499](https://github.com/doobidoo/mcp-memory-service/commit/bde77499)): Documentation links pointing to the removed archive files cleaned up.
+
+## [10.63.0] - 2026-05-20
+
+### Added
+
+- **feat(milvus): low-priority optional overrides — completes Issue #888** ([#978](https://github.com/doobidoo/mcp-memory-service/pull/978), closes [#888](https://github.com/doobidoo/mcp-memory-service/issues/888), @henry201605): Implements the final 4 native Milvus overrides to fully complete Issue #888. `search_by_tag_chronological` pushes tag filter + `sort_desc_key=created_at` to Milvus via `_query_memories` (replaces base-class fetch-all-then-sort fallback, supports pagination). `count_memories_by_tag` uses Milvus `count(*)` query with tag filter (replaces fetch-all-then-len fallback). `is_deleted` checks `metadata.deleted_at` field (returns False if memory not found). `purge_deleted` queries memories with `created_at <= cutoff`, filters those with `deleted_at` in metadata, and hard-deletes tombstones. 17 new mock-based unit tests across 4 test classes.
+
+### Fixed
+
+- **fix(harvest): support Kiro CLI `AssistantMessage` kind + raise system-content threshold to 10k** ([#979](https://github.com/doobidoo/mcp-memory-service/pull/979), closes [#972](https://github.com/doobidoo/mcp-memory-service/issues/972), @filhocf): Adds `"AssistantMessage": "assistant"` to `KIRO_KIND_MAP` so Kiro CLI assistant messages (which use this kind, not `Response`) are correctly parsed. Removes the redundant `len(text) > 2000` filter in `_is_system_content` (already capped at `MAX_CANDIDATE_CONTENT_LENGTH = 500` in extractor). Result: parse yield increases from 1 candidate per 71 messages to 36 candidates per 373 messages.
+
+## [10.62.0] - 2026-05-20
+
+### Added
+
+- **feat(milvus): native `search_memories`, `retrieve_with_quality_boost`, `recall_memory`** ([#970](https://github.com/doobidoo/mcp-memory-service/pull/970), part of [#888](https://github.com/doobidoo/mcp-memory-service/issues/888), @henry201605): Completes the medium-priority Milvus native method set. All three methods push filters to the Milvus server side — `search_memories` applies semantic similarity + tag/type/date filters in one ANN call, `retrieve_with_quality_boost` re-ranks by blending embedding similarity with stored quality scores, and `recall_memory` adds temporal recency weighting. Eliminates N round-trip fallbacks to the base class. 18 new mock-based unit tests in `tests/storage/test_milvus_search_methods.py`.
+
+### Fixed
+
+- **fix(hooks): parse Claude Code transcripts as JSONL with nested message** ([#971](https://github.com/doobidoo/mcp-memory-service/pull/971)): Claude Code transcript format changed from bare JSON objects to JSONL with a `message` wrapper. The auto-capture hook now parses each line as `JSON.parse(line).message ?? line` before extracting tool calls, restoring transcript-based memory capture for current Claude Code versions.
+
+### Dependencies
+
+- **chore(deps): bump actions/github-script from 7 to 9** ([#973](https://github.com/doobidoo/mcp-memory-service/pull/973)): GitHub Actions dependency update.
+- **chore(deps): bump snok/container-retention-policy from 1 to 2** ([#974](https://github.com/doobidoo/mcp-memory-service/pull/974)): GitHub Actions dependency update.
+- **chore(deps): bump actions/setup-python from 4 to 6** ([#975](https://github.com/doobidoo/mcp-memory-service/pull/975)): GitHub Actions dependency update.
+- **chore(deps): bump uv group with 13 updates** ([#976](https://github.com/doobidoo/mcp-memory-service/pull/976)): Dependency maintenance update.
+
+### Documentation
+
+- **docs: modernize server commands to `memory` CLI** ([#969](https://github.com/doobidoo/mcp-memory-service/pull/969)): Sweep across 23 docs files replacing outdated/dead startup commands with the modern `memory` lifecycle CLI (`launch`, `server`, `restart`). Fixes broken refs (`python scripts/run_http_server.py` — wrong path; `./start_all_servers.sh`, `./stop_all_servers.sh`, `./status_servers.sh`, `python run_server.py` — no longer exist; `python -m src.mcp_memory_service.server` — invalid module path). Modernizes legacy patterns (`uv run memory server` → `memory launch` for HTTP or `memory server` for MCP stdio/Inspector; `python scripts/server/run_http_server.py` → `memory launch`; `./scripts/update_and_restart.sh` → `memory restart`). systemd `ExecStart=` paths, the `claude-hooks/PLUGIN.md` spawn fallback chain, and `python -m mcp_memory_service.server` for MCP stdio are intentionally preserved.
+
 ## [10.61.0] - 2026-05-19
 
 ### Added

@@ -16,6 +16,7 @@
 
 from typing import List, Dict, Any, Optional, Protocol, Tuple
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import asyncio
 import logging
 import time
@@ -31,6 +32,7 @@ from ..models.memory import Memory
 from ..storage.graph import GraphStorage
 from ..config import GRAPH_STORAGE_MODE, CONSOLIDATION_STORE_ASSOCIATIONS, TYPED_EDGES_ENABLED
 from .relationship_inference import RelationshipInferenceEngine
+from .run_tracker import RunTracker
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,7 @@ HORIZON_CONFIGS = {
     "monthly": {"delta": timedelta(days=30), "cutoff_days": None},
     "quarterly": {"delta": timedelta(days=90), "cutoff_days": 90},
     "yearly": {"delta": timedelta(days=365), "cutoff_days": 365},
+    "incremental": {"delta": timedelta(days=1), "cutoff_days": 1},
 }
 
 
@@ -150,9 +153,9 @@ class DreamInspiredConsolidator:
 
     # Phase enablement configuration
     ENABLED_PHASES = {
-        "clustering": ["weekly", "monthly", "quarterly"],
-        "associations": ["weekly", "monthly"],
-        "compression": ["weekly", "monthly", "quarterly"],
+        "clustering": ["weekly", "monthly", "quarterly", "incremental"],
+        "associations": ["weekly", "monthly", "incremental"],
+        "compression": ["weekly", "monthly", "quarterly", "incremental"],
         "forgetting": ["monthly", "quarterly", "yearly"],
     }
 
@@ -175,6 +178,9 @@ class DreamInspiredConsolidator:
 
         # Initialize health monitoring
         self.health_monitor = ConsolidationHealthMonitor(config)
+
+        # Initialize run tracker for incremental consolidation
+        self.run_tracker: Optional[RunTracker] = None
 
         # Graph storage initialized lazily in consolidate() to avoid
         # blocking I/O in __init__ (Milvus backend needs async init).
@@ -254,6 +260,17 @@ class DreamInspiredConsolidator:
             self.logger.warning(f"Failed to initialize graph storage: {e}")
             self.graph_storage = None
 
+    def _resolve_tracker_db_path(self) -> Optional[Path]:
+        """Resolve path for the run tracker SQLite DB (next to main memory DB)."""
+        db_path = None
+        if hasattr(self.storage, "primary") and hasattr(self.storage.primary, "db_path"):
+            db_path = getattr(self.storage.primary, "db_path", None)
+        if not isinstance(db_path, (str, Path)) and hasattr(self.storage, "db_path"):
+            db_path = getattr(self.storage, "db_path", None)
+        if isinstance(db_path, (str, Path)):
+            return Path(db_path).parent / "consolidation_runs.db"
+        return None
+
     async def consolidate(self, time_horizon: str, **kwargs) -> ConsolidationReport:
         """
         Run full consolidation pipeline for given time horizon.
@@ -273,10 +290,23 @@ class DreamInspiredConsolidator:
             memories_processed=0,
         )
 
+        is_incremental = time_horizon == "incremental"
+
         try:
             self.logger.info(
                 f"Starting {time_horizon} consolidation - this may take several minutes depending on memory count..."
             )
+
+            # Incremental: initialize run_tracker, concurrency guard, timeout
+            if is_incremental:
+                if self.run_tracker is None:
+                    db_path = self._resolve_tracker_db_path()
+                    db_path = Path(str(db_path)) if db_path else None
+                    if db_path:
+                        self.run_tracker = RunTracker(db_path)
+                if self.run_tracker and not self.run_tracker.try_acquire("incremental"):
+                    self.logger.info("Incremental consolidation already in flight, skipping")
+                    return self._finalize_report(report, ["Skipped: concurrent run in flight"])
 
             # Lazy graph storage init (avoids blocking I/O in __init__).
             # Lock prevents double-init when two consolidate() calls race.
@@ -295,6 +325,9 @@ class DreamInspiredConsolidator:
                     self.logger.info(
                         f"No memories to process for {time_horizon} consolidation"
                     )
+                    # Record run even on 0 memories to advance timestamp
+                    if is_incremental and self.run_tracker:
+                        await self.run_tracker.record_run("incremental", 0)
                     return self._finalize_report(report, [])
 
                 self.logger.info(f"✓ Found {len(memories)} memories to process")
@@ -411,6 +444,13 @@ class DreamInspiredConsolidator:
 
                 # 9. Finalize report
                 report = self._finalize_report(report, [])
+
+                # Record incremental run
+                if is_incremental and self.run_tracker:
+                    await self.run_tracker.record_run(
+                        "incremental", report.memories_processed
+                    )
+
                 if self.plugin_registry:
                     await self.plugin_registry.fire('on_consolidate', {
                         **report.performance_metrics,
@@ -437,6 +477,9 @@ class DreamInspiredConsolidator:
             )
             report.errors.append(str(e))
             return self._finalize_report(report, [str(e)])
+        finally:
+            if is_incremental and self.run_tracker:
+                self.run_tracker.release("incremental")
 
     async def _get_memories_for_horizon(
         self, time_horizon: str, **kwargs
@@ -454,17 +497,31 @@ class DreamInspiredConsolidator:
 
         config = HORIZON_CONFIGS[time_horizon]
 
+        # Incremental: only memories created since last run
+        if time_horizon == "incremental":
+            last_run = None
+            if self.run_tracker:
+                last_run = await self.run_tracker.get_last_run_at("incremental")
+            # Bootstrap: 24h window on first run
+            if last_run is None:
+                last_run = (now - timedelta(days=1)).timestamp()
+            end_time = now.timestamp()
+            memories = await self.storage.get_memories_by_time_range(
+                last_run, end_time,
+            )
+            return memories
+
         # For daily processing, get recent memories (no change - already efficient)
         if time_horizon == "daily":
             cutoff_days = config.get("cutoff_days", 2)
             start_time = (now - timedelta(days=cutoff_days)).timestamp()
             end_time = now.timestamp()
             memories = await self.storage.get_memories_by_time_range(
-                start_time, end_time, include_embeddings=True,
+                start_time, end_time,
             )
         else:
             # For longer horizons: incremental oldest-first processing
-            memories = await self.storage.get_all_memories(include_embeddings=True)
+            memories = await self.storage.get_all_memories()
 
             # Filter by relevance to time horizon (quarterly/yearly still focus on old memories)
             cutoff_days = config.get("cutoff_days")

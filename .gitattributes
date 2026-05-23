@@ -1,2 +1,5 @@
 # Auto-resolve lock file conflicts and regenerate lock file
 uv.lock merge=uv-lock-merge
+video/**/*.mp3 filter=lfs diff=lfs merge=lfs -text
+video/**/*.png filter=lfs diff=lfs merge=lfs -text
+docs/assets/images/*.png filter=lfs diff=lfs merge=lfs -text
