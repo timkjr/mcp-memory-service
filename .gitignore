@@ -1,4 +1,7 @@
 
+# Video walkthrough files (large LFS binaries, not needed in fork)
+video/
+
 # TLS certificates
 *.pem
 certs/
