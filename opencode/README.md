@@ -1,22 +1,13 @@
 # OpenCode Memory Awareness Plugin
+Automatic memory retrieval, context injection, and write-back for OpenCode using the `mcp-memory-service` HTTP API.
 
-Automatic memory retrieval and context injection for OpenCode using the `mcp-memory-service` HTTP API.
+This integration provides:
 
-This integration is intentionally minimal in its first upstream form:
-- load relevant memories when an OpenCode session starts
-- inject memory context into `experimental.chat.system.transform`
-- inject condensed memory context into `experimental.session.compacting`
-
-It does **not** do automatic write-back or session harvesting yet. That is deferred to a later step so the first integration stays small, reviewable, and aligned with stable OpenCode plugin hooks.
-
-## Why HTTP Instead of Direct Python Imports?
-
-This plugin uses the documented HTTP API instead of importing Python internals directly.
-
-That keeps the integration:
-- host-agnostic
-- easier to configure across platforms
-- aligned with the public `mcp-memory-service` surface
+- **Session Start**: load relevant memories when an OpenCode session starts
+- **Auto-Capture**: detect and store valuable conversation content (decisions, errors, learnings) in real-time via `message.part.updated`
+- **Session-End**: consolidate full-session outcomes via `session.idle` (incremental upsert that overwrites the previous summary so the latest state always wins)
+- **Harvest**: optional pattern-harvesting via `/api/harvest` at session end
+- **Compact Injection**: inject condensed memory context into `experimental.session.compacting`
 
 ## Prerequisites
 
@@ -116,10 +107,22 @@ On `session.created`, the plugin:
 - derives the project name from the working directory
 - runs a few semantic searches against the memory service
 - stores the best matches in per-session plugin state
-
-Then:
 - `experimental.chat.system.transform` injects full memory context into the system prompt
 - `experimental.session.compacting` injects a smaller memory summary into compaction context
+
+On `message.part.updated` (every text part), the plugin:
+- buffers parts for session-end analysis (dedupes by part id)
+- detects valuable patterns (decisions, errors, learnings, etc.) via regex, ignoring fenced code blocks
+- requires `minSentenceLength` (default 40) before considering a sentence
+- stores matched content immediately as memories via `POST /api/memories`
+- respects `#skip` (skip auto-capture) and `#remember` (force capture) overrides
+
+On `session.idle` (after each assistant turn), the plugin:
+- analyzes buffered messages for topics, decisions, insights, code changes, next steps
+- stores a fresh session summary memory; deletes the previous one for this session via `DELETE /api/memories/<hash>` to avoid DB pollution
+- optionally triggers pattern harvest via `POST /api/harvest` (opt-in, dry-run first-use safety)
+
+`session.deleted` is also handled when received but tends to fire after the plugin's event subscribers have already been torn down, so it cannot be relied on as the only end-of-session trigger.
 
 ## Verification
 
@@ -130,10 +133,94 @@ Then:
 
 If `verbose` is enabled, the plugin writes structured logs through `client.app.log()` under the `opencode-memory` service name.
 
+## Slash Command: `/memory`
+
+Register the command in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "command": {
+    "memory": {
+      "description": "Show MCP Memory Service status. Usage: /memory, /memory search <query>, /memory health",
+      "template": ""
+    }
+  }
+}
+```
+
+Then in OpenCode:
+- `/memory` — current session status (project, loaded count, captured count, last action, last summary)
+- `/memory search <query>` — top 5 semantic matches for the query
+- `/memory health` — backend type, status, total memory count, endpoint
+
+The plugin intercepts the command via `command.execute.before`, fetches data from the memory service, and replaces the user message with a formatted block plus a "reply verbatim" instruction. One small LLM round-trip per call. If your default model adds commentary anyway, set `command.memory.model` to a smaller/cheaper model.
+
+## TUI Toasts
+
+The plugin shows transient toasts via `client.tui.showToast` in three situations (rate-limited to once per session):
+
+- on first memory load: `Loaded N memories for <project>`
+- on each auto-capture: `Captured <type> memory for <project>`
+- on first session summary store: `Storing session summary for <project>`
+
+`variant` must be one of `info | success | warning | error` — omitting it returns 400 from `/tui/show-toast`.
+
+## Status File Bridge
+
+The plugin writes a JSON snapshot to `~/.config/opencode/.memory-status.json` on each significant event (load, capture, summary). Schema:
+
+```json
+{
+  "projectName": "string",
+  "loadedCount": 0,
+  "capturedCount": 0,
+  "lastAction": "string",
+  "lastSummaryAt": "ISO timestamp",
+  "updatedAt": "ISO timestamp"
+}
+```
+
+This file is consumed by the TUI sidebar widget (next section) but is also useful for any external tool that wants the latest snapshot of memory activity.
+
+## TUI Sidebar Widget
+
+The repo ships a Solid TUI plugin (`opencode/memory-status-tui.tsx`) that renders a live "Memory" panel in the OpenCode sidebar showing project, loaded count, captured count, and the last action. It polls the status file every 1.5 seconds.
+
+**Install (one-time):**
+
+```bash
+# 1. Install babel deps once (used by the build script). They land in
+#    ~/.config/opencode/node_modules and are reused by future builds.
+cd ~/.config/opencode
+bun add @opentui/solid @opentui/core
+
+# 2. Compile and deploy.
+node /path/to/mcp-memory-service/opencode/build-tui-plugin.mjs
+```
+
+The build script writes the compiled file to `opencode/memory-status-tui.js` and mirrors it to `~/.config/opencode/plugins/memory-status-tui/index.js` (creates `package.json` if missing).
+
+**Register in `~/.config/opencode/tui.json`** (TUI plugins use a separate config file from server plugins):
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "file:///Users/<you>/.config/opencode/plugins/memory-status-tui"
+  ]
+}
+```
+
+After restart, the sidebar shows a new "Memory" section above Context, and `/memory` renders a status block in chat:
+
+![Memory sidebar widget and /memory slash command in OpenCode](screenshots/sidebar.png)
+
+**Key takeaway for plugin authors:** OpenCode splits config across two files. Server plugins (`{id, server}` exports) go in `opencode.json["plugin"]`. TUI plugins (`{id, tui}` exports) go in `tui.json["plugin"]`. Putting a TUI plugin in `opencode.json` triggers the loader error `must default export an object with server()`.
+
 ## Limitations
 
-- read-only retrieval/injection only
 - depends on the HTTP API being reachable
 - relevance is intentionally simple and project-name driven in the first cut
-
-Future work can add richer retrieval, manual refresh, and safe write-back once the host lifecycle hooks are proven stable for that path.
+- auto-capture uses regex-based pattern detection (no LLM-based classification)
+- session-end consolidation may overlap with auto-capture entries (both write to `/api/memories`)
+- mid-conversation memory injection (when a user asks "what did we do before?") is not yet implemented

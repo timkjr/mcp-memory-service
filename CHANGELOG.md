@@ -10,6 +10,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### CI
+
+- **chore(ci): pin all GitHub Actions to full SHA hashes** ([#1005](https://github.com/doobidoo/mcp-memory-service/pull/1005)): Supply chain hardening against TeamPCP-style tag-mutation attacks. All 20 workflow files now use full 40-character commit SHA hashes instead of floating version tags (`@v1`, `@v4`, `@v6`, `@v7` etc.) — 109 `uses:` entries across 18 unique action refs. Highest-risk refs: `gaurav-nelson/github-action-markdown-link-check` (community maintainer), `snok/container-retention-policy` (community), and `anthropics/claude-code-action` (runs with `CLAUDE_CODE_OAUTH_TOKEN`). Human-readable `# vtag` comments preserved. `peter-evans/create-pull-request` was already SHA-pinned.
+
+## [10.65.3] - 2026-05-25
+
+### Security
+
+- **fix(security): enforce write scope on MCP tools/call — [GHSA-2r68-g678-7qr3](https://github.com/doobidoo/mcp-memory-service/security/advisories/GHSA-2r68-g678-7qr3)** ([#1004](https://github.com/doobidoo/mcp-memory-service/pull/1004)): OAuth read-only clients could invoke mutating MCP tools (`store_memory`, `delete_memory`, and related write operations) via the `/mcp/tools/call` endpoint despite holding only a read-scope token. Fixed by adding a `_WRITE_TOOLS` set and checking OAuth scope before dispatch; unauthorized calls now return JSON-RPC error `-32003` and HTTP 403. CVSS 8.1, CWE-862 (Missing Authorization). 4 regression tests added.
+
+### CI
+
+- **ci: restrict quality-cpu Docker build to linux/amd64 only** ([#1003](https://github.com/doobidoo/mcp-memory-service/pull/1003), closes [#1002](https://github.com/doobidoo/mcp-memory-service/issues/1002)): The `quality-cpu` Docker image build job was timing out at the 6-hour GitHub Actions limit on every release since v10.64.0 due to QEMU-emulated arm64 cross-compilation. Platforms restricted to `linux/amd64`; arm64 users should use the `:slim` or `:latest` images which are multi-arch.
+
+## [10.65.1] - 2026-05-24
+
+### Fixed
+
+- **fix(prompts): guard `learning_session` against unresolved CLI `$N` placeholders** ([#1000](https://github.com/doobidoo/mcp-memory-service/pull/1000)): Adds regex-based detection of unresolved CLI positional placeholders (`$1`, `$2`, etc.) in `_prompt_learning_session` to prevent storing them as real memories when the prompt template is invoked without required arguments. Closes [#998](https://github.com/doobidoo/mcp-memory-service/issues/998).
+
+### Changed
+
+- **docs: make audit log plugin privacy-safe by default** ([#999](https://github.com/doobidoo/mcp-memory-service/pull/999)): Example audit-log plugin now defaults to `MCP_PLUGIN_AUDIT_LOG_PRIVACY_MODE=safe`, which strips or hashes sensitive fields. Raw mode (`MCP_PLUGIN_AUDIT_LOG_PRIVACY_MODE=raw`) is available for debugging. Optional HMAC key (`MCP_PLUGIN_AUDIT_LOG_HMAC_KEY`) enables deterministic pseudonymisation of user identifiers.
+
+## [10.65.0] - 2026-05-24
+
+### Added
+
+- **feat(opencode): `/memory` slash command, TUI toasts, status file bridge** ([#997](https://github.com/doobidoo/mcp-memory-service/pull/997)): Adds three slash commands — `/memory` (current session status), `/memory search <query>` (top 5 semantic matches), `/memory health` (backend type, status, total memory count). Implemented via `command.execute.before` hook that fetches data from the memory service and replaces the user message with a formatted block plus a "reply verbatim" instruction. TUI toasts now fire for memory load / auto-capture / session-summary events — the previous blocker was a missing `variant` field on `/tui/show-toast` that returned 400 silently. Status file at `~/.config/opencode/.memory-status.json` keeps a live snapshot for the slash command and a future TUI sidebar consumer. Session-summary upsert on `session.idle` now deletes the previous per-session summary via `DELETE /api/memories/<hash>` before storing the new one, eliminating duplicate session-summary memories in the vector DB. `/api/health` no longer exposes backend metadata after [GHSA-73hc-m4hx-79pj](https://github.com/doobidoo/mcp-memory-service/security/advisories/GHSA-73hc-m4hx-79pj), so `/memory health` now hits `/api/health/detailed`. Ships a working Solid TUI sidebar widget (`opencode/memory-status-tui.tsx` + `opencode/build-tui-plugin.mjs` compiled via `babel-preset-solid`) that renders a "Memory" panel in OpenCode's sidebar. TUI plugins live in `~/.config/opencode/tui.json` (separate from server plugins in `opencode.json`) — see `opencode/README.md` for the install + config steps. Multi-project status corruption fix (per Gemini code review).
+
+## [10.64.2] - 2026-05-23
+
+### Fixed
+
+- **fix(opencode): replace dead chat.message hook with event-based message.part.updated** ([#995](https://github.com/doobidoo/mcp-memory-service/pull/995)): OpenCode's plugin system never triggers `chat.message` — the hook type exists in `@opencode-ai/plugin` but there is no `trigger()` call site in the OpenCode server source. Replaced with `event` hook listening to `message.part.updated` bus events which carry full text content. Also fixes TLS: uses `node:https.Agent` with `rejectUnauthorized: false` because Bun's `fetch()` ignores `NODE_TLS_REJECT_UNAUTHORIZED` at runtime against self-signed certs. Dual export format (V1 `export default {id, server}` + legacy `export const`) for maximum loader compatibility.
+
+### Added
+
+- **feat(harvest): LLM-based pattern discovery script for locale plugins** ([#992](https://github.com/doobidoo/mcp-memory-service/pull/992), closes [#909](https://github.com/doobidoo/mcp-memory-service/issues/909)): New `scripts/maintenance/discover_harvest_patterns.py` — a one-shot CLI tool that analyzes low-yield harvest sessions (<3 matches from ≥50 messages) and proposes new regex patterns via an optional LLM (Groq or OpenAI-compatible API). Outputs candidate patterns as YAML to `patterns/auto_generated/{locale}.yaml`, matching the existing locale plugin schema. Includes regex validation and plain-text rejection. See `scripts/maintenance/README.md` for usage.
+
+### Changed
+
+- **feat(opencode): port Claude Code hooks — auto-capture, session-end write-back, harvest** — Ported Claude Code hook capabilities into the OpenCode in-process plugin. Memory retrieval on session start, auto-capture via pattern detection (#skip/#remember overrides), session-end analysis + summary storage, and optional harvest (POST /api/harvest). Hook architecture: `event` (bus events) + `experimental.chat.system.transform` (memory injection) + `experimental.session.compacting` (context preservation). Config sections: `autoCapture`, `sessionEnd`, `harvest`. (Follow-up in [#995](https://github.com/doobidoo/mcp-memory-service/pull/995) replaced `chat.message` with `message.part.updated` bus event.)
+
+### Maintenance
+
+- **chore(deps): upgrade transitive dependencies** — `uv sync --upgrade` updated attrs, propcache, yarl, starlette, scikit-learn, scipy, zeroconf, and others to latest compatible versions.
+- **chore(docs): archive stale design plans** — Moved 7 design documents from `docs/plans/` to `docs/archive/` (Jan–Apr 2026). No content changes.
+- **chore(git): install and configure Git LFS** — 29 video assets track via Git LFS. Run `git lfs pull` after cloning to retrieve binary content.
+- **chore(git): prune 24 stale local and 5 remote branches** — Cleaned up branches from merged PRs that were squash-merged and not deleted.
+
+## [10.64.1] - 2026-05-23
+
+### Fixed
+
+- **fix(consolidation): raise association confidence threshold to 0.5** ([#991](https://github.com/doobidoo/mcp-memory-service/pull/991)): Increases the minimum confidence score for association discovery from the previous default to 0.5, reducing false-positive graph edges during incremental consolidation runs.
+- **fix(consolidation): advance last_run_at on incremental timeout** ([#989](https://github.com/doobidoo/mcp-memory-service/pull/989), closes [#986](https://github.com/doobidoo/mcp-memory-service/issues/986)): When the 10-second timeout fires during an incremental consolidation, `last_run_at` is now still advanced so the next run picks up where this one left off instead of re-processing the same window. Fixes a user-facing regression introduced in v10.64.0.
+- **fix(oauth): remove offline_access from PRM scopes_supported per SEP-2207** ([#990](https://github.com/doobidoo/mcp-memory-service/pull/990)): Removes `offline_access` from the `scopes_supported` field in OAuth provider metadata (PRM endpoint) to comply with SEP-2207, which mandates that refresh tokens require explicit user authorization rather than being advertised as a default capability.
+- **fix(consolidation): tighten temporal_proximity to 7-day window** ([#988](https://github.com/doobidoo/mcp-memory-service/pull/988)): Reduces the temporal proximity window for association discovery from 14 to 7 days, making the consolidation more conservative about linking temporally-distant memories.
+
+### Maintenance
+
+- **chore: gitignore graphify-out and scheduled_tasks.lock** (commit dcbfc4ee): Adds generated graph output directory and scheduled task lock file to `.gitignore`.
+
 ## [10.64.0] - 2026-05-22
 
 ### Added

@@ -51,3 +51,32 @@ class TestPromptHandlersExist:
         # The actual prompt execution would require MCP protocol setup
         # which is beyond the scope of this regression test.
         assert True
+
+
+class TestLearningSessionPlaceholderGuard:
+    """
+    Regression tests for issue #998: `_prompt_learning_session` must NOT
+    persist a memory when invoked with unresolved CLI positional placeholders
+    (e.g. "$1", "$2"), which is what some MCP clients send when slash-command
+    arguments are not bound by the user (tab-completion previews etc.).
+
+    These tests exercise the module-level `_is_unresolved_prompt_placeholder`
+    predicate directly so the contract is enforced regardless of how the
+    prompt handler evolves.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        ("$1",         True),
+        ("$2",         True),
+        ("$10",        True),
+        (" $1 ",       True),    # whitespace tolerated
+        ("$1 real",    False),   # not a sole placeholder
+        ("real value", False),
+        ("$abc",       False),   # not numeric
+        ("",           False),
+        ("General",    False),   # the documented default
+        (None,         False),   # non-string inputs are safe
+    ])
+    def test_placeholder_predicate(self, value, expected):
+        from mcp_memory_service.server_impl import _is_unresolved_prompt_placeholder
+        assert _is_unresolved_prompt_placeholder(value) is expected

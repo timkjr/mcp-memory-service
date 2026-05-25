@@ -20,6 +20,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 # Standard library imports
 import sys
 import os
+import re
 import time
 import asyncio
 import traceback
@@ -29,6 +30,23 @@ import logging
 from collections import deque
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+
+
+# CLI clients (Claude Code, opencode, Codex CLI) sometimes invoke MCP prompts
+# via slash-command preview / tab-completion with literal positional
+# placeholders like "$1", "$2" when the user has not bound argument values.
+# Prompt handlers must NOT persist memories with these placeholders as
+# content — see issue #998.
+_PROMPT_PLACEHOLDER_RE = re.compile(r"^\$\d+$")
+
+
+def _is_unresolved_prompt_placeholder(value) -> bool:
+    """Return True if `value` is an unresolved CLI positional placeholder.
+
+    Examples that match: "$1", "$2", " $10 ", "$99".
+    Examples that don't: "", "General", "$1 real value", "$abc", None.
+    """
+    return isinstance(value, str) and bool(_PROMPT_PLACEHOLDER_RE.match(value.strip()))
 
 # Import from server package modules
 from .server import (
@@ -1213,22 +1231,53 @@ class MemoryServer:
         
         async def _prompt_learning_session(self, arguments: dict) -> list:
             """Generate learning session prompt."""
-            topic = arguments.get("topic", "General")
-            key_points = arguments.get("key_points", "").split(",")
-            questions = arguments.get("questions", "").split(",") if arguments.get("questions") else []
-            
+            topic_raw = arguments.get("topic", "General")
+            keypoints_raw = arguments.get("key_points", "")
+            questions_raw = arguments.get("questions", "")
+
+            unresolved = [
+                name for name, val in (
+                    ("topic", topic_raw),
+                    ("key_points", keypoints_raw),
+                    ("questions", questions_raw),
+                ) if _is_unresolved_prompt_placeholder(val)
+            ]
+
+            topic = topic_raw
+            # Filter out empty / whitespace-only entries from comma-separated lists
+            # so the rendered note doesn't get blank bullet points.
+            key_points = [p.strip() for p in keypoints_raw.split(",") if p.strip()]
+            questions = [q.strip() for q in questions_raw.split(",") if q.strip()]
+
             # Create structured learning note
             learning_note = f"# Learning Session: {topic}\n\n"
             learning_note += f"Date: {datetime.now().isoformat()}\n\n"
             learning_note += "## Key Points:\n"
             for point in key_points:
-                learning_note += f"- {point.strip()}\n"
-            
+                learning_note += f"- {point}\n"
+
             if questions:
                 learning_note += "\n## Questions for Further Study:\n"
                 for question in questions:
-                    learning_note += f"- {question.strip()}\n"
-            
+                    learning_note += f"- {question}\n"
+
+            if unresolved:
+                # Preview-only path: do NOT persist when args are unresolved
+                # CLI positional placeholders. Otherwise every slash-command
+                # tab-completion preview pollutes the memory store (issue #998).
+                response_text = (
+                    "Preview only — not persisted. Unresolved CLI placeholder "
+                    f"argument(s): {', '.join(unresolved)}. Provide real values "
+                    "for those fields to save this learning session.\n\n"
+                    f"{learning_note}"
+                )
+                return [
+                    types.PromptMessage(
+                        role="user",
+                        content=types.TextContent(type="text", text=response_text)
+                    )
+                ]
+
             # Store the learning note
             content_hash = generate_content_hash(learning_note)
             memory = Memory(
@@ -1238,11 +1287,11 @@ class MemoryServer:
                 memory_type="learning"
             )
             success, message = await self.storage.store(memory)
-            
+
             response_text = f"Learning session stored successfully!\n\n{learning_note}"
             if not success:
                 response_text = f"Failed to store learning session: {message}"
-            
+
             return [
                 types.PromptMessage(
                     role="user",

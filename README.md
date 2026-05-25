@@ -316,7 +316,20 @@ cp opencode/memory-plugin.config.json ~/.config/opencode/memory-plugin.json
 
 OpenCode automatically loads local plugins from `~/.config/opencode/plugins/` and `.opencode/plugins/`.
 
-See [OpenCode integration guide](opencode/README.md) for configuration, project-local installs, and current limitations.
+Optional: register the `/memory` slash command in `~/.config/opencode/opencode.json` to query status, search, and health from inside the TUI:
+
+```json
+{
+  "command": {
+    "memory": {
+      "description": "Show MCP Memory Service status. Usage: /memory, /memory search <query>, /memory health",
+      "template": ""
+    }
+  }
+}
+```
+
+See [OpenCode integration guide](opencode/README.md) for configuration, project-local installs, slash command details, TUI toasts, and current limitations.
 
 > The current OpenCode integration ships as repository files for the local plugin directory. If you installed only the PyPI package, clone the repository once to copy the plugin files.
 >
@@ -496,18 +509,22 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.64.0** (May 22, 2026)
+## Latest Release: **v10.65.3** (May 25, 2026)
 
-**Minor: Incremental memory consolidation + quality trends fix**
+**Patch: Security fix (GHSA-2r68-g678-7qr3 CVSS 8.1) — enforce write scope on MCP tools/call + CI amd64-only Docker build**
 
 **What's New:**
-- `feat(consolidation)`: `memory_consolidate(action="run", time_horizon="incremental")` — processes only memories since the last run, DB-atomic lock, 10s timeout, safe to call from session Stop hooks (@filhocf, PR #985, closes #983)
-- `fix(web)`: `GET /api/quality/trends` no longer returns 500 on every backend — two stacked AttributeErrors fixed, now uses correct storage interface (PR #982, reported by @TonbiLX)
-- `docs(research)`: contradiction resolution approaches reference doc added for RFC #732 (@rudi193-cmd / Sean Campbell, PR #984)
+- `fix(security)`: OAuth read-only clients could call mutating MCP tools via `/mcp/tools/call`. Fixed with `_WRITE_TOOLS` scope check; returns JSON-RPC -32003 + HTTP 403. 4 regression tests added. ([GHSA-2r68-g678-7qr3](https://github.com/doobidoo/mcp-memory-service/security/advisories/GHSA-2r68-g678-7qr3), PR #1004)
+- `ci`: Restrict `quality-cpu` Docker build to `linux/amd64` only — eliminates 6h QEMU timeout on every release since v10.64.0. arm64 users: use `:slim` or `:latest` (PR #1003, closes #1002)
 
 ---
 
 **Previous Releases**:
+- **v10.65.1** - fix(prompts): guard `learning_session` against unresolved CLI `$N` placeholders (PR #1000) + docs: privacy-safe audit log default (PR #999)
+- **v10.65.0** - feat(opencode): `/memory` slash commands, TUI toasts, status bridge, working Solid TUI sidebar widget, session-summary dedup fix (PR #997)
+- **v10.64.2** - fix(opencode): replace dead chat.message hook with event-based message.part.updated + add export default {id,server} for V1 plugin compat + use node:https Agent with rejectUnauthorized=false for self-signed cert support (PR #995)
+- **v10.64.1** - fix(consolidation): association confidence threshold raised to 0.5 (PR #991) + fix(consolidation): `last_run_at` advance on timeout (#989, closes #986) + fix(oauth): remove `offline_access` per SEP-2207 (#990) + fix(consolidation): temporal proximity 7-day window (#988)
+- **v10.64.0** - feat(consolidation): incremental time_horizon for memory_consolidate (#985, @filhocf) + fix(web): repair /api/quality/trends AttributeError (#982) + docs(research): contradiction resolution approaches (#984)
 - **v10.63.0** - feat(milvus): low-priority overrides completing #888 (search_by_tag_chronological, count_memories_by_tag, is_deleted, purge_deleted) + fix(harvest): Kiro CLI AssistantMessage + 36x parse yield improvement (PRs #978, #979)
 - **v10.62.0** - feat(milvus): native search_memories + retrieve_with_quality_boost + recall_memory (server-side filter pushdown, completes medium-priority #888) + fix(hooks): JSONL transcript parsing (PRs #970, #971)
 - **v10.61.0** - feat(milvus): native update_memory + update_memories_batch (1 round-trip batch upsert) + feat(sse): Last-Event-ID replay on /api/events reconnect (PRs #966, #953)

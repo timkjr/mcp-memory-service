@@ -6,6 +6,7 @@ This directory contains maintenance and diagnostic scripts for the MCP Memory Se
 
 | Script | Purpose | Performance | Use Case |
 |--------|---------|-------------|----------|
+| [`discover_harvest_patterns.py`](#discover_harvest_patternspy) | Propose regex patterns from low-yield sessions | ~10s (LLM) | Improve harvest coverage for new locales/domains |
 | [`check_memory_types.py`](#check_memory_typespy-new) | Display type distribution | <1s | Quick health check, pre/post-consolidation validation |
 | [`consolidate_memory_types.py`](#consolidate_memory_typespy-new) | Consolidate fragmented types | ~5s for 1000 updates | Type taxonomy cleanup, reduce fragmentation |
 | [`migrate_embeddings.py`](#migrate_embeddingspy-new) | Migrate to a different embedding model | ~20s for 1000 memories | Switching models (e.g., 384-dim to 768-dim) |
@@ -22,7 +23,60 @@ This directory contains maintenance and diagnostic scripts for the MCP Memory Se
 
 ## Detailed Documentation
 
-### `check_memory_types.py` 🆕
+### `discover_harvest_patterns.py`
+
+**Purpose**: One-shot pattern discovery for low-yield harvest sessions. Analyzes session transcripts where the existing locale patterns produced <3 matches from ≥50 messages, optionally sends them to an LLM (Groq or OpenAI-compatible) to propose new regex patterns, and writes candidates to `patterns/auto_generated/{locale}.yaml`.
+
+- First run of a new harvest locale plugin — seed initial patterns from real sessions
+- Investigating poor harvest coverage for a specific language or domain
+- Expanding an existing locale's pattern set when monitoring shows low match rates
+
+```bash
+# Dry-run with LLM (auto-detect — Groq first, fallback to OpenAI-compatible)
+uv run python scripts/maintenance/discover_harvest_patterns.py \
+    --session-dir data/harvest_sessions/en/ \
+    --locale en
+
+# Override LLM provider and model
+uv run python scripts/maintenance/discover_harvest_patterns.py \
+    --session-dir data/harvest_sessions/de/ \
+    --locale de \
+    --llm groq \
+    --model deepseek-chat
+
+# Dry-run without LLM (just stat existing coverage)
+uv run python scripts/maintenance/discover_harvest_patterns.py \
+    --session-dir data/harvest_sessions/pt_BR/ \
+    --locale pt_BR \
+    --dry-run
+
+# Write candidate patterns (requires `--apply`)
+OPENAI_API_KEY=sk-... \
+OPENAI_BASE_URL=https://api.x.ai/v1 \
+OPENAI_MODEL=grok-3 \
+uv run python scripts/maintenance/discover_harvest_patterns.py \
+    --session-dir data/harvest_sessions/en/ \
+    --locale en \
+    --apply
+```
+
+**Performance**: ~10 seconds per session with an LLM (depends on response time); near-instant without `--llm`.
+
+**Safety Features**:
+- **Dry-run only by default** — `--apply` flag required to write YAML
+- **Regex validation** — every candidate pattern is compiled and tested before output
+- **Plain-text rejection** — LLM responses that are not valid regex or don't match sample text are dropped
+- **Graceful degradation** — works fully without any LLM key (just shows coverage stats)
+
+**How It Works**:
+
+1. **Parse sessions** — reads JSONL files from `--session-dir`, extracts messages via `TranscriptParser`
+2. **Pre-extract** — runs existing locale patterns via `PatternExtractor` to measure match rates
+3. **Filter low-yield** — keeps only sessions with <3 matches AND ≥50 messages
+4. **LLM prompt** (optional) — sends low-yield sessions + locale-specific prompt to the LLM with a YAML schema constraint
+5. **Validate** — checks each returned pattern compiles as regex and matches at least one sample line
+6. **Output** — writes valid candidates as YAML to `patterns/auto_generated/{locale}.yaml`
+
 
 **Purpose**: Quick diagnostic tool to display memory type distribution in the database.
 
