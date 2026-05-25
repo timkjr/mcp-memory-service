@@ -43,7 +43,7 @@ cp opencode/memory-plugin.js ~/.config/opencode/plugins/
 Optional: install the example config as a starting point:
 
 ```bash
-cp opencode/memory-plugin.config.json ~/.config/opencode/memory-plugin.json
+cp opencode/memory-plugin.config.example.json ~/.config/opencode/memory-plugin.json
 ```
 
 No `plugin` entry is required in `opencode.json` when loading from the local plugin directory.

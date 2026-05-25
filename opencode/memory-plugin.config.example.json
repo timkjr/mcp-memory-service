@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "memoryService": {
+    "endpoint": "https://memory.example.com",
+    "timeoutMs": 5000,
+    "loadTimeoutMs": 2500,
+    "maxMemoriesPerSession": 8,
+    "searchTags": [],
+    "includeProjectTag": false,
+    "projectQueries": [
+      "{project} architecture decisions",
+      "{project} recent work",
+      "{project} open issues"
+    ]
+  },
+  "output": {
+    "verbose": true,
+    "includeTimestamps": true,
+    "maxContentLength": 280
+  },
+  "autoCapture": {
+    "enabled": true,
+    "minMessageLength": 100,
+    "minSentenceLength": 40,
+    "maxContentLength": 4000,
+    "patterns": ["decision", "error", "learning", "implementation", "important"],
+    "tags": ["auto-capture"]
+  },
+  "sessionEnd": {
+    "enabled": true,
+    "minSessionLength": 100,
+    "maxMemoriesPerSession": 3,
+    "tags": ["opencode-session", "session-summary"]
+  },
+  "harvest": {
+    "enabled": false,
+    "dryRunOnFirstUse": true,
+    "minSessionMessages": 10,
+    "sessions": 1,
+    "useLlm": false,
+    "minConfidence": 0.6,
+    "types": ["decision", "bug", "convention", "learning", "context"]
+  }
+}
