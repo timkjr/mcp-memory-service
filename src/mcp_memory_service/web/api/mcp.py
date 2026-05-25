@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 # check_database_health, list_memories) remain accessible with 'read' scope.
 _WRITE_TOOLS: frozenset = frozenset({"store_memory", "delete_memory"})
 
-router = APIRouter(prefix="/mcp", tags=["mcp"])
+# No prefix here; we will handle prefixes during mounting in app.py
+router = APIRouter(tags=["mcp"])
 
 
 class MCPRequest(BaseModel):
