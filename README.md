@@ -509,17 +509,20 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.65.3** (May 25, 2026)
+## Latest Release: **v10.66.0** (May 26, 2026)
 
-**Patch: Security fix (GHSA-2r68-g678-7qr3 CVSS 8.1) — enforce write scope on MCP tools/call + CI amd64-only Docker build**
+**Minor: Reasoning engine (RFC #732) — transitive closure, abductive inference, entity grouping, insight cards + fix(time-filter): SQL-level enforcement**
 
 **What's New:**
-- `fix(security)`: OAuth read-only clients could call mutating MCP tools via `/mcp/tools/call`. Fixed with `_WRITE_TOOLS` scope check; returns JSON-RPC -32003 + HTTP 403. 4 regression tests added. ([GHSA-2r68-g678-7qr3](https://github.com/doobidoo/mcp-memory-service/security/advisories/GHSA-2r68-g678-7qr3), PR #1004)
-- `ci`: Restrict `quality-cpu` Docker build to `linux/amd64` only — eliminates 6h QEMU timeout on every release since v10.64.0. arm64 users: use `:slim` or `:latest` (PR #1003, closes #1002)
+- `feat(reasoning)`: Phase 1a — transitive closure walks multi-hop graph edges; abductive inference proposes explanations via NLI-backed scoring (PR #1009, RFC #732)
+- `feat(reasoning)`: Phase 1b — entity grouping clusters co-referenced entities across memories for cross-memory entity resolution (PR #1010)
+- `feat(reasoning)`: Phase 3 — insight cards surface synthesised memory summaries via REST API and memory_graph tool (PR #1011)
+- `fix(time-filter)`: Time-range filters now enforced at SQL `WHERE` clause level — no more out-of-window results leaking through vector scoring (PR #1014)
 
 ---
 
 **Previous Releases**:
+- **v10.65.3** - fix(security): enforce write scope on MCP tools/call (GHSA-2r68-g678-7qr3, CVSS 8.1) + ci: restrict quality-cpu Docker to linux/amd64 (PR #1004, #1003)
 - **v10.65.1** - fix(prompts): guard `learning_session` against unresolved CLI `$N` placeholders (PR #1000) + docs: privacy-safe audit log default (PR #999)
 - **v10.65.0** - feat(opencode): `/memory` slash commands, TUI toasts, status bridge, working Solid TUI sidebar widget, session-summary dedup fix (PR #997)
 - **v10.64.2** - fix(opencode): replace dead chat.message hook with event-based message.part.updated + add export default {id,server} for V1 plugin compat + use node:https Agent with rejectUnauthorized=false for self-signed cert support (PR #995)

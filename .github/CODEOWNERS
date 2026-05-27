@@ -1,3 +1,8 @@
+# Security-sensitive paths — maintainer approval required
+src/mcp_memory_service/web/api/mcp.py @doobidoo
+src/mcp_memory_service/web/oauth/ @doobidoo
+.github/workflows/ @doobidoo
+
 # Milvus storage backend
 src/mcp_memory_service/storage/milvus.py @zc277584121
 src/mcp_memory_service/storage/milvus_graph.py @henry201605

@@ -10,9 +10,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **docs(contributing): tighten contributor guidelines + add agent disclosure policy**: Added `## Security-Sensitive Changes` section (protected paths, required scope-enforcement checklist for new MCP tools) and `## Autonomous Agents & AI-Generated PRs` section (mandatory disclosure, 7-day clarification window). PR template extended with `## Security` and `## Agent Disclosure` sections. CODEOWNERS updated to require `@doobidoo` approval on `web/api/mcp.py`, `web/oauth/`, and `.github/workflows/`.
+
+### Fixed
+
+- **fix(opencode): don't use https for http access**: Fix connection failure while using local `http` endpoint with the opencode plugin.
+
 ### CI
 
+- **fix(ci): restore workflow YAML corrupted by SHA-pinning regex**: The SHA-pinning script (PR #1005) matched too broadly, splitting `with:` into `wit\nh:` and collapsing step separators across 18 workflow files (62 occurrences). Restored pre-pinning YAML structure and re-applied all 20 SHA pin mappings correctly.
+
 - **chore(ci): pin all GitHub Actions to full SHA hashes** ([#1005](https://github.com/doobidoo/mcp-memory-service/pull/1005)): Supply chain hardening against TeamPCP-style tag-mutation attacks. All 20 workflow files now use full 40-character commit SHA hashes instead of floating version tags (`@v1`, `@v4`, `@v6`, `@v7` etc.) — 109 `uses:` entries across 18 unique action refs. Highest-risk refs: `gaurav-nelson/github-action-markdown-link-check` (community maintainer), `snok/container-retention-policy` (community), and `anthropics/claude-code-action` (runs with `CLAUDE_CODE_OAUTH_TOKEN`). Human-readable `# vtag` comments preserved. `peter-evans/create-pull-request` was already SHA-pinned.
+
+## [10.66.0] - 2026-05-26
+
+### Added
+
+- **feat(reasoning): Phase 1a — transitive closure + abductive inference** ([#1009](https://github.com/doobidoo/mcp-memory-service/pull/1009), RFC [#732](https://github.com/doobidoo/mcp-memory-service/issues/732)): Implements the first phase of the reasoning engine. Transitive closure walks multi-hop graph edges to surface indirect memory connections. Abductive inference proposes the most plausible explanations for observed memory patterns using NLI-backed scoring. Lays the foundation for higher-level reasoning layers in subsequent phases.
+
+- **feat(reasoning): Phase 1b — entity grouping** ([#1010](https://github.com/doobidoo/mcp-memory-service/pull/1010)): Groups co-referenced entities across memories into canonical clusters, enabling cross-memory entity resolution. Entity groups feed into the transitive closure engine so that edges between aliased entities are correctly traversed.
+
+- **feat(reasoning): Phase 3 — insight cards** ([#1011](https://github.com/doobidoo/mcp-memory-service/pull/1011)): Introduces insight cards — structured summaries synthesised from related memory clusters and inferred relationships. Cards surface via the REST API and memory_graph tool, giving clients a compact, human-readable view of what the reasoning engine has discovered.
+
+### Fixed
+
+- **fix(time-filter): enforce time filter at SQL level** ([#1014](https://github.com/doobidoo/mcp-memory-service/pull/1014)): Time-range filters (`start_date`, `end_date`, `stale_days`) were previously applied in Python after retrieval, allowing the vector search to return results outside the requested window when the result set was small. Filters are now pushed down into the SQL `WHERE` clause so the database enforces the constraint before any vector scoring occurs.
 
 ## [10.65.3] - 2026-05-25
 
