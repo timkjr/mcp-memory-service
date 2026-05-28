@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 TRAVERSABLE_EDGE_TYPES = {'relates_to', 'superseded_by', 'causes', 'fixes', 'related'}
 NON_TRAVERSABLE = {'contradicts', 'contradicted_by'}
 
@@ -187,7 +192,7 @@ class SemanticReasoner:
                 f"Non-traversable types: {sorted(NON_TRAVERSABLE)}"
             )
         if rel_type not in TRAVERSABLE_EDGE_TYPES:
-            logger.warning(f"Edge type '{rel_type}' not in TRAVERSABLE_EDGE_TYPES, proceeding anyway")
+            logger.warning("Edge type '%s' not in TRAVERSABLE_EDGE_TYPES, proceeding anyway", _sanitize_log_value(rel_type))
         if not hasattr(self.graph, 'transitive_closure'):
             logger.warning("GraphStorage does not support transitive_closure")
             return []
@@ -254,7 +259,7 @@ class SemanticReasoner:
             return results
 
         except Exception as e:
-            logger.error(f"Failed abductive reasoning for {effect_hash}: {e}")
+            logger.error("Failed abductive reasoning for %s: %s", _sanitize_log_value(effect_hash), _sanitize_log_value(e))
             return []
 
     async def suggest_relationships(self, hash: str) -> List[Dict[str, Any]]:
@@ -297,5 +302,5 @@ class SemanticReasoner:
             return suggestions[:10]
 
         except Exception as e:
-            logger.error(f"Failed to suggest relationships for {hash}: {e}")
+            logger.error("Failed to suggest relationships for %s: %s", _sanitize_log_value(hash), _sanitize_log_value(e))
             return []

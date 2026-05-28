@@ -42,6 +42,21 @@ pytest tests/
 @agent code-quality-guard "Analyze complexity and security for staged files"
 ```
 
+## ✅ Merging Contributor PRs — Pre-Merge Checklist (MANDATORY)
+
+Before approving and merging any contributor PR, verify ALL of the following:
+
+1. **CI green** — all required checks pass (`gh pr checks <N>`)
+2. **Gemini review read** — `gemini-code-assist` posts automatically on every PR. Read its findings before approving. Even a COMMENTED (non-blocking) review may surface real bugs.
+   ```bash
+   gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login == "gemini-code-assist") | .body'
+   gh api repos/doobidoo/mcp-memory-service/pulls/<N>/comments --jq '.[] | select(.user.login == "gemini-code-assist") | {path,line,body}'
+   ```
+3. **Own review complete** — diff read, security paths checked, findings addressed
+4. **All open threads resolved** — no unresolved REQUEST_CHANGES reviews
+
+> **Why**: PR #1025 (2026-05-27) was approved and merged before reading the Gemini review. The bot had flagged a real bug (`_Path(env_override)` not calling `.expanduser()`). Required a follow-up commit. "CI green + small diff" is not sufficient — always read the bot review first.
+
 ## 🚫 Community PR Review Policy (MANDATORY)
 
 A submitted PR is a commitment to a complete, reviewable piece of work. Incomplete PRs slow the project and have caused real incidents (e.g. v10.59.0 merged a partial OAuth fix that required two follow-up patch releases).

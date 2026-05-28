@@ -1871,7 +1871,7 @@ SOLUTIONS:
 
             results = await self._execute_with_retry(search_fts)
 
-            logger.debug(f"BM25 search found {len(results)} results for query: {query_clean}")
+            logger.debug(f"BM25 search found {len(results)} results for query: {_sanitize_log_value(query_clean)}")
             return results
 
         except Exception as e:
@@ -2384,8 +2384,19 @@ SOLUTIONS:
                 if not row:
                     return None
                 memory_id = row[0]
-                # Delete embedding (won't be needed for search)
-                self.conn.execute('DELETE FROM memory_embeddings WHERE rowid = ?', (memory_id,))
+                # Delete embedding (won't be needed for search).
+                # Guard against sqlite-vec SIGSEGV on corrupted blobs (#1037):
+                # if the vec DELETE raises, log and continue — the memory row
+                # soft-delete still proceeds and the orphaned embedding is
+                # harmless (it won't appear in searches once the memory is gone).
+                try:
+                    self.conn.execute('DELETE FROM memory_embeddings WHERE rowid = ?', (memory_id,))
+                except Exception as vec_err:
+                    logger.warning(
+                        "Could not delete embedding for memory %s (corrupted blob?): %s — "
+                        "proceeding with soft-delete; run purge_deleted() to clean orphan.",
+                        content_hash, vec_err,
+                    )
                 # Remove associated graph edges to prevent orphans (#632)
                 self.conn.execute(
                     'DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?',
@@ -2565,9 +2576,17 @@ SOLUTIONS:
                 memory_ids = [row[0] for row in rows]
                 content_hashes = [row[1] for row in rows]
 
-                # Delete embeddings (won't be needed for search)
+                # Delete embeddings (won't be needed for search).
+                # Guard against sqlite-vec SIGSEGV on corrupted blobs (#1037).
                 for memory_id in memory_ids:
-                    self.conn.execute('DELETE FROM memory_embeddings WHERE rowid = ?', (memory_id,))
+                    try:
+                        self.conn.execute('DELETE FROM memory_embeddings WHERE rowid = ?', (memory_id,))
+                    except Exception as vec_err:
+                        logger.warning(
+                            "Could not delete embedding rowid=%s (corrupted blob?): %s — "
+                            "proceeding with soft-delete.",
+                            memory_id, vec_err,
+                        )
 
                 # Remove associated graph edges to prevent orphans (#632)
                 for ch in content_hashes:
@@ -2628,10 +2647,23 @@ SOLUTIONS:
                 memory_ids = [row[0] for row in rows]
                 hashes = [row[1] for row in rows]
 
-                # Delete from embeddings table using single query with IN clause
+                # Delete from embeddings table using single query with IN clause.
+                # Guard against sqlite-vec SIGSEGV on corrupted blobs (#1037):
+                # fall back to per-row deletes so one bad blob doesn't block the rest.
                 if memory_ids:
                     placeholders = ','.join('?' for _ in memory_ids)
-                    self.conn.execute(f'DELETE FROM memory_embeddings WHERE rowid IN ({placeholders})', memory_ids)
+                    try:
+                        self.conn.execute(f'DELETE FROM memory_embeddings WHERE rowid IN ({placeholders})', memory_ids)
+                    except Exception as vec_err:
+                        logger.warning(
+                            "Batch embedding delete failed (%s) — retrying per-row to skip corrupted blobs.",
+                            vec_err,
+                        )
+                        for mid in memory_ids:
+                            try:
+                                self.conn.execute('DELETE FROM memory_embeddings WHERE rowid = ?', (mid,))
+                            except Exception as row_err:
+                                logger.warning("Could not delete embedding rowid=%s (corrupted blob?): %s", mid, row_err)
 
                 # Remove associated graph edges to prevent orphans (#632)
                 for ch in hashes:

@@ -48,6 +48,12 @@ def _is_unresolved_prompt_placeholder(value) -> bool:
     """
     return isinstance(value, str) and bool(_PROMPT_PLACEHOLDER_RE.match(value.strip()))
 
+
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 # Import from server package modules
 from .server import (
     # Client Detection
@@ -133,33 +139,46 @@ if not os.getenv('DEBUG_MODE'):
         logging.getLogger(module_name).setLevel(logging.WARNING)
 
 class MemoryServer:
-    def __init__(self):
-        """Initialize the server with hardware-aware configuration."""
+    def __init__(
+        self,
+        storage=None,
+        consolidator=None,
+        consolidation_scheduler=None,
+    ):
+        """Initialize the server with hardware-aware configuration.
+
+        All keyword arguments are optional dependency-injection slots for
+        an outer host (e.g. the HTTP transport in `web/api/mcp.py`) that
+        has already built these objects and wants the MemoryServer to
+        share them rather than bootstrap a second set. Passing `storage`
+        skips the lazy storage-init path and treats the server as fully
+        initialized from construction. The stdio entry point
+        (`async_main`) calls `MemoryServer()` with no args and gets the
+        existing lazy-init behavior.
+        """
         self.server = Server(SERVER_NAME)
         self.system_info = get_system_info()
-        
+
         # Initialize query time tracking
         self.query_times = deque(maxlen=50)  # Keep last 50 query times for averaging
-        
+
         # Initialize progress tracking
         self.current_progress = {}  # Track ongoing operations
-        
+
         # Initialize integrity monitor (if enabled)
         self.integrity_monitor = None
 
-        # Initialize consolidation system (if enabled)
-        self.consolidator = None
-        self.consolidation_scheduler = None
-        if CONSOLIDATION_ENABLED:
+        # Initialize consolidation system. Caller-provided instances win;
+        # otherwise the lazy path inside `_ensure_storage_initialized`
+        # builds them (only when CONSOLIDATION_ENABLED).
+        self.consolidator = consolidator
+        self.consolidation_scheduler = consolidation_scheduler
+        if CONSOLIDATION_ENABLED and self.consolidator is None:
             try:
-                self.consolidator = None  # Will be initialized after storage
-                self.consolidation_scheduler = None  # Will be initialized after consolidator
                 logger.info("Consolidation system will be initialized after storage")
             except Exception as e:
                 logger.error(f"Failed to initialize consolidation config: {e}")
-                self.consolidator = None
-                self.consolidation_scheduler = None
-        
+
         try:
             # Initialize paths
             logger.info(f"Creating directories if they don't exist...")
@@ -169,19 +188,30 @@ class MemoryServer:
             logger.info(f"Initializing on {platform.system()} {platform.machine()} with Python {platform.python_version()}")
             logger.info(f"Using accelerator: {self.system_info.accelerator}")
 
-            # DEFER STORAGE INITIALIZATION - Initialize storage lazily when needed
-            # This prevents hanging during server startup due to embedding model loading
-            logger.info(f"Deferring {STORAGE_BACKEND} storage initialization to prevent hanging")
-            if MCP_CLIENT == 'lm_studio':
-                print(f"Deferring {STORAGE_BACKEND} storage initialization to prevent startup hanging", file=sys.stdout, flush=True)
-            self.storage = None
-            self.memory_service = None
-            self._storage_initialized = False
+            if storage is not None:
+                # Caller injected an already-initialized storage; adopt it
+                # directly and skip the deferred-init path entirely.
+                self.storage = storage
+                self.memory_service = MemoryService(storage)
+                self._storage_initialized = True
+                logger.info(
+                    f"Using caller-provided {storage.__class__.__name__} storage; "
+                    f"deferred init skipped"
+                )
+            else:
+                # DEFER STORAGE INITIALIZATION - Initialize storage lazily when needed
+                # This prevents hanging during server startup due to embedding model loading
+                logger.info(f"Deferring {STORAGE_BACKEND} storage initialization to prevent hanging")
+                if MCP_CLIENT == 'lm_studio':
+                    print(f"Deferring {STORAGE_BACKEND} storage initialization to prevent startup hanging", file=sys.stdout, flush=True)
+                self.storage = None
+                self.memory_service = None
+                self._storage_initialized = False
 
         except Exception as e:
             logger.error(f"Initialization error: {str(e)}")
             logger.error(traceback.format_exc())
-            
+
             # Set storage to None to prevent any hanging
             self.storage = None
             self.memory_service = None
@@ -237,7 +267,7 @@ class MemoryServer:
                     message=message
                 )
             
-            logger.debug(f"Progress {operation_id}: {progress:.0f}% - {message}")
+            logger.debug("Progress %s: %.0f%% - %s", _sanitize_log_value(operation_id), progress, _sanitize_log_value(message))
             
             # Clean up completed operations
             if progress >= 100:
@@ -1304,108 +1334,139 @@ class MemoryServer:
         
         @self.server.list_tools()
         async def handle_list_tools() -> List[types.Tool]:
-            """Return list of available MCP tools.
+            return await self.list_tools()
+        
+        @self.server.call_tool()
+        async def handle_call_tool(name: str, arguments: dict | None) -> List[types.TextContent]:
+            return await self.call_tool(name, arguments)
 
-            Note: This list only includes modern unified tools (18 total:
-            memory_store, memory_store_session, memory_search, memory_list,
-            memory_delete, memory_cleanup, memory_health, memory_stats,
-            memory_update, memory_consolidate, memory_ingest, memory_harvest,
-            memory_quality, memory_graph, memory_conflicts, memory_resolve,
-            mistake_note_add, mistake_note_search).
-            Deprecated tools continue working via the backwards
-            compatibility layer in compat.py but are not advertised to clients.
-            """
-            logger.info("=== HANDLING LIST_TOOLS REQUEST ===")
-            try:
-                tools = [
-                    types.Tool(
-                        name="memory_store",
-                        description="""Store new information with optional tags.
 
-                        Accepts two tag formats in metadata:
-                        - Array: ["tag1", "tag2"]
-                        - String: "tag1,tag2"
+    def local_only_tools(self) -> frozenset:
+        """Tool names that must not be exposed over remote transports.
 
-                        Use `conversation_id` to bypass semantic deduplication when saving
-                        incremental memories from the same conversation.
+        These tools take a caller-controlled filesystem path
+        (`project_path`, `file_path`, `directory_path`) and read whatever
+        files they find there. The handlers were designed for a local
+        user who already has filesystem access on the host; exposing them
+        through an authenticated remote transport turns the auth boundary
+        into a confused-deputy primitive that can read any file the
+        server process can read.
 
-                       Examples:
-                        # Using array format:
-                        {
-                            "content": "Memory content",
-                            "metadata": {
-                                "tags": ["important", "reference"],
-                                "type": "note"
-                            }
+        The HTTP MCP shim filters these out of `tools/list` and rejects
+        `tools/call` for them (including their deprecated aliases). Stdio
+        keeps them since the caller already has the filesystem access the
+        handler would otherwise grant.
+        """
+        return frozenset({"memory_harvest", "memory_ingest"})
+
+    async def list_tools(self) -> List[types.Tool]:
+        """Return the canonical MCP tool list.
+
+        Both transports build their `tools/list` response from this method.
+        The list only includes modern unified tools (18 total:
+        memory_store, memory_store_session, memory_search, memory_list,
+        memory_delete, memory_cleanup, memory_health, memory_stats,
+        memory_update, memory_consolidate, memory_ingest, memory_harvest,
+        memory_quality, memory_graph, memory_conflicts, memory_resolve,
+        mistake_note_add, mistake_note_search). Deprecated tool names
+        continue working through `compat.transform_deprecated_call` (see
+        `call_tool`) but are not advertised here.
+
+        Transport-specific filtering (see `local_only_tools`) is applied
+        by individual transports — the canonical list itself is the same
+        for both.
+        """
+        logger.info("=== HANDLING LIST_TOOLS REQUEST ===")
+        try:
+            tools = [
+                types.Tool(
+                    name="memory_store",
+                    description="""Store new information with optional tags.
+
+                    Accepts two tag formats in metadata:
+                    - Array: ["tag1", "tag2"]
+                    - String: "tag1,tag2"
+
+                    Use `conversation_id` to bypass semantic deduplication when saving
+                    incremental memories from the same conversation.
+
+                   Examples:
+                    # Using array format:
+                    {
+                        "content": "Memory content",
+                        "metadata": {
+                            "tags": ["important", "reference"],
+                            "type": "note"
                         }
+                    }
 
-                        # Using string format(preferred):
-                        {
-                            "content": "Memory content",
-                            "metadata": {
-                                "tags": "important,reference",
-                                "type": "note"
-                            }
+                    # Using string format(preferred):
+                    {
+                        "content": "Memory content",
+                        "metadata": {
+                            "tags": "important,reference",
+                            "type": "note"
                         }
+                    }
 
-                        # Using conversation_id to save incremental notes:
-                        {
-                            "content": "User prefers dark mode",
-                            "conversation_id": "conv_abc123",
+                    # Using conversation_id to save incremental notes:
+                    {
+                        "content": "User prefers dark mode",
+                        "conversation_id": "conv_abc123",
+                        "metadata": {
+                            "tags": "preference,ui"
+                        }
+                    }""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "The memory content to store, such as a fact, note, or piece of information."
+                            },
+                            "conversation_id": {
+                                "type": "string",
+                                "description": "Optional conversation identifier. When provided, semantic deduplication is skipped, allowing multiple incremental memories from the same conversation to be stored even if their content is topically similar. Exact duplicate hashes are still rejected."
+                            },
                             "metadata": {
-                                "tags": "preference,ui"
-                            }
-                        }""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "content": {
-                                    "type": "string",
-                                    "description": "The memory content to store, such as a fact, note, or piece of information."
-                                },
-                                "conversation_id": {
-                                    "type": "string",
-                                    "description": "Optional conversation identifier. When provided, semantic deduplication is skipped, allowing multiple incremental memories from the same conversation to be stored even if their content is topically similar. Exact duplicate hashes are still rejected."
-                                },
-                                "metadata": {
-                                    "type": "object",
-                                    "description": "Optional metadata about the memory, including tags and type.",
-                                    "properties": {
-                                        "tags": {
-                                            "oneOf": [
-                                                {
-                                                    "type": "array",
-                                                    "items": {"type": "string"},
-                                                    "description": "Tags as an array of strings"
-                                                },
-                                                {
-                                                    "type": "string",
-                                                    "description": "Tags as comma-separated string"
-                                                }
-                                            ],
-                                            "description": "Tags to categorize the memory. Accepts either an array of strings or a comma-separated string.",
-                                            "examples": [
-                                                "tag1,tag2,tag3",
-                                                ["tag1", "tag2", "tag3"]
-                                            ]
-                                        },
-                                        "type": {
-                                            "type": "string",
-                                            "description": "Optional memory type. Validated against the built-in ontology. Common base types: observation, decision, learning, error, pattern, planning, ceremony, milestone, stakeholder, meeting, research, communication. Common subtypes: note, reference, code_edit, command, document, insight, gotcha, bug, action_item, finding. Unknown types are silently coerced to 'observation' and the response includes a warning. Register additional types via the MCP_CUSTOM_MEMORY_TYPES env var, e.g. '{\"foo\": [\"sub_a\", \"sub_b\"]}'. See docs/memory-ontology.md for the full taxonomy."
-                                        }
+                                "type": "object",
+                                "description": "Optional metadata about the memory, including tags and type.",
+                                "properties": {
+                                    "tags": {
+                                        "oneOf": [
+                                            {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "Tags as an array of strings"
+                                            },
+                                            {
+                                                "type": "string",
+                                                "description": "Tags as comma-separated string"
+                                            }
+                                        ],
+                                        "description": "Tags to categorize the memory. Accepts either an array of strings or a comma-separated string.",
+                                        "examples": [
+                                            "tag1,tag2,tag3",
+                                            ["tag1", "tag2", "tag3"]
+                                        ]
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "description": "Optional memory type. Validated against the built-in ontology. Common base types: observation, decision, learning, error, pattern, planning, ceremony, milestone, stakeholder, meeting, research, communication. Common subtypes: note, reference, code_edit, command, document, insight, gotcha, bug, action_item, finding. Unknown types are silently coerced to 'observation' and the response includes a warning. Register additional types via the MCP_CUSTOM_MEMORY_TYPES env var, e.g. '{\"foo\": [\"sub_a\", \"sub_b\"]}'. See docs/memory-ontology.md for the full taxonomy."
                                     }
                                 }
-                            },
-                            "required": ["content"]
+                            }
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Store Memory",
-                            destructiveHint=False,
-                        ),
+                        "required": ["content"]
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Store Memory",
+                        destructiveHint=False,
                     ),
-                    types.Tool(
-                        name="memory_store_session",
-                        description="""Store a full conversation session as a single memory unit.
+                ),
+                types.Tool(
+                    name="memory_store_session",
+                    description="""Store a full conversation session as a single memory unit.
 
 Use this instead of memory_store when you want to preserve the full context
 of a multi-turn conversation. All turns are stored together, making session-level
@@ -1413,55 +1474,55 @@ retrieval more reliable than storing individual turns separately.
 
 Example:
 {
-    "turns": [
-        {"role": "user", "content": "How do I configure Redis?"},
-        {"role": "assistant", "content": "Set REDIS_URL in your .env file..."}
-    ],
-    "session_id": "optional-stable-id",
-    "tags": "redis,configuration"
+"turns": [
+    {"role": "user", "content": "How do I configure Redis?"},
+    {"role": "assistant", "content": "Set REDIS_URL in your .env file..."}
+],
+"session_id": "optional-stable-id",
+"tags": "redis,configuration"
 }""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "turns": {
-                                    "type": "array",
-                                    "description": "Ordered list of conversation turns.",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "role": {"type": "string", "description": "Speaker role, e.g. 'user' or 'assistant'"},
-                                            "content": {"type": "string", "description": "Turn content"}
-                                        },
-                                        "required": ["role", "content"]
-                                    },
-                                    "minItems": 1
-                                },
-                                "session_id": {
-                                    "type": "string",
-                                    "description": "Optional stable identifier for this session. Auto-generated UUID if omitted."
-                                },
-                                "tags": {
-                                    "oneOf": [
-                                        {"type": "array", "items": {"type": "string"}},
-                                        {"type": "string"}
-                                    ],
-                                    "description": "Additional tags (comma-separated string or array). 'session:<id>' is always added automatically."
-                                },
-                                "metadata": {
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "turns": {
+                                "type": "array",
+                                "description": "Ordered list of conversation turns.",
+                                "items": {
                                     "type": "object",
-                                    "description": "Optional extra metadata."
-                                }
+                                    "properties": {
+                                        "role": {"type": "string", "description": "Speaker role, e.g. 'user' or 'assistant'"},
+                                        "content": {"type": "string", "description": "Turn content"}
+                                    },
+                                    "required": ["role", "content"]
+                                },
+                                "minItems": 1
                             },
-                            "required": ["turns"]
+                            "session_id": {
+                                "type": "string",
+                                "description": "Optional stable identifier for this session. Auto-generated UUID if omitted."
+                            },
+                            "tags": {
+                                "oneOf": [
+                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "string"}
+                                ],
+                                "description": "Additional tags (comma-separated string or array). 'session:<id>' is always added automatically."
+                            },
+                            "metadata": {
+                                "type": "object",
+                                "description": "Optional extra metadata."
+                            }
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Store Session",
-                            destructiveHint=False,
-                        ),
+                        "required": ["turns"]
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Store Session",
+                        destructiveHint=False,
                     ),
-                    types.Tool(
-                        name="memory_search",
-                        description="""Search memories with flexible modes and filters. Primary tool for finding stored information.
+                ),
+                types.Tool(
+                    name="memory_search",
+                    description="""Search memories with flexible modes and filters. Primary tool for finding stored information.
 
 USE THIS WHEN:
 - User asks "what do you remember about X", "recall", "find memories"
@@ -1498,98 +1559,98 @@ Examples:
 {"query": "architecture decisions", "tags": ["important"], "quality_boost": 0.3}
 {"after": "2024-01-01", "before": "2024-06-30", "limit": 50}
 {"query": "error handling", "include_debug": true}""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search query (required for semantic/exact modes, optional for time-only searches)"
-                                },
-                                "mode": {
-                                    "type": "string",
-                                    "enum": ["semantic", "exact", "hybrid"],
-                                    "default": "semantic",
-                                    "description": "Search mode"
-                                },
-                                "time_expr": {
-                                    "type": "string",
-                                    "description": "Natural language time filter (e.g., 'last week', 'yesterday', '3 days ago')"
-                                },
-                                "after": {
-                                    "type": "string",
-                                    "description": "Return memories created after this date (ISO format: YYYY-MM-DD)"
-                                },
-                                "before": {
-                                    "type": "string",
-                                    "description": "Return memories created before this date (ISO format: YYYY-MM-DD)"
-                                },
-                                "tags": {
-                                    "oneOf": [
-                                        {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "Tags as an array of strings"
-                                        },
-                                        {
-                                            "type": "string",
-                                            "description": "Tags as comma-separated string"
-                                        }
-                                    ],
-                                    "description": "Filter to memories with any of these tags"
-                                },
-                                "tag_match": {
-                                    "type": "string",
-                                    "enum": ["any", "all"],
-                                    "default": "any",
-                                    "description": "Match ANY tag (OR, default) or ALL tags (AND)"
-                                },
-                                "quality_boost": {
-                                    "type": "number",
-                                    "minimum": 0,
-                                    "maximum": 1,
-                                    "default": 0,
-                                    "description": "Quality weight for reranking (0.0-1.0)"
-                                },
-                                "limit": {
-                                    "type": "integer",
-                                    "default": 10,
-                                    "minimum": 1,
-                                    "maximum": 100,
-                                    "description": "Maximum results to return"
-                                },
-                                "include_debug": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "Include debug information in response"
-                                },
-                                "max_response_chars": {
-                                    "type": "number",
-                                    "description": "Maximum response size in characters. Truncates at memory boundaries to prevent context overflow. Recommended: 30000-50000. Default: unlimited."
-                                },
-                                "include_superseded": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "Include memories that have been superseded by newer contradicting memories. Default: false (superseded memories are hidden)."
-                                },
-                                "entity": {
-                                    "type": "string",
-                                    "description": "Filter by linked entity name. Returns only memories that have been linked to this entity via entity extraction. Use after running maintain to populate entity links."
-                                },
-                                "fallback": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "Enable cascading fallback when semantic results are sparse. When true and fewer than 3 results are found with scores below 0.4, automatically attempts BM25 keyword match and tag intersection. Each result includes match_method field. Default: false."
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query (required for semantic/exact modes, optional for time-only searches)"
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["semantic", "exact", "hybrid"],
+                                "default": "semantic",
+                                "description": "Search mode"
+                            },
+                            "time_expr": {
+                                "type": "string",
+                                "description": "Natural language time filter (e.g., 'last week', 'yesterday', '3 days ago')"
+                            },
+                            "after": {
+                                "type": "string",
+                                "description": "Return memories created after this date (ISO format: YYYY-MM-DD)"
+                            },
+                            "before": {
+                                "type": "string",
+                                "description": "Return memories created before this date (ISO format: YYYY-MM-DD)"
+                            },
+                            "tags": {
+                                "oneOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Tags as an array of strings"
+                                    },
+                                    {
+                                        "type": "string",
+                                        "description": "Tags as comma-separated string"
+                                    }
+                                ],
+                                "description": "Filter to memories with any of these tags"
+                            },
+                            "tag_match": {
+                                "type": "string",
+                                "enum": ["any", "all"],
+                                "default": "any",
+                                "description": "Match ANY tag (OR, default) or ALL tags (AND)"
+                            },
+                            "quality_boost": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "default": 0,
+                                "description": "Quality weight for reranking (0.0-1.0)"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 10,
+                                "minimum": 1,
+                                "maximum": 100,
+                                "description": "Maximum results to return"
+                            },
+                            "include_debug": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Include debug information in response"
+                            },
+                            "max_response_chars": {
+                                "type": "number",
+                                "description": "Maximum response size in characters. Truncates at memory boundaries to prevent context overflow. Recommended: 30000-50000. Default: unlimited."
+                            },
+                            "include_superseded": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Include memories that have been superseded by newer contradicting memories. Default: false (superseded memories are hidden)."
+                            },
+                            "entity": {
+                                "type": "string",
+                                "description": "Filter by linked entity name. Returns only memories that have been linked to this entity via entity extraction. Use after running maintain to populate entity links."
+                            },
+                            "fallback": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Enable cascading fallback when semantic results are sparse. When true and fewer than 3 results are found with scores below 0.4, automatically attempts BM25 keyword match and tag intersection. Each result includes match_method field. Default: false."
                             }
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Search Memories (Unified)",
-                            readOnlyHint=True,
-                        ),
+                        }
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Search Memories (Unified)",
+                        readOnlyHint=True,
                     ),
-                    types.Tool(
-                        name="memory_list",
-                        description="""List and browse memories with pagination and optional filters.
+                ),
+                types.Tool(
+                    name="memory_list",
+                    description="""List and browse memories with pagination and optional filters.
 
 USE THIS WHEN:
 - User wants to browse all memories ("show me my memories", "list everything")
@@ -1619,52 +1680,52 @@ Examples:
 {"stale_days": 30}  // Memories not accessed in 30 days
 {"stale_days": 7, "tags": ["archived"]}  // Stale archived memories
 """,
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "page": {
-                                    "type": "integer",
-                                    "default": 1,
-                                    "minimum": 1,
-                                    "description": "Page number (1-based)"
-                                },
-                                "page_size": {
-                                    "type": "integer",
-                                    "default": 20,
-                                    "minimum": 1,
-                                    "maximum": 100,
-                                    "description": "Results per page"
-                                },
-                                "tags": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Filter by tags (returns memories with ANY of these tags by default, use tag_match to control)"
-                                },
-                                "tag_match": {
-                                    "type": "string",
-                                    "default": "any",
-                                    "enum": ["any", "all"],
-                                    "description": "Match ANY tag (OR, default) or ALL tags (AND)"
-                                },
-                                "memory_type": {
-                                    "type": "string",
-                                    "description": "Filter by memory type"
-                                },
-                                "stale_days": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "Filter to memories not accessed in the last N days. Uses COALESCE(last_accessed, created_at) for memories never read. Currently supported on sqlite-vec backend only."
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "page": {
+                                "type": "integer",
+                                "default": 1,
+                                "minimum": 1,
+                                "description": "Page number (1-based)"
+                            },
+                            "page_size": {
+                                "type": "integer",
+                                "default": 20,
+                                "minimum": 1,
+                                "maximum": 100,
+                                "description": "Results per page"
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Filter by tags (returns memories with ANY of these tags by default, use tag_match to control)"
+                            },
+                            "tag_match": {
+                                "type": "string",
+                                "default": "any",
+                                "enum": ["any", "all"],
+                                "description": "Match ANY tag (OR, default) or ALL tags (AND)"
+                            },
+                            "memory_type": {
+                                "type": "string",
+                                "description": "Filter by memory type"
+                            },
+                            "stale_days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Filter to memories not accessed in the last N days. Uses COALESCE(last_accessed, created_at) for memories never read. Currently supported on sqlite-vec backend only."
                             }
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="List Memories",
-                            readOnlyHint=True,
-                        ),
+                        }
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="List Memories",
+                        readOnlyHint=True,
                     ),
-                    types.Tool(
-                        name="memory_delete",
-                        description="""Delete memories with flexible filtering. Combine filters for precise targeting.
+                ),
+                types.Tool(
+                    name="memory_delete",
+                    description="""Delete memories with flexible filtering. Combine filters for precise targeting.
 
 USE THIS WHEN:
 - User says "delete", "remove", "forget" specific memories
@@ -1689,197 +1750,197 @@ Examples:
 {"before": "2024-01-01"}
 {"after": "2024-06-01", "before": "2024-12-31"}
 {"tags": ["cleanup"], "before": "2024-01-01", "dry_run": true}""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "content_hash": {
-                                    "type": "string",
-                                    "description": "Specific memory hash to delete (ignores other filters if provided)"
-                                },
-                                "tags": {
-                                    "oneOf": [
-                                        {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "Tags as an array of strings"
-                                        },
-                                        {
-                                            "type": "string",
-                                            "description": "Tags as comma-separated string"
-                                        }
-                                    ],
-                                    "description": "Filter by these tags"
-                                },
-                                "tag_match": {
-                                    "type": "string",
-                                    "enum": ["any", "all"],
-                                    "default": "any",
-                                    "description": "Match ANY tag or ALL tags"
-                                },
-                                "before": {
-                                    "type": "string",
-                                    "description": "Delete memories created before this date (ISO format: YYYY-MM-DD)"
-                                },
-                                "after": {
-                                    "type": "string",
-                                    "description": "Delete memories created after this date (ISO format: YYYY-MM-DD)"
-                                },
-                                "dry_run": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "Preview deletions without executing"
-                                }
-                            }
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Delete Memories (Unified)",
-                            destructiveHint=True,
-                        ),
-                    ),
-                    types.Tool(
-                        name="memory_cleanup",
-                        description="Find and remove duplicate entries",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Cleanup Duplicates",
-                            destructiveHint=True,
-                        ),
-                    ),
-                    types.Tool(
-                        name="memory_health",
-                        description="Check database health and get statistics",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Check Database Health",
-                            readOnlyHint=True,
-                        ),
-                    ),
-                    types.Tool(
-                        name="memory_stats",
-                        description="""Get MCP server global cache statistics for performance monitoring.
-
-                        Returns detailed metrics about storage and memory service caching,
-                        including hit rates, initialization times, and cache sizes.
-
-                        This tool is useful for:
-                        - Monitoring cache effectiveness
-                        - Debugging performance issues
-                        - Verifying cache persistence across MCP tool calls
-
-                        Returns cache statistics including total calls, hit rate percentage,
-                        storage/service cache metrics, performance metrics, and backend info.""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Get Cache Stats",
-                            readOnlyHint=True,
-                        ),
-                    ),
-                    types.Tool(
-                        name="memory_update",
-                        description="""Update memory metadata without recreating the entire memory entry.
-                        
-                        This provides efficient metadata updates while preserving the original
-                        memory content, embeddings, and optionally timestamps.
-                        
-                        Examples:
-                        # Add tags to a memory
-                        {
-                            "content_hash": "abc123...",
-                            "updates": {
-                                "tags": ["important", "reference", "new-tag"]
-                            }
-                        }
-                        
-                        # Update memory type and custom metadata
-                        {
-                            "content_hash": "abc123...",
-                            "updates": {
-                                "memory_type": "reminder",
-                                "metadata": {
-                                    "priority": "high",
-                                    "due_date": "2024-01-15"
-                                }
-                            }
-                        }
-                        
-                        # Update custom fields directly
-                        {
-                            "content_hash": "abc123...",
-                            "updates": {
-                                "priority": "urgent",
-                                "status": "active"
-                            }
-                        }""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "content_hash": {
-                                    "type": "string",
-                                    "description": "The content hash of the memory to update."
-                                },
-                                "updates": {
-                                    "type": "object",
-                                    "description": "Dictionary of metadata fields to update.",
-                                    "properties": {
-                                        "tags": {
-                                            "oneOf": [
-                                                {
-                                                    "type": "array",
-                                                    "items": {"type": "string"},
-                                                    "description": "Tags as an array of strings"
-                                                },
-                                                {
-                                                    "type": "string",
-                                                    "description": "Tags as comma-separated string"
-                                                }
-                                            ],
-                                            "description": "Replace existing tags with this list. Accepts either an array of strings or a comma-separated string."
-                                        },
-                                        "memory_type": {
-                                            "type": "string",
-                                            "description": "Update the memory type (e.g., 'note', 'reminder', 'fact')."
-                                        },
-                                        "metadata": {
-                                            "type": "object",
-                                            "description": "Custom metadata fields to merge with existing metadata."
-                                        }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content_hash": {
+                                "type": "string",
+                                "description": "Specific memory hash to delete (ignores other filters if provided)"
+                            },
+                            "tags": {
+                                "oneOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Tags as an array of strings"
+                                    },
+                                    {
+                                        "type": "string",
+                                        "description": "Tags as comma-separated string"
                                     }
-                                },
-                                "preserve_timestamps": {
-                                    "type": "boolean",
-                                    "default": True,
-                                    "description": "Whether to preserve the original created_at timestamp (default: true)."
-                                },
-                                "versioned": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "When true, creates a new version instead of overwriting. The old memory is marked as superseded. Requires content in updates to create the new version. Creates a new memory version and marks the old one as superseded. Supported backends: sqlite_vec. Unsupported backends return an error."
+                                ],
+                                "description": "Filter by these tags"
+                            },
+                            "tag_match": {
+                                "type": "string",
+                                "enum": ["any", "all"],
+                                "default": "any",
+                                "description": "Match ANY tag or ALL tags"
+                            },
+                            "before": {
+                                "type": "string",
+                                "description": "Delete memories created before this date (ISO format: YYYY-MM-DD)"
+                            },
+                            "after": {
+                                "type": "string",
+                                "description": "Delete memories created after this date (ISO format: YYYY-MM-DD)"
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Preview deletions without executing"
+                            }
+                        }
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Delete Memories (Unified)",
+                        destructiveHint=True,
+                    ),
+                ),
+                types.Tool(
+                    name="memory_cleanup",
+                    description="Find and remove duplicate entries",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Cleanup Duplicates",
+                        destructiveHint=True,
+                    ),
+                ),
+                types.Tool(
+                    name="memory_health",
+                    description="Check database health and get statistics",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Check Database Health",
+                        readOnlyHint=True,
+                    ),
+                ),
+                types.Tool(
+                    name="memory_stats",
+                    description="""Get MCP server global cache statistics for performance monitoring.
+
+                    Returns detailed metrics about storage and memory service caching,
+                    including hit rates, initialization times, and cache sizes.
+
+                    This tool is useful for:
+                    - Monitoring cache effectiveness
+                    - Debugging performance issues
+                    - Verifying cache persistence across MCP tool calls
+
+                    Returns cache statistics including total calls, hit rate percentage,
+                    storage/service cache metrics, performance metrics, and backend info.""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Get Cache Stats",
+                        readOnlyHint=True,
+                    ),
+                ),
+                types.Tool(
+                    name="memory_update",
+                    description="""Update memory metadata without recreating the entire memory entry.
+                    
+                    This provides efficient metadata updates while preserving the original
+                    memory content, embeddings, and optionally timestamps.
+                    
+                    Examples:
+                    # Add tags to a memory
+                    {
+                        "content_hash": "abc123...",
+                        "updates": {
+                            "tags": ["important", "reference", "new-tag"]
+                        }
+                    }
+                    
+                    # Update memory type and custom metadata
+                    {
+                        "content_hash": "abc123...",
+                        "updates": {
+                            "memory_type": "reminder",
+                            "metadata": {
+                                "priority": "high",
+                                "due_date": "2024-01-15"
+                            }
+                        }
+                    }
+                    
+                    # Update custom fields directly
+                    {
+                        "content_hash": "abc123...",
+                        "updates": {
+                            "priority": "urgent",
+                            "status": "active"
+                        }
+                    }""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content_hash": {
+                                "type": "string",
+                                "description": "The content hash of the memory to update."
+                            },
+                            "updates": {
+                                "type": "object",
+                                "description": "Dictionary of metadata fields to update.",
+                                "properties": {
+                                    "tags": {
+                                        "oneOf": [
+                                            {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "Tags as an array of strings"
+                                            },
+                                            {
+                                                "type": "string",
+                                                "description": "Tags as comma-separated string"
+                                            }
+                                        ],
+                                        "description": "Replace existing tags with this list. Accepts either an array of strings or a comma-separated string."
+                                    },
+                                    "memory_type": {
+                                        "type": "string",
+                                        "description": "Update the memory type (e.g., 'note', 'reminder', 'fact')."
+                                    },
+                                    "metadata": {
+                                        "type": "object",
+                                        "description": "Custom metadata fields to merge with existing metadata."
+                                    }
                                 }
                             },
-                            "required": ["content_hash", "updates"]
+                            "preserve_timestamps": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "Whether to preserve the original created_at timestamp (default: true)."
+                            },
+                            "versioned": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "When true, creates a new version instead of overwriting. The old memory is marked as superseded. Requires content in updates to create the new version. Creates a new memory version and marks the old one as superseded. Supported backends: sqlite_vec. Unsupported backends return an error."
+                            }
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Update Memory Metadata",
-                            destructiveHint=True,
-                        ),
-                    )
-                ]
-                
-                # Add consolidation tools if enabled
-                if CONSOLIDATION_ENABLED and self.consolidator:
-                    consolidation_tools = [
-                        types.Tool(
-                            name="memory_consolidate",
-                            description="""Memory consolidation management - run, monitor, and control memory optimization.
+                        "required": ["content_hash", "updates"]
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Update Memory Metadata",
+                        destructiveHint=True,
+                    ),
+                )
+            ]
+            
+            # Add consolidation tools if enabled
+            if CONSOLIDATION_ENABLED and self.consolidator:
+                consolidation_tools = [
+                    types.Tool(
+                        name="memory_consolidate",
+                        description="""Memory consolidation management - run, monitor, and control memory optimization.
 
 USE THIS WHEN:
 - User asks about memory optimization, cleanup, or consolidation
@@ -1925,41 +1986,41 @@ Examples:
 {"action": "pause"}
 {"action": "pause", "time_horizon": "daily"}
 {"action": "resume", "time_horizon": "weekly"}""",
-                            inputSchema={
-                                "type": "object",
-                                "properties": {
-                                    "action": {
-                                        "type": "string",
-                                        "enum": ["run", "status", "recommend", "scheduler", "pause", "resume"],
-                                        "description": "Consolidation action to perform"
-                                    },
-                                    "time_horizon": {
-                                        "type": "string",
-                                        "enum": ["daily", "weekly", "monthly", "quarterly", "yearly"],
-                                        "description": "Time horizon (required for run/recommend, optional for pause/resume)"
-                                    },
-                                    "immediate": {
-                                        "type": "boolean",
-                                        "default": True,
-                                        "description": "For 'run' action: execute immediately vs schedule for later"
-                                    }
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["run", "status", "recommend", "scheduler", "pause", "resume"],
+                                    "description": "Consolidation action to perform"
                                 },
-                                "required": ["action"]
+                                "time_horizon": {
+                                    "type": "string",
+                                    "enum": ["daily", "weekly", "monthly", "quarterly", "yearly"],
+                                    "description": "Time horizon (required for run/recommend, optional for pause/resume)"
+                                },
+                                "immediate": {
+                                    "type": "boolean",
+                                    "default": True,
+                                    "description": "For 'run' action: execute immediately vs schedule for later"
+                                }
                             },
-                            annotations=types.ToolAnnotations(
-                                title="Consolidate Memories (Unified)",
-                                destructiveHint=True,
-                            ),
-                        )
-                    ]
-                    tools.extend(consolidation_tools)
-                    logger.info(f"Added {len(consolidation_tools)} consolidation tools")
-                
-                # Add document ingestion tools
-                ingestion_tools = [
-                    types.Tool(
-                        name="memory_ingest",
-                        description="""Ingest documents or directories into memory database.
+                            "required": ["action"]
+                        },
+                        annotations=types.ToolAnnotations(
+                            title="Consolidate Memories (Unified)",
+                            destructiveHint=True,
+                        ),
+                    )
+                ]
+                tools.extend(consolidation_tools)
+                logger.info(f"Added {len(consolidation_tools)} consolidation tools")
+            
+            # Add document ingestion tools
+            ingestion_tools = [
+                types.Tool(
+                    name="memory_ingest",
+                    description="""Ingest documents or directories into memory database.
 
 USE THIS WHEN:
 - User wants to import a document (PDF, TXT, MD, JSON)
@@ -1986,70 +2047,70 @@ Examples:
 {"directory_path": "/path/to/docs", "recursive": true}
 {"directory_path": "/path/to/project", "file_extensions": ["md", "txt"], "tags": ["project-docs"]}
 """,
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "file_path": {
-                                    "type": "string",
-                                    "description": "Path to single document (for file mode)"
-                                },
-                                "directory_path": {
-                                    "type": "string",
-                                    "description": "Path to directory (for directory mode)"
-                                },
-                                "tags": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "default": [],
-                                    "description": "Tags to apply to all ingested memories"
-                                },
-                                "chunk_size": {
-                                    "type": "integer",
-                                    "default": 1000,
-                                    "description": "Target chunk size in characters"
-                                },
-                                "chunk_overlap": {
-                                    "type": "integer",
-                                    "default": 200,
-                                    "description": "Overlap between chunks"
-                                },
-                                "memory_type": {
-                                    "type": "string",
-                                    "default": "document",
-                                    "description": "Type label for created memories"
-                                },
-                                "recursive": {
-                                    "type": "boolean",
-                                    "default": True,
-                                    "description": "For directory mode: process subdirectories"
-                                },
-                                "file_extensions": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "default": ["pdf", "txt", "md", "json"],
-                                    "description": "For directory mode: file types to process"
-                                },
-                                "max_files": {
-                                    "type": "integer",
-                                    "default": 100,
-                                    "description": "For directory mode: maximum files to process"
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to single document (for file mode)"
+                            },
+                            "directory_path": {
+                                "type": "string",
+                                "description": "Path to directory (for directory mode)"
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": [],
+                                "description": "Tags to apply to all ingested memories"
+                            },
+                            "chunk_size": {
+                                "type": "integer",
+                                "default": 1000,
+                                "description": "Target chunk size in characters"
+                            },
+                            "chunk_overlap": {
+                                "type": "integer",
+                                "default": 200,
+                                "description": "Overlap between chunks"
+                            },
+                            "memory_type": {
+                                "type": "string",
+                                "default": "document",
+                                "description": "Type label for created memories"
+                            },
+                            "recursive": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "For directory mode: process subdirectories"
+                            },
+                            "file_extensions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": ["pdf", "txt", "md", "json"],
+                                "description": "For directory mode: file types to process"
+                            },
+                            "max_files": {
+                                "type": "integer",
+                                "default": 100,
+                                "description": "For directory mode: maximum files to process"
                             }
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Ingest Documents",
-                            destructiveHint=False,
-                        ),
-                    )
-                ]
-                tools.extend(ingestion_tools)
-                logger.info(f"Added {len(ingestion_tools)} ingestion tools")
+                        }
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Ingest Documents",
+                        destructiveHint=False,
+                    ),
+                )
+            ]
+            tools.extend(ingestion_tools)
+            logger.info(f"Added {len(ingestion_tools)} ingestion tools")
 
-                # Session harvest tools
-                harvest_tools = [
-                    types.Tool(
-                        name="memory_harvest",
-                        description="""Extract learnings from Claude Code session transcripts.
+            # Session harvest tools
+            harvest_tools = [
+                types.Tool(
+                    name="memory_harvest",
+                    description="""Extract learnings from Claude Code session transcripts.
 
 USE THIS WHEN:
 - End of session — auto-capture decisions, bugs, conventions, learnings
@@ -2079,59 +2140,59 @@ Examples:
 {"min_confidence": 0.7, "sessions": 1}
 {"sessions": 1, "use_llm": true, "dry_run": true}
 """,
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "sessions": {
-                                    "type": "integer",
-                                    "default": 1,
-                                    "description": "Number of recent sessions to harvest"
-                                },
-                                "session_ids": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Specific session IDs to harvest"
-                                },
-                                "types": {
-                                    "type": "array",
-                                    "items": {"type": "string", "enum": ["decision", "bug", "convention", "learning", "context"]},
-                                    "description": "Filter by memory types (default: all)"
-                                },
-                                "min_confidence": {
-                                    "type": "number",
-                                    "default": 0.6,
-                                    "description": "Minimum confidence threshold (0.0-1.0)"
-                                },
-                                "dry_run": {
-                                    "type": "boolean",
-                                    "default": True,
-                                    "description": "Preview candidates without storing (default: true)"
-                                },
-                                "project_path": {
-                                    "type": "string",
-                                    "description": "Override Claude Code project directory path"
-                                },
-                                "use_llm": {
-                                    "type": "boolean",
-                                    "default": False,
-                                    "description": "Use LLM to validate and refine candidates (requires GROQ_API_KEY)"
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "sessions": {
+                                "type": "integer",
+                                "default": 1,
+                                "description": "Number of recent sessions to harvest"
+                            },
+                            "session_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Specific session IDs to harvest"
+                            },
+                            "types": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["decision", "bug", "convention", "learning", "context"]},
+                                "description": "Filter by memory types (default: all)"
+                            },
+                            "min_confidence": {
+                                "type": "number",
+                                "default": 0.6,
+                                "description": "Minimum confidence threshold (0.0-1.0)"
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "Preview candidates without storing (default: true)"
+                            },
+                            "project_path": {
+                                "type": "string",
+                                "description": "Override Claude Code project directory path"
+                            },
+                            "use_llm": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Use LLM to validate and refine candidates (requires GROQ_API_KEY)"
                             }
-                        },
-                        annotations=types.ToolAnnotations(
-                            title="Harvest Session Learnings",
-                            destructiveHint=False,
-                        ),
-                    )
-                ]
-                tools.extend(harvest_tools)
-                logger.info(f"Added {len(harvest_tools)} harvest tools")
+                        }
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Harvest Session Learnings",
+                        destructiveHint=False,
+                    ),
+                )
+            ]
+            tools.extend(harvest_tools)
+            logger.info(f"Added {len(harvest_tools)} harvest tools")
 
-                # Quality system tools
-                quality_tools = [
-                    types.Tool(
-                        name="memory_quality",
-                        description="""Memory quality management - rate, inspect, and analyze.
+            # Quality system tools
+            quality_tools = [
+                types.Tool(
+                    name="memory_quality",
+                    description="""Memory quality management - rate, inspect, and analyze.
 
 ACTIONS:
 - rate: Manually rate a memory's quality (thumbs up/down)
@@ -2149,59 +2210,59 @@ Examples:
 {"action": "maintain", "dry_run": false}
 {"action": "maintain_status"}
 """,
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["rate", "get", "analyze", "maintain", "maintain_status"],
-                                    "description": "Quality action to perform"
-                                },
-                                "content_hash": {
-                                    "type": "string",
-                                    "description": "Memory hash (required for rate/get)"
-                                },
-                                "rating": {
-                                    "type": "string",
-                                    "enum": ["-1", "0", "1"],
-                                    "description": "For 'rate': '-1' (thumbs down), '0' (neutral), '1' (thumbs up)"
-                                },
-                                "feedback": {
-                                    "type": "string",
-                                    "description": "For 'rate': Optional feedback text"
-                                },
-                                "min_quality": {
-                                    "type": "number",
-                                    "default": 0.0,
-                                    "description": "For 'analyze': minimum quality threshold"
-                                },
-                                "max_quality": {
-                                    "type": "number",
-                                    "default": 1.0,
-                                    "description": "For 'analyze': maximum quality threshold"
-                                },
-                                "dry_run": {
-                                    "type": "boolean",
-                                    "default": True,
-                                    "description": "For 'maintain': preview mode — no modifications (default: true)"
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["rate", "get", "analyze", "maintain", "maintain_status"],
+                                "description": "Quality action to perform"
                             },
-                            "required": ["action"]
+                            "content_hash": {
+                                "type": "string",
+                                "description": "Memory hash (required for rate/get)"
+                            },
+                            "rating": {
+                                "type": "string",
+                                "enum": ["-1", "0", "1"],
+                                "description": "For 'rate': '-1' (thumbs down), '0' (neutral), '1' (thumbs up)"
+                            },
+                            "feedback": {
+                                "type": "string",
+                                "description": "For 'rate': Optional feedback text"
+                            },
+                            "min_quality": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "For 'analyze': minimum quality threshold"
+                            },
+                            "max_quality": {
+                                "type": "number",
+                                "default": 1.0,
+                                "description": "For 'analyze': maximum quality threshold"
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "For 'maintain': preview mode — no modifications (default: true)"
+                            }
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Memory Quality",
-                            destructiveHint=False,
-                        ),
-                    )
-                ]
-                tools.extend(quality_tools)
-                logger.info(f"Added {len(quality_tools)} quality system tools")
+                        "required": ["action"]
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Memory Quality",
+                        destructiveHint=False,
+                    ),
+                )
+            ]
+            tools.extend(quality_tools)
+            logger.info(f"Added {len(quality_tools)} quality system tools")
 
-                # Graph traversal tools
-                graph_tools = [
-                    types.Tool(
-                        name="memory_graph",
-                        description="""Memory association graph operations - explore connections between memories.
+            # Graph traversal tools
+            graph_tools = [
+                types.Tool(
+                    name="memory_graph",
+                    description="""Memory association graph operations - explore connections between memories.
 
 ACTIONS:
 - connected: Find memories connected via associations (BFS traversal)
@@ -2217,285 +2278,326 @@ Examples:
 {"action": "infer", "rel_type": "causes", "max_hops": 2}
 {"action": "suggest", "hash": "abc123"}
 """,
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["connected", "path", "subgraph", "infer", "suggest"],
-                                    "description": "Graph operation to perform"
-                                },
-                                "hash": {
-                                    "type": "string",
-                                    "description": "Memory hash (for connected/subgraph)"
-                                },
-                                "hash1": {
-                                    "type": "string",
-                                    "description": "Start memory hash (for path)"
-                                },
-                                "hash2": {
-                                    "type": "string",
-                                    "description": "End memory hash (for path)"
-                                },
-                                "max_hops": {
-                                    "type": "integer",
-                                    "default": 2,
-                                    "description": "For 'connected': max traversal depth"
-                                },
-                                "max_depth": {
-                                    "type": "integer",
-                                    "default": 5,
-                                    "description": "For 'path': max path length"
-                                },
-                                "radius": {
-                                    "type": "integer",
-                                    "default": 2,
-                                    "description": "For 'subgraph': nodes to include"
-                                },
-                                "rel_type": {
-                                    "type": "string",
-                                    "description": "For 'infer': relationship type to traverse"
-                                }
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["connected", "path", "subgraph", "infer", "suggest"],
+                                "description": "Graph operation to perform"
                             },
-                            "required": ["action"]
+                            "hash": {
+                                "type": "string",
+                                "description": "Memory hash (for connected/subgraph)"
+                            },
+                            "hash1": {
+                                "type": "string",
+                                "description": "Start memory hash (for path)"
+                            },
+                            "hash2": {
+                                "type": "string",
+                                "description": "End memory hash (for path)"
+                            },
+                            "max_hops": {
+                                "type": "integer",
+                                "default": 2,
+                                "description": "For 'connected': max traversal depth"
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "default": 5,
+                                "description": "For 'path': max path length"
+                            },
+                            "radius": {
+                                "type": "integer",
+                                "default": 2,
+                                "description": "For 'subgraph': nodes to include"
+                            },
+                            "rel_type": {
+                                "type": "string",
+                                "description": "For 'infer': relationship type to traverse"
+                            }
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Memory Graph",
-                            readOnlyHint=True,
-                        ),
-                    )
-                ]
-                tools.extend(graph_tools)
-                logger.info(f"Added {len(graph_tools)} graph traversal tools")
+                        "required": ["action"]
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Memory Graph",
+                        readOnlyHint=True,
+                    ),
+                )
+            ]
+            tools.extend(graph_tools)
+            logger.info(f"Added {len(graph_tools)} graph traversal tools")
 
-                # Conflict detection tools
-                conflict_tools = [
-                    types.Tool(
-                        name="memory_conflicts",
-                        description="List unresolved memory conflicts (contradictory memories detected by similarity analysis)",
-                        inputSchema={"type": "object", "properties": {}, "required": []},
-                        annotations=types.ToolAnnotations(
-                            title="Memory Conflicts",
-                            destructiveHint=False,
-                        ),
+            # Conflict detection tools
+            conflict_tools = [
+                types.Tool(
+                    name="memory_conflicts",
+                    description="List unresolved memory conflicts (contradictory memories detected by similarity analysis)",
+                    inputSchema={"type": "object", "properties": {}, "required": []},
+                    annotations=types.ToolAnnotations(
+                        title="Memory Conflicts",
+                        readOnlyHint=True,
+                        destructiveHint=False,
                     ),
-                    types.Tool(
-                        name="memory_resolve",
-                        description="Resolve a memory conflict by choosing a winner",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "winner_hash": {"type": "string", "description": "Content hash of the correct memory"},
-                                "loser_hash": {"type": "string", "description": "Content hash of the incorrect memory"},
-                            },
-                            "required": ["winner_hash", "loser_hash"],
+                ),
+                types.Tool(
+                    name="memory_resolve",
+                    description="Resolve a memory conflict by choosing a winner",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "winner_hash": {"type": "string", "description": "Content hash of the correct memory"},
+                            "loser_hash": {"type": "string", "description": "Content hash of the incorrect memory"},
                         },
-                        annotations=types.ToolAnnotations(
-                            title="Resolve Memory Conflict",
-                            destructiveHint=True,
-                        ),
+                        "required": ["winner_hash", "loser_hash"],
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Resolve Memory Conflict",
+                        destructiveHint=True,
                     ),
-                ]
-                tools.extend(conflict_tools)
-                logger.info(f"Added {len(conflict_tools)} conflict detection tools")
+                ),
+            ]
+            tools.extend(conflict_tools)
+            logger.info(f"Added {len(conflict_tools)} conflict detection tools")
 
-                # Mistake Notes tools
-                mistake_tools = [
-                    types.Tool(
-                        name="mistake_note_add",
-                        description="Record a mistake pattern for error replay. Tracks what went wrong and the correct action. Auto-increments failure_count for repeated patterns.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "error_pattern": {"type": "string", "description": "The error pattern or message"},
-                                "context_signature": {"type": "string", "description": "Context where the error occurred (file, function, task type)"},
-                                "incorrect_action": {"type": "string", "description": "What was done incorrectly"},
-                                "correct_action": {"type": "string", "description": "What should have been done instead"},
-                            },
-                            "required": ["error_pattern", "context_signature", "incorrect_action", "correct_action"],
+            # Mistake Notes tools
+            mistake_tools = [
+                types.Tool(
+                    name="mistake_note_add",
+                    description="Record a mistake pattern for error replay. Tracks what went wrong and the correct action. Auto-increments failure_count for repeated patterns.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "error_pattern": {"type": "string", "description": "The error pattern or message"},
+                            "context_signature": {"type": "string", "description": "Context where the error occurred (file, function, task type)"},
+                            "incorrect_action": {"type": "string", "description": "What was done incorrectly"},
+                            "correct_action": {"type": "string", "description": "What should have been done instead"},
                         },
-                    ),
-                    types.Tool(
-                        name="mistake_note_search",
-                        description="Search mistake notes by semantic similarity. Use before starting a task to check for known pitfalls and past errors.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string", "description": "Search query (error message, context, or task description)"},
-                                "limit": {"type": "integer", "default": 5, "description": "Max results (default: 5)"},
-                            },
-                            "required": ["query"],
+                        "required": ["error_pattern", "context_signature", "incorrect_action", "correct_action"],
+                    },
+                ),
+                types.Tool(
+                    name="mistake_note_search",
+                    description="Search mistake notes by semantic similarity. Use before starting a task to check for known pitfalls and past errors.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query (error message, context, or task description)"},
+                            "limit": {"type": "integer", "default": 5, "description": "Max results (default: 5)"},
                         },
+                        "required": ["query"],
+                    },
+                    annotations=types.ToolAnnotations(
+                        title="Search Mistake Notes",
+                        readOnlyHint=True,
                     ),
-                ]
-                tools.extend(mistake_tools)
-                logger.info(f"Added {len(mistake_tools)} mistake note tools")
+                ),
+                types.Tool(
+                    name="mistake_note_update",
+                    description="Update fields of an existing mistake note. Can update failure_count, error_pattern, context_signature, incorrect_action, or correct_action. Content changes create a new hash (delete + re-store).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content_hash": {"type": "string", "description": "Content hash of the mistake note to update"},
+                            "failure_count": {"type": "integer", "description": "New failure count"},
+                            "error_pattern": {"type": "string", "description": "Updated error pattern"},
+                            "context_signature": {"type": "string", "description": "Updated context"},
+                            "incorrect_action": {"type": "string", "description": "Updated incorrect action"},
+                            "correct_action": {"type": "string", "description": "Updated correct action"},
+                        },
+                        "required": ["content_hash"],
+                    },
+                ),
+                types.Tool(
+                    name="mistake_note_delete",
+                    description="Delete a mistake note by content hash. Only deletes memories with memory_type='mistake'.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content_hash": {"type": "string", "description": "Content hash of the mistake note to delete"},
+                        },
+                        "required": ["content_hash"],
+                    },
+                ),
+            ]
+            tools.extend(mistake_tools)
+            logger.info(f"Added {len(mistake_tools)} mistake note tools")
 
-                logger.info(f"Returning {len(tools)} tools")
-                return tools
-            except Exception as e:
-                logger.error(f"Error in handle_list_tools: {str(e)}")
-                logger.error(traceback.format_exc())
-                raise
-        
-        @self.server.call_tool()
-        async def handle_call_tool(name: str, arguments: dict | None) -> List[types.TextContent]:
-            """Handle tool calls with centralized deprecation support."""
-            # Add immediate debugging to catch any protocol issues
+            logger.info(f"Returning {len(tools)} tools")
+            return tools
+        except Exception as e:
+            logger.error(f"Error in handle_list_tools: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def call_tool(self, name: str, arguments: dict | None) -> List[types.TextContent]:
+        """Dispatch a tool call (shared by stdio and HTTP transports).
+
+        Handles deprecated-name rewriting via `compat.transform_deprecated_call`
+        and routes to the appropriate handler. Returns the tool's response
+        content.
+        """
+        # Add immediate debugging to catch any protocol issues
+        if MCP_CLIENT == 'lm_studio':
+            print(f"TOOL CALL INTERCEPTED: {name}", file=sys.stdout, flush=True)
+        logger.info("=== HANDLING TOOL CALL: %s ===", _sanitize_log_value(name))
+        logger.info("Arguments: %s", _sanitize_log_value(arguments))
+
+        try:
+            # Ensure arguments is a dict
+            if arguments is None:
+                arguments = {}
+
+            logger.info("Processing tool: %s", _sanitize_log_value(name))
             if MCP_CLIENT == 'lm_studio':
-                print(f"TOOL CALL INTERCEPTED: {name}", file=sys.stdout, flush=True)
-            logger.info(f"=== HANDLING TOOL CALL: {name} ===")
-            logger.info(f"Arguments: {arguments}")
+                print(f"Processing tool: {name}", file=sys.stdout, flush=True)
 
-            try:
-                # Ensure arguments is a dict
-                if arguments is None:
-                    arguments = {}
+            # Handle deprecated tools using centralized compatibility layer
+            if is_deprecated(name):
+                name, arguments = transform_deprecated_call(name, arguments)
+                logger.info(f"Transformed to: {name} with arguments: {arguments}")
 
-                logger.info(f"Processing tool: {name}")
-                if MCP_CLIENT == 'lm_studio':
-                    print(f"Processing tool: {name}", file=sys.stdout, flush=True)
+            # Route to handler (using NEW tool names only)
+            if name == "memory_store":
+                return await self.handle_store_memory(arguments)
+            elif name == "memory_store_session":
+                return await self.handle_store_session(arguments)
+            elif name == "memory_search":
+                return await self.handle_memory_search(arguments)
+            elif name == "memory_list":
+                return await self.handle_memory_list(arguments)
+            elif name == "memory_delete":
+                return await self.handle_memory_delete(arguments)
+            elif name == "memory_update":
+                logger.info("Calling handle_update_memory_metadata")
+                return await self.handle_update_memory_metadata(arguments)
+            elif name == "memory_health":
+                logger.info("Calling handle_check_database_health")
+                return await self.handle_check_database_health(arguments)
+            elif name == "memory_stats":
+                logger.info("Calling handle_get_cache_stats")
+                return await self.handle_get_cache_stats(arguments)
+            elif name == "memory_consolidate":
+                logger.info("Calling handle_memory_consolidate")
+                return await self.handle_memory_consolidate(arguments)
+            elif name == "memory_cleanup":
+                return await self.handle_cleanup_duplicates(arguments)
+            elif name == "memory_ingest":
+                logger.info("Calling handle_memory_ingest")
+                return await self.handle_memory_ingest(arguments)
+            elif name == "memory_quality":
+                logger.info("Calling handle_memory_quality")
+                return await self.handle_memory_quality(arguments)
+            elif name == "memory_graph":
+                logger.info("Calling handle_memory_graph")
+                return await self.handle_memory_graph(arguments)
+            elif name == "memory_harvest":
+                logger.info("Calling handle_memory_harvest")
+                return await self.handle_memory_harvest(arguments)
+            elif name == "memory_conflicts":
+                logger.info("Calling handle_memory_conflicts")
+                return await self.handle_memory_conflicts(arguments)
+            elif name == "memory_resolve":
+                logger.info("Calling handle_memory_resolve")
+                return await self.handle_memory_resolve(arguments)
 
-                # Handle deprecated tools using centralized compatibility layer
-                if is_deprecated(name):
-                    name, arguments = transform_deprecated_call(name, arguments)
-                    logger.info(f"Transformed to: {name} with arguments: {arguments}")
+            elif name == "mistake_note_add":
+                logger.info("Calling handle_mistake_note_add")
+                return await self.handle_mistake_note_add(arguments)
+            elif name == "mistake_note_search":
+                logger.info("Calling handle_mistake_note_search")
+                return await self.handle_mistake_note_search(arguments)
+            elif name == "mistake_note_update":
+                logger.info("Calling handle_mistake_note_update")
+                return await self.handle_mistake_note_update(arguments)
+            elif name == "mistake_note_delete":
+                logger.info("Calling handle_mistake_note_delete")
+                return await self.handle_mistake_note_delete(arguments)
 
-                # Route to handler (using NEW tool names only)
-                if name == "memory_store":
-                    return await self.handle_store_memory(arguments)
-                elif name == "memory_store_session":
-                    return await self.handle_store_session(arguments)
-                elif name == "memory_search":
-                    return await self.handle_memory_search(arguments)
-                elif name == "memory_list":
-                    return await self.handle_memory_list(arguments)
-                elif name == "memory_delete":
-                    return await self.handle_memory_delete(arguments)
-                elif name == "memory_update":
-                    logger.info("Calling handle_update_memory_metadata")
-                    return await self.handle_update_memory_metadata(arguments)
-                elif name == "memory_health":
-                    logger.info("Calling handle_check_database_health")
-                    return await self.handle_check_database_health(arguments)
-                elif name == "memory_stats":
-                    logger.info("Calling handle_get_cache_stats")
-                    return await self.handle_get_cache_stats(arguments)
-                elif name == "memory_consolidate":
-                    logger.info("Calling handle_memory_consolidate")
-                    return await self.handle_memory_consolidate(arguments)
-                elif name == "memory_cleanup":
-                    return await self.handle_cleanup_duplicates(arguments)
-                elif name == "memory_ingest":
-                    logger.info("Calling handle_memory_ingest")
-                    return await self.handle_memory_ingest(arguments)
-                elif name == "memory_quality":
-                    logger.info("Calling handle_memory_quality")
-                    return await self.handle_memory_quality(arguments)
-                elif name == "memory_graph":
-                    logger.info("Calling handle_memory_graph")
-                    return await self.handle_memory_graph(arguments)
-                elif name == "memory_harvest":
-                    logger.info("Calling handle_memory_harvest")
-                    return await self.handle_memory_harvest(arguments)
-                elif name == "memory_conflicts":
-                    logger.info("Calling handle_memory_conflicts")
-                    return await self.handle_memory_conflicts(arguments)
-                elif name == "memory_resolve":
-                    logger.info("Calling handle_memory_resolve")
-                    return await self.handle_memory_resolve(arguments)
-
-                elif name == "mistake_note_add":
-                    logger.info("Calling handle_mistake_note_add")
-                    return await self.handle_mistake_note_add(arguments)
-                elif name == "mistake_note_search":
-                    logger.info("Calling handle_mistake_note_search")
-                    return await self.handle_mistake_note_search(arguments)
-
-                # Legacy handlers (for tools that haven't been fully migrated yet)
-                # These will be removed once all old tool definitions are removed
-                elif name == "retrieve_memory":
-                    return await self.handle_retrieve_memory(arguments)
-                elif name == "retrieve_with_quality_boost":
-                    return await self.handle_retrieve_with_quality_boost(arguments)
-                elif name == "recall_memory":
-                    return await self.handle_recall_memory(arguments)
-                elif name == "search_by_tag":
-                    return await self.handle_search_by_tag(arguments)
-                elif name == "delete_memory":
-                    return await self.handle_delete_memory(arguments)
-                elif name == "delete_by_tag":
-                    return await self.handle_delete_by_tag(arguments)
-                elif name == "delete_by_tags":
-                    return await self.handle_delete_by_tags(arguments)
-                elif name == "delete_by_all_tags":
-                    return await self.handle_delete_by_all_tags(arguments)
-                elif name == "debug_retrieve":
-                    return await self.handle_debug_retrieve(arguments)
-                elif name == "exact_match_retrieve":
-                    return await self.handle_exact_match_retrieve(arguments)
-                elif name == "get_raw_embedding":
-                    return await self.handle_get_raw_embedding(arguments)
-                elif name == "recall_by_timeframe":
-                    return await self.handle_recall_by_timeframe(arguments)
-                elif name == "delete_by_timeframe":
-                    return await self.handle_delete_by_timeframe(arguments)
-                elif name == "delete_before_date":
-                    return await self.handle_delete_before_date(arguments)
-                elif name == "consolidate_memories":
-                    logger.info("Calling handle_consolidate_memories")
-                    return await self.handle_consolidate_memories(arguments)
-                elif name == "consolidation_status":
-                    logger.info("Calling handle_consolidation_status")
-                    return await self.handle_consolidation_status(arguments)
-                elif name == "consolidation_recommendations":
-                    logger.info("Calling handle_consolidation_recommendations")
-                    return await self.handle_consolidation_recommendations(arguments)
-                elif name == "scheduler_status":
-                    logger.info("Calling handle_scheduler_status")
-                    return await self.handle_scheduler_status(arguments)
-                elif name == "trigger_consolidation":
-                    logger.info("Calling handle_trigger_consolidation")
-                    return await self.handle_trigger_consolidation(arguments)
-                elif name == "pause_consolidation":
-                    logger.info("Calling handle_pause_consolidation")
-                    return await self.handle_pause_consolidation(arguments)
-                elif name == "resume_consolidation":
-                    logger.info("Calling handle_resume_consolidation")
-                    return await self.handle_resume_consolidation(arguments)
-                elif name == "ingest_document":
-                    logger.info("Calling handle_ingest_document")
-                    return await self.handle_ingest_document(arguments)
-                elif name == "ingest_directory":
-                    logger.info("Calling handle_ingest_directory")
-                    return await self.handle_ingest_directory(arguments)
-                elif name == "memory_rate":
-                    logger.info("Calling handle_rate_memory")
-                    return await self.handle_rate_memory(arguments)
-                elif name == "get_memory_quality":
-                    logger.info("Calling handle_get_memory_quality")
-                    return await self.handle_get_memory_quality(arguments)
-                elif name == "analyze_quality_distribution":
-                    logger.info("Calling handle_analyze_quality_distribution")
-                    return await self.handle_analyze_quality_distribution(arguments)
-                elif name == "find_connected_memories":
-                    logger.info("Calling handle_find_connected_memories")
-                    return await self.handle_find_connected_memories(arguments)
-                elif name == "find_shortest_path":
-                    logger.info("Calling handle_find_shortest_path")
-                    return await self.handle_find_shortest_path(arguments)
-                elif name == "get_memory_subgraph":
-                    logger.info("Calling handle_get_memory_subgraph")
-                    return await self.handle_get_memory_subgraph(arguments)
-                else:
-                    logger.warning(f"Unknown tool requested: {name}")
-                    raise ValueError(f"Unknown tool: {name}")
-            except Exception as e:
-                error_msg = f"Error in {name}: {str(e)}\n{traceback.format_exc()}"
-                logger.error(error_msg)
-                print(f"ERROR in tool execution: {error_msg}", file=sys.stderr, flush=True)
-                return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-
+            # Legacy handlers (for tools that haven't been fully migrated yet)
+            # These will be removed once all old tool definitions are removed
+            elif name == "retrieve_memory":
+                return await self.handle_retrieve_memory(arguments)
+            elif name == "retrieve_with_quality_boost":
+                return await self.handle_retrieve_with_quality_boost(arguments)
+            elif name == "recall_memory":
+                return await self.handle_recall_memory(arguments)
+            elif name == "search_by_tag":
+                return await self.handle_search_by_tag(arguments)
+            elif name == "delete_memory":
+                return await self.handle_delete_memory(arguments)
+            elif name == "delete_by_tag":
+                return await self.handle_delete_by_tag(arguments)
+            elif name == "delete_by_tags":
+                return await self.handle_delete_by_tags(arguments)
+            elif name == "delete_by_all_tags":
+                return await self.handle_delete_by_all_tags(arguments)
+            elif name == "debug_retrieve":
+                return await self.handle_debug_retrieve(arguments)
+            elif name == "exact_match_retrieve":
+                return await self.handle_exact_match_retrieve(arguments)
+            elif name == "get_raw_embedding":
+                return await self.handle_get_raw_embedding(arguments)
+            elif name == "recall_by_timeframe":
+                return await self.handle_recall_by_timeframe(arguments)
+            elif name == "delete_by_timeframe":
+                return await self.handle_delete_by_timeframe(arguments)
+            elif name == "delete_before_date":
+                return await self.handle_delete_before_date(arguments)
+            elif name == "consolidate_memories":
+                logger.info("Calling handle_consolidate_memories")
+                return await self.handle_consolidate_memories(arguments)
+            elif name == "consolidation_status":
+                logger.info("Calling handle_consolidation_status")
+                return await self.handle_consolidation_status(arguments)
+            elif name == "consolidation_recommendations":
+                logger.info("Calling handle_consolidation_recommendations")
+                return await self.handle_consolidation_recommendations(arguments)
+            elif name == "scheduler_status":
+                logger.info("Calling handle_scheduler_status")
+                return await self.handle_scheduler_status(arguments)
+            elif name == "trigger_consolidation":
+                logger.info("Calling handle_trigger_consolidation")
+                return await self.handle_trigger_consolidation(arguments)
+            elif name == "pause_consolidation":
+                logger.info("Calling handle_pause_consolidation")
+                return await self.handle_pause_consolidation(arguments)
+            elif name == "resume_consolidation":
+                logger.info("Calling handle_resume_consolidation")
+                return await self.handle_resume_consolidation(arguments)
+            elif name == "ingest_document":
+                logger.info("Calling handle_ingest_document")
+                return await self.handle_ingest_document(arguments)
+            elif name == "ingest_directory":
+                logger.info("Calling handle_ingest_directory")
+                return await self.handle_ingest_directory(arguments)
+            elif name == "memory_rate":
+                logger.info("Calling handle_rate_memory")
+                return await self.handle_rate_memory(arguments)
+            elif name == "get_memory_quality":
+                logger.info("Calling handle_get_memory_quality")
+                return await self.handle_get_memory_quality(arguments)
+            elif name == "analyze_quality_distribution":
+                logger.info("Calling handle_analyze_quality_distribution")
+                return await self.handle_analyze_quality_distribution(arguments)
+            elif name == "find_connected_memories":
+                logger.info("Calling handle_find_connected_memories")
+                return await self.handle_find_connected_memories(arguments)
+            elif name == "find_shortest_path":
+                logger.info("Calling handle_find_shortest_path")
+                return await self.handle_find_shortest_path(arguments)
+            elif name == "get_memory_subgraph":
+                logger.info("Calling handle_get_memory_subgraph")
+                return await self.handle_get_memory_subgraph(arguments)
+            else:
+                logger.warning("Unknown tool requested: %s", _sanitize_log_value(name))
+                raise ValueError(f"Unknown tool: {name}")
+        except Exception as e:
+            error_msg = f"Error in {_sanitize_log_value(name)}: {str(e)}\n{traceback.format_exc()}"
+            logger.error("%s", error_msg)
+            print(f"ERROR in tool execution: {error_msg}", file=sys.stderr, flush=True)
+            return [types.TextContent(type="text", text=f"Error: {str(e)}")]
     async def handle_store_memory(self, arguments: dict) -> List[types.TextContent]:
         """Store new memory (delegates to handler)."""
         from .server.handlers import memory as memory_handlers
@@ -2667,14 +2769,23 @@ Examples:
         # Resolve project directory
         project_path = arguments.get("project_path")
         if not project_path:
-            # Default: ~/.claude/projects/ — auto-detect from cwd
-            cwd = _Path.cwd()
-            claude_projects = _Path.home() / ".claude" / "projects"
-            # Convert cwd to Claude's project dir naming: replace path sep with -
-            project_dir_name = str(cwd).replace(os.sep, "-")
-            project_path = claude_projects / project_dir_name
+            # Check env var override first (supports any CLI)
+            env_override = os.environ.get("MCP_HARVEST_SESSION_DIR")
+            if env_override:
+                project_path = _Path(env_override).expanduser()
+            else:
+                # Default: Claude Code project dir from cwd
+                cwd = _Path.cwd()
+                claude_projects = _Path.home() / ".claude" / "projects"
+                project_dir_name = str(cwd).replace(os.sep, "-")
+                project_path = claude_projects / project_dir_name
+                # Fallback: Kiro CLI sessions if Claude path doesn't exist
+                if not project_path.exists():
+                    kiro_sessions = _Path.home() / ".kiro" / "sessions" / "cli"
+                    if kiro_sessions.exists():
+                        project_path = kiro_sessions
         else:
-            project_path = _Path(project_path)
+            project_path = _Path(project_path).resolve()
 
         if not project_path.exists():
             return [types.TextContent(
@@ -2802,12 +2913,26 @@ Examples:
         return [types.TextContent(type="text", text="\n".join(lines))]
 
     async def handle_memory_resolve(self, arguments: dict) -> List[types.TextContent]:
-        """Resolve a memory conflict."""
+        """Resolve a memory conflict. Accepts single pair or batch (hashes list)."""
         await self._ensure_storage_initialized()
+
+        # Batch mode: list of {winner_hash, loser_hash} dicts
+        hashes = arguments.get("hashes")
+        if hashes and isinstance(hashes, list):
+            results = []
+            for pair in hashes:
+                w = pair.get("winner_hash", "")
+                l = pair.get("loser_hash", "")
+                if w and l:
+                    ok, msg = await self.storage.resolve_conflict(w, l)
+                    results.append(msg)
+            return [types.TextContent(type="text", text=f"Resolved {len(results)} conflict(s):\n" + "\n".join(results))]
+
+        # Single mode (backward compat)
         winner = arguments.get("winner_hash", "")
         loser = arguments.get("loser_hash", "")
         if not winner or not loser:
-            return [types.TextContent(type="text", text="Error: winner_hash and loser_hash required")]
+            return [types.TextContent(type="text", text="Error: winner_hash and loser_hash required (or pass hashes list for batch)")]
 
         ok, msg = await self.storage.resolve_conflict(winner, loser)
         return [types.TextContent(type="text", text=msg)]
@@ -2831,6 +2956,27 @@ Examples:
         result = await self.memory_service.mistake_note_search(
             query=arguments.get("query", ""),
             limit=arguments.get("limit", 5),
+        )
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+    async def handle_mistake_note_update(self, arguments: dict) -> List[types.TextContent]:
+        """Update fields of an existing mistake note."""
+        await self._ensure_storage_initialized()
+        result = await self.memory_service.mistake_note_update(
+            content_hash=arguments.get("content_hash", ""),
+            failure_count=arguments.get("failure_count"),
+            error_pattern=arguments.get("error_pattern"),
+            context_signature=arguments.get("context_signature"),
+            incorrect_action=arguments.get("incorrect_action"),
+            correct_action=arguments.get("correct_action"),
+        )
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+    async def handle_mistake_note_delete(self, arguments: dict) -> List[types.TextContent]:
+        """Delete a mistake note by content hash."""
+        await self._ensure_storage_initialized()
+        result = await self.memory_service.mistake_note_delete(
+            content_hash=arguments.get("content_hash", ""),
         )
         return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 

@@ -36,6 +36,11 @@ from ..utils.response_limiter import truncate_memories, format_truncated_respons
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 def _get_max_response_chars(arguments: dict) -> int:
     """Get max_response_chars from arguments or environment variable default.
 
@@ -49,7 +54,7 @@ def _get_max_response_chars(arguments: dict) -> int:
         try:
             return int(explicit)
         except (ValueError, TypeError):
-            logger.warning(f"Invalid max_response_chars value: {explicit}")
+            logger.warning("Invalid max_response_chars value: %s", _sanitize_log_value(explicit))
 
     env_default = os.environ.get("MCP_MAX_RESPONSE_CHARS")
     if env_default:
@@ -236,6 +241,19 @@ async def handle_store_memory(server, arguments: dict) -> List[types.TextContent
                 f"Register custom types via the MCP_CUSTOM_MEMORY_TYPES env var, "
                 f"e.g. '{{\"{memory_type}\": []}}'."
             )
+
+        # Phase 3: NLI contradiction check on store (opt-in, single memories only)
+        nli_on_store = os.environ.get("MCP_NLI_ON_STORE", "false").lower() == "true"
+        if nli_on_store and result.get("success") and "memory" in result:
+            try:
+                from ...reasoning.nli import detect_contradictions_nli
+                mem_hash = result["memory"].get("content_hash")
+                if mem_hash:
+                    nli_result = await detect_contradictions_nli(server.storage, memory_hash=mem_hash, dry_run=False)
+                    if nli_result.get("pairs_detected", 0) > 0:
+                        message += f"\n⚠️ Contradiction detected: {nli_result['pairs_detected']} conflict(s) registered."
+            except Exception as e:
+                logger.debug(f"NLI on-store check failed: {e}")
 
         return [types.TextContent(type="text", text=message)]
 
@@ -1073,7 +1091,7 @@ async def handle_update_memory_metadata(server, arguments: dict) -> List[types.T
             )
 
             if success:
-                logger.info(f"Versioned update: {content_hash} -> {new_hash}")
+                logger.info("Versioned update: %s -> %s", _sanitize_log_value(content_hash), _sanitize_log_value(new_hash))
                 return [types.TextContent(
                     type="text",
                     text=f"Versioned update successful. New hash: {new_hash}, parent hash: {content_hash}. {message}"
@@ -1089,13 +1107,13 @@ async def handle_update_memory_metadata(server, arguments: dict) -> List[types.T
         )
 
         if success:
-            logger.info(f"Successfully updated metadata for memory {content_hash}")
+            logger.info("Successfully updated metadata for memory %s", _sanitize_log_value(content_hash))
             return [types.TextContent(
                 type="text",
                 text=f"Successfully updated memory metadata. {message}"
             )]
         else:
-            logger.warning(f"Failed to update metadata for memory {content_hash}: {message}")
+            logger.warning("Failed to update metadata for memory %s: %s", _sanitize_log_value(content_hash), _sanitize_log_value(message))
             return [types.TextContent(type="text", text=f"Failed to update memory metadata: {message}")]
 
     except Exception as e:
@@ -1261,8 +1279,8 @@ async def handle_recall_memory(server, arguments: dict) -> List[types.TextConten
         cleaned_query, (start_timestamp, end_timestamp) = extract_time_expression(query)
 
         # Log the parsed timestamps and clean query
-        logger.info(f"Original query: {query}")
-        logger.info(f"Cleaned query for semantic search: {cleaned_query}")
+        logger.info("Original query: %s", _sanitize_log_value(query))
+        logger.info("Cleaned query for semantic search: %s", _sanitize_log_value(cleaned_query))
         logger.info(f"Parsed time range: {start_timestamp} to {end_timestamp}")
 
         # Log more detailed timestamp information for debugging

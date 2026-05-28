@@ -10,11 +10,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.69.0] - 2026-05-28
+
+### Added
+
+- feat(mistake_notes): add `mistake_note_update` and `mistake_note_delete` MCP tools — update failure_count or content fields; delete by content_hash; both validate `memory_type='mistake'` before operating (closes #1035, PR #1045, @filhocf)
+
+### Fixed
+
+- fix(ci): disable buildx provenance+sbom attestations in publish-docker job — ghcr.io multi-arch index referenced attestation manifests instead of platform layers, causing `manifest unknown` on pull (fixes #1044)
+
+### Changed
+
+- chore(ci): pre_pr_check.sh now flags f-string logger calls missing `_sanitize_log_value()` (check 6.5) — catches py/log-injection locally before CodeQL runs; CLAUDE.md documents the Log Injection Guard pattern
+
+## [10.68.0] - 2026-05-28
+
+### Security
+
+- fix(security): sanitize user input in all log messages and path expressions — 32 CodeQL alerts resolved (py/log-injection x26, py/path-injection x6) across compat.py, reasoning/inference.py, server_impl.py, and 7 handler files
+
+### Added
+
+- feat(reasoning): temporal edges with valid_from/valid_until for point-in-time graph queries (RFC #1008 §4, PR #1041, @filhocf)
+- feat(reasoning): fact mutability classification — stable/volatile/ephemeral with contradiction_action() (RFC #1008 §5, PR #1042, @filhocf)
+- feat(reasoning): multi-strategy retrieval with RRF fusion — concurrent semantic+tag strategies via asyncio.gather (RFC #1008 §6, PR #1043, @filhocf)
+
+### Fixed
+
+- fix(storage): graceful fallback when sqlite-vec DELETE crashes on corrupted blob — all three delete paths now catch vec exceptions and proceed with soft-delete (closes #1037)
+- fix(reasoning): log warning when NLI backend is unimplemented — once-per-instance warning, batch-safe (PR #1036, closes #1033, @filhocf)
+- fix(scripts): handle corrupted UTF-8 in regenerate_embeddings.py via text_factory fallback (PR #1039, closes #1038, @filhocf)
+- fix(mistake_notes): increment existing note on semantic dedup rejection instead of returning error (PR #1040, closes #1034, @filhocf)
+
+## [10.67.1] - 2026-05-28
+
+### Security
+
+- **fix(security): enforce authentication on all `/api/documents/*` routes** (GHSA-84hp-mqvj-3p8h, CVSSv3.1 9.8 CRITICAL, commit 907bac72): All 7 document endpoints (upload, batch-upload, status, history, remove, remove-by-tags, search-content) were served without any auth check, allowing unauthenticated access even when `MCP_API_KEY` or OAuth 2.1 was configured.
+
+## [10.67.0] - 2026-05-28
+
+### Security
+
+- **fix(storage): sanitize query in BM25 log statement** ([CodeQL #440](https://github.com/doobidoo/mcp-memory-service/security/code-scanning/440)): User-supplied query string was interpolated directly into a `logger.debug` call in `sqlite_vec.py`'s BM25 search path. Now passes through the existing `_sanitize_log_value()` helper (strips `\n`, `\r`, ESC) to prevent log injection.
+
+### Added
+
+- **feat(reasoning): NLI-based contradiction detection — RFC #732 Phase 3** ([PR #1027](https://github.com/doobidoo/mcp-memory-service/pull/1027), @filhocf): Introduces `reasoning/nli.py` with a 4-stage pipeline — entity gate → embedding similarity pre-filter → heuristic NLI classifier → `contradicts` graph edge storage. `detect_contradictions_nli()` is called on every `memory_store` to check for conflicts with semantically similar memories. Kill-switch via `MCP_NLI_ENABLED` (default off); confidence threshold via `MCP_NLI_CONFIDENCE_THRESHOLD` (default 0.4). `memory_resolve` extended to accept a list of hashes for batch conflict resolution. `transformers` backend deferred to follow-up (tracked in issue #1033 — will emit a warning log when attempted).
+
+- **fix(mcp): expose full v10 tool surface over HTTP** ([PR #1017](https://github.com/doobidoo/mcp-memory-service/pull/1017), @laanwj): `/mcp tools/list` previously advertised only 7 pre-v10 names (forked from stdio around v4, never resynced through the v10 consolidation). Now matches stdio's full v10 surface: `memory_graph`, `memory_quality`, `memory_harvest`, `memory_conflicts`, `memory_resolve`, `memory_consolidate`, `memory_ingest`, `memory_update`, `memory_stats`, `memory_store_session`, `mistake_note_add`, `mistake_note_search` are now reachable over HTTP. Pre-v10 names remain callable via the deprecation compat layer but are no longer advertised. `serverInfo.version` now reports the running package version instead of the stale `4.1.1` literal. Write-scope enforcement derived dynamically from `readOnlyHint` annotations — new tools automatically get correct scope gating without manual list maintenance. `memory_harvest` and `memory_ingest` blocked over HTTP (filesystem-path tools, stdio-only for security). Also subsumes the per-tool `recall_memory` time-expression fix from #1029 — HTTP transport now inherits stdio behavior by routing through the shared dispatcher.
+
+## [10.66.1] - 2026-05-27
+
 ### Changed
 
 - **docs(contributing): tighten contributor guidelines + add agent disclosure policy**: Added `## Security-Sensitive Changes` section (protected paths, required scope-enforcement checklist for new MCP tools) and `## Autonomous Agents & AI-Generated PRs` section (mandatory disclosure, 7-day clarification window). PR template extended with `## Security` and `## Agent Disclosure` sections. CODEOWNERS updated to require `@doobidoo` approval on `web/api/mcp.py`, `web/oauth/`, and `.github/workflows/`.
 
+- **chore(governance): filhocf collaborator access + CODEOWNERS expanded to reasoning/**: Added filhocf as collaborator; CODEOWNERS updated to include `src/mcp_memory_service/reasoning/` under filhocf review.
+
+- **chore(deps): bump actions/checkout 4.3.1→6.0.2, snok/container-retention-policy 2.2.1→3.0.1, actions/delete-package-versions 4.1.1→5.0.0, uv group (8 packages)**: Routine dependency maintenance.
+
 ### Fixed
+
+- **fix(storage): align `HttpClientStorage.retrieve` signature with `BaseStorage`** ([CodeQL #428](https://github.com/doobidoo/mcp-memory-service/security/code-scanning/428)): `http_client.py` override was missing `min_confidence`, `start_time`, and `end_time` parameters present in the abstract base. All three are now forwarded to the HTTP API payload when set (`py/inheritance/signature-mismatch`).
+
+- **fix(harvest): multi-CLI session directory resolution** ([PR #1025](https://github.com/doobidoo/mcp-memory-service/pull/1025), @filhocf): 3-level fallback: `MCP_HARVEST_SESSION_DIR` env var → `~/.claude/projects/{cwd}` → `~/.kiro/sessions/cli/`. Adds Kiro CLI support alongside existing Claude CLI support.
+
+- **fix(harvest): expanduser() on MCP_HARVEST_SESSION_DIR**: Paths specified as `~/my-sessions` were not expanded to the full home directory path, causing session directory resolution to fail silently.
+
+- **fix(mcp): expose full v10 tool surface over HTTP** — `/mcp tools/list` previously advertised only 7 pre-v10 names (`store_memory`, `retrieve_memory`, `recall_memory`, `search_by_tag`, `delete_memory`, `check_database_health`, `list_memories`), forked from stdio around v4 and never resynced through the v10 consolidation. It now matches stdio's v10 surface: `memory_graph`, `memory_quality`, `memory_harvest`, `memory_conflicts`, `memory_resolve`, `memory_consolidate`, `memory_ingest`, `memory_update`, `memory_stats`, `memory_store_session`, `mistake_note_add`, and `mistake_note_search` are now reachable over HTTP. Pre-v10 names are no longer advertised but remain callable via the deprecation compat layer. `serverInfo.version` now reports the running package version instead of the stale `4.1.1` literal.
 
 - **fix(opencode): don't use https for http access**: Fix connection failure while using local `http` endpoint with the opencode plugin.
 

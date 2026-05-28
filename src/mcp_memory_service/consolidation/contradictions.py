@@ -12,6 +12,11 @@ import os
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
 # Configuration
 CONTRADICTION_ENABLED = os.environ.get("MCP_CONTRADICTION_DETECTION_ENABLED", "false").lower() == "true"
 CONTRADICTION_ON_STORE = os.environ.get("MCP_CONTRADICTION_ON_STORE", "false").lower() == "true"
@@ -124,8 +129,10 @@ async def detect_contradictions(storage, dry_run: bool = True) -> dict:
                         logger.warning(f"[contradiction] Failed to mark superseded: {e}")
 
         logger.info(
-            f"[contradiction] Done: {results['pairs_detected']} pairs, "
-            f"{results['edges_created']} edges, {results['superseded_marked']} superseded"
+            "[contradiction] Done: %s pairs, %s edges, %s superseded",
+            _sanitize_log_value(results['pairs_detected']),
+            _sanitize_log_value(results['edges_created']),
+            _sanitize_log_value(results['superseded_marked']),
         )
 
     except Exception as e:

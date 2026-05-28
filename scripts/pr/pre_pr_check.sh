@@ -188,6 +188,31 @@ else
     echo -e "${YELLOW}   Review and remove debug statements (or add '# debug' comment if intentional)${NC}"
 fi
 
+# Check 6.5: Log injection guard
+echo -e "\n${YELLOW}[6.5/9]${NC} Checking for unsanitized log calls (log-injection guard)..."
+LOG_INJECT_ISSUES=0
+for file in $(echo "$STAGED_FILES" | grep '\.py$' | grep -v '^claude-hooks/' || true); do
+    if [ -f "$file" ]; then
+        # Flag f-string logger calls without _sanitize_log_value — potential log injection
+        HITS=$(grep -En 'logger\.(info|warning|error|debug|critical)\(f"' "$file" \
+               | grep -v '_sanitize_log_value' || true)
+        if [ -n "$HITS" ]; then
+            echo -e "${YELLOW}   Potential log injection in $file:${NC}"
+            echo "$HITS" | head -5 | sed 's/^/     /'
+            LOG_INJECT_ISSUES=$((LOG_INJECT_ISSUES + 1))
+        fi
+    fi
+done
+
+if [ $LOG_INJECT_ISSUES -eq 0 ]; then
+    check_status "Log injection guard (f-string logger calls sanitized)" 0
+else
+    check_status "Log injection guard (f-string logger calls sanitized)" 1
+    echo -e "${RED}   Wrap user-provided values with _sanitize_log_value() from compat.py${NC}"
+    echo -e "${YELLOW}   Example: logger.info(f\"Stored: {_sanitize_log_value(content)}\")${NC}"
+    echo -e "${YELLOW}   See: src/mcp_memory_service/compat.py for the utility function${NC}"
+fi
+
 # Check 7: Docstring coverage
 echo -e "\n${YELLOW}[7/9]${NC} Checking docstring coverage..."
 MISSING_DOCSTRINGS=0

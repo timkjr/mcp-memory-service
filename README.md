@@ -509,19 +509,23 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.66.0** (May 26, 2026)
+## Latest Release: **v10.69.0** (May 28, 2026)
 
-**Minor: Reasoning engine (RFC #732) — transitive closure, abductive inference, entity grouping, insight cards + fix(time-filter): SQL-level enforcement**
+**Minor: feat(mistake_notes) update+delete tools + fix(ci) Docker multi-arch pull + chore(ci) log-injection guard**
 
 **What's New:**
-- `feat(reasoning)`: Phase 1a — transitive closure walks multi-hop graph edges; abductive inference proposes explanations via NLI-backed scoring (PR #1009, RFC #732)
-- `feat(reasoning)`: Phase 1b — entity grouping clusters co-referenced entities across memories for cross-memory entity resolution (PR #1010)
-- `feat(reasoning)`: Phase 3 — insight cards surface synthesised memory summaries via REST API and memory_graph tool (PR #1011)
-- `fix(time-filter)`: Time-range filters now enforced at SQL `WHERE` clause level — no more out-of-window results leaking through vector scoring (PR #1014)
+- `feat(mistake_notes)`: Add `mistake_note_update` and `mistake_note_delete` MCP tools — update failure_count or content fields; delete by content_hash; both validate `memory_type='mistake'` before operating (closes #1035, PR #1045, @filhocf).
+- `fix(ci)`: Disable buildx provenance+sbom attestations in publish-docker job — ghcr.io multi-arch index referenced attestation manifests instead of platform layers, causing `manifest unknown` on docker pull (fixes #1044).
+- `chore(ci)`: pre_pr_check.sh now flags f-string logger calls missing `_sanitize_log_value()` (check 6.5) — catches py/log-injection locally before CodeQL runs; CLAUDE.md documents the Log Injection Guard pattern.
 
 ---
 
 **Previous Releases**:
+- **v10.68.0** - feat(reasoning): temporal edges + fact mutability + RRF fusion (RFC #1008, @filhocf) + fix(security): 32 CodeQL log/path-injection alerts resolved (May 28, 2026)
+- **v10.67.1** - fix(security): enforce auth on all /api/documents/* routes (GHSA-84hp-mqvj-3p8h, CVSSv3.1 9.8 CRITICAL, commit 907bac72) (May 28, 2026)
+- **v10.67.0** - feat(reasoning): NLI contradiction detection (RFC #732 Phase 3, PR #1027, @filhocf) + fix(mcp): full v10 HTTP tool surface (PR #1017, @laanwj) + fix(storage): BM25 log sanitization (CodeQL #440) (May 28, 2026)
+- **v10.66.1** - fix(storage): HttpClientStorage.retrieve signature fix (CodeQL #428) + fix(harvest): multi-CLI session dir resolution + Kiro CLI support (PR #1025, @filhocf) (May 27, 2026)
+- **v10.66.0** - feat(reasoning): transitive closure + abductive inference + entity grouping + insight cards (RFC #732) + fix(time-filter): SQL-level enforcement (May 26, 2026)
 - **v10.65.3** - fix(security): enforce write scope on MCP tools/call (GHSA-2r68-g678-7qr3, CVSS 8.1) + ci: restrict quality-cpu Docker to linux/amd64 (PR #1004, #1003)
 - **v10.65.1** - fix(prompts): guard `learning_session` against unresolved CLI `$N` placeholders (PR #1000) + docs: privacy-safe audit log default (PR #999)
 - **v10.65.0** - feat(opencode): `/memory` slash commands, TUI toasts, status bridge, working Solid TUI sidebar widget, session-summary dedup fix (PR #997)

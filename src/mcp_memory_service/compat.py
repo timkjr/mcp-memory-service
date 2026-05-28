@@ -34,6 +34,12 @@ from typing import Dict, Any, Tuple, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 # Type alias for argument transformer functions
 ArgTransformer = Callable[[Dict[str, Any]], Dict[str, Any]]
 
@@ -213,13 +219,15 @@ def transform_deprecated_call(
 
     # Log deprecation warning
     logger.warning(
-        f"Tool '{tool_name}' is deprecated and will be removed in a future version. "
-        f"Use '{new_name}' instead."
+        "Tool '%s' is deprecated and will be removed in a future version. "
+        "Use '%s' instead.",
+        _sanitize_log_value(tool_name),
+        _sanitize_log_value(new_name),
     )
 
     # Also emit Python warning for programmatic detection
     warnings.warn(
-        f"Tool '{tool_name}' is deprecated. Use '{new_name}' instead.",
+        f"Tool '{_sanitize_log_value(tool_name)}' is deprecated. Use '{_sanitize_log_value(new_name)}' instead.",
         DeprecationWarning,
         stacklevel=3
     )

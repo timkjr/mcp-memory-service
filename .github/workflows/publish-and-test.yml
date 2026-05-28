@@ -152,7 +152,8 @@ jobs:
         cache-to: type=gha,mode=max
         build-args: |
           SKIP_MODEL_DOWNLOAD=true
-        outputs: type=registry
+        provenance: false
+        sbom: false
 
   publish-pypi:
     needs: [test-uvx-compatibility, test-docker-build]

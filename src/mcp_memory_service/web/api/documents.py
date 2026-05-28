@@ -30,8 +30,10 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel
+
+from ..oauth.middleware import require_read_access, require_write_access, AuthenticationResult
 
 from ...ingestion import get_loader_for_file, SUPPORTED_FORMATS
 from ...models.memory import Memory
@@ -153,7 +155,8 @@ async def upload_document(
     tags: str = Form(""),
     chunk_size: int = Form(1000),
     chunk_overlap: int = Form(200),
-    memory_type: str = Form("document")
+    memory_type: str = Form("document"),
+    user: AuthenticationResult = Depends(require_write_access),
 ):
     """
     Upload and ingest a single document.
@@ -245,7 +248,8 @@ async def batch_upload_documents(
     tags: str = Form(""),
     chunk_size: int = Form(1000),
     chunk_overlap: int = Form(200),
-    memory_type: str = Form("document")
+    memory_type: str = Form("document"),
+    user: AuthenticationResult = Depends(require_write_access),
 ):
     """
     Upload and ingest multiple documents in batch.
@@ -329,7 +333,7 @@ async def batch_upload_documents(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/status/{upload_id}", response_model=UploadStatus)
-async def get_upload_status(upload_id: str):
+async def get_upload_status(upload_id: str, user: AuthenticationResult = Depends(require_read_access)):
     """
     Get the status of an upload session.
 
@@ -345,7 +349,7 @@ async def get_upload_status(upload_id: str):
     return upload_sessions[upload_id]
 
 @router.get("/history", response_model=Dict[str, List[Dict[str, Any]]])
-async def get_upload_history():
+async def get_upload_history(user: AuthenticationResult = Depends(require_read_access)):
     """
     Get the history of all uploads.
 
@@ -617,7 +621,11 @@ async def cleanup_old_sessions():
     asyncio.create_task(cleanup())
 
 @router.delete("/remove/{upload_id}")
-async def remove_document(upload_id: str, remove_from_memory: bool = True):
+async def remove_document(
+    upload_id: str,
+    remove_from_memory: bool = True,
+    user: AuthenticationResult = Depends(require_write_access),
+):
     """
     Remove a document and optionally its memories.
 
@@ -685,7 +693,10 @@ async def remove_document(upload_id: str, remove_from_memory: bool = True):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.delete("/remove-by-tags")
-async def remove_documents_by_tags(tags: List[str]):
+async def remove_documents_by_tags(
+    tags: List[str],
+    user: AuthenticationResult = Depends(require_write_access),
+):
     """
     Remove documents by their tags.
 
@@ -727,7 +738,11 @@ async def remove_documents_by_tags(tags: List[str]):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/search-content/{upload_id}")
-async def search_document_content(upload_id: str, limit: int = 1000):
+async def search_document_content(
+    upload_id: str,
+    limit: int = 1000,
+    user: AuthenticationResult = Depends(require_read_access),
+):
     """
     Search for all memories associated with an upload.
 

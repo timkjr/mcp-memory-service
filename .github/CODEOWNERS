@@ -14,3 +14,10 @@ src/mcp_memory_service/quality/ @filhocf
 src/mcp_memory_service/server/handlers/quality.py @filhocf
 src/mcp_memory_service/services/memory_service.py @filhocf
 tests/quality/ @filhocf
+
+# Reasoning engine (RFC #732) — transitive closure, abduction, NLI, entity profiles
+src/mcp_memory_service/reasoning/ @filhocf
+src/mcp_memory_service/server/handlers/graph.py @filhocf
+tests/test_nli_contradiction.py @filhocf
+tests/test_entity_profiles.py @filhocf
+tests/test_reasoning/ @filhocf

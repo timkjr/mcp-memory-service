@@ -25,6 +25,11 @@ from .base import DocumentLoader
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
 # Registry of document loaders by file extension
 _LOADER_REGISTRY: Dict[str, Type[DocumentLoader]] = {}
 
@@ -66,10 +71,20 @@ def get_loader_for_file(file_path: Path) -> Optional[DocumentLoader]:
     Returns:
         DocumentLoader instance that can handle the file, or None if unsupported
     """
-    if not file_path.exists():
-        logger.warning(f"File does not exist: {file_path}")
+    # Resolve to an absolute, canonical path to prevent path traversal
+    try:
+        resolved_path = file_path.resolve()
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not resolve file path: %s", _sanitize_log_value(exc))
         return None
-    
+
+    if not resolved_path.exists():
+        logger.warning("File does not exist: %s", _sanitize_log_value(resolved_path))
+        return None
+
+    # Work with the resolved path from here on
+    file_path = resolved_path
+
     # Try by file extension first
     extension = file_path.suffix.lower().lstrip('.')
     if extension in _LOADER_REGISTRY:
@@ -77,22 +92,22 @@ def get_loader_for_file(file_path: Path) -> Optional[DocumentLoader]:
         loader = loader_class()
         if loader.can_handle(file_path):
             return loader
-    
+
     # Try by MIME type detection
     mime_type, _ = mimetypes.guess_type(str(file_path))
     if mime_type:
         loader = _get_loader_by_mime_type(mime_type)
         if loader and loader.can_handle(file_path):
             return loader
-    
+
     # Try all registered loaders as fallback
     for loader_class in _LOADER_REGISTRY.values():
         loader = loader_class()
         if loader.can_handle(file_path):
-            logger.debug(f"Found fallback loader {loader_class.__name__} for {file_path}")
+            logger.debug("Found fallback loader %s for %s", loader_class.__name__, _sanitize_log_value(file_path))
             return loader
-    
-    logger.warning(f"No suitable loader found for file: {file_path}")
+
+    logger.warning("No suitable loader found for file: %s", _sanitize_log_value(file_path))
     return None
 
 

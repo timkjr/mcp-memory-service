@@ -32,6 +32,11 @@ from ...config import SQLITE_VEC_PATH, STORAGE_BACKEND
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 async def get_graph_storage() -> Optional[GraphStorage]:
     """
     Get graph storage instance if available.
@@ -193,8 +198,8 @@ async def handle_memory_graph(server, arguments: dict) -> List[types.TextContent
 
     except Exception as e:
         import traceback
-        error_msg = f"Error in memory_graph action '{action}': {str(e)}"
-        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        error_msg = f"Error in memory_graph action '{_sanitize_log_value(action)}': {str(e)}"
+        logger.error("%s\n%s", error_msg, traceback.format_exc())
         return [types.TextContent(type="text", text=error_msg)]
 
 
@@ -369,7 +374,7 @@ async def handle_find_connected_memories(
             "count": len(connected)
         }
 
-        logger.info(f"Found {len(connected)} connected memories within {max_hops} hops")
+        logger.info("Found %d connected memories within %s hops", len(connected), _sanitize_log_value(max_hops))
 
         return [types.TextContent(
             type="text",
@@ -470,7 +475,7 @@ async def handle_find_shortest_path(
                 "length": 0,
                 "message": "No path found within depth limit"
             }
-            logger.info(f"No path found between {hash1} and {hash2}")
+            logger.info("No path found between %s and %s", _sanitize_log_value(hash1), _sanitize_log_value(hash2))
 
         return [types.TextContent(
             type="text",

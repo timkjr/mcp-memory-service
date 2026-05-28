@@ -29,6 +29,11 @@ from ...config import CONSOLIDATION_ENABLED
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log_value(value: object) -> str:
+    """Sanitize a user-provided value for safe inclusion in log messages."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x1b", "\\x1b")
+
+
 async def handle_consolidate_memories(server, arguments: dict) -> List[types.TextContent]:
     """Handle memory consolidation requests."""
     if not CONSOLIDATION_ENABLED or not server.consolidator:
@@ -388,6 +393,6 @@ async def handle_memory_consolidate(server, arguments: dict) -> List[types.TextC
             return [types.TextContent(type="text", text=f"Error: Unknown action '{action}'")]
 
     except Exception as e:
-        error_msg = f"Error in memory_consolidate action '{action}': {str(e)}"
-        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        error_msg = f"Error in memory_consolidate action '{_sanitize_log_value(action)}': {str(e)}"
+        logger.error("%s\n%s", error_msg, traceback.format_exc())
         return [types.TextContent(type="text", text=error_msg)]

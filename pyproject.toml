@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-memory-service"
-version = "10.66.0"
+version = "10.69.0"
 description = "Semantic memory layer for AI applications. REST API + MCP transport + knowledge graph + autonomous consolidation. Works with 14+ AI clients. Self-host, zero cloud cost."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -83,6 +83,11 @@ ml = [
     "sentence-transformers>=2.2.2",
     "torch>=2.0.0",
     "wandb>=0.18.0"  # Fix for Issue #311: Ensure wandb is compatible with protobuf 5.x
+]
+# NLI contradiction detection (Phase 3, RFC #732)
+nli = [
+    "transformers>=4.30.0",
+    "onnxruntime>=1.17.0",
 ]
 # SQLite-vec with lightweight ONNX embeddings (recommended for most users)
 sqlite = [
