@@ -25,7 +25,7 @@ done
 
 if $SYNC; then
   echo "→ Fetching upstream (doobidoo/mcp-memory-service)..."
-  git fetch upstream
+  git fetch upstream --tags --prune-tags
   echo "→ Merging upstream/main into main..."
   git merge upstream/main --no-edit
 fi
