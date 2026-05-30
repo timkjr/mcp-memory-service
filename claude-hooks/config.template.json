@@ -94,5 +94,9 @@
     "customSafePatterns": [],
     "customDestructivePatterns": [],
     "logDecisions": false
+  },
+  "mcpCapabilityCheck": {
+    "enabled": true,
+    "knownMcpServers": []
   }
 }
