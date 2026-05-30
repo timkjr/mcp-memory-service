@@ -591,6 +591,51 @@ async function withRetry(fn, maxAttempts = 4, initialDelayMs = 2000, verbose = t
 }
 
 /**
+ * Check which MCP servers have not been capability-documented in memory.
+ * Reads local claude_desktop_config.json + knownMcpServers from hooks config.
+ * Returns server names that have no memory tagged 'mcp-explored'.
+ */
+async function checkMcpCapabilities(config, memoryClient) {
+    if (!memoryClient) return [];
+
+    const allServers = new Set();
+
+    // Local Claude Code MCP servers from claude_desktop_config.json
+    try {
+        const os = require('os');
+        const desktopConfigPath = path.join(os.homedir(), '.claude', 'claude_desktop_config.json');
+        const desktopConfig = JSON.parse(await fs.readFile(desktopConfigPath, 'utf8'));
+        for (const name of Object.keys(desktopConfig.mcpServers || {})) allServers.add(name);
+    } catch {
+        // File absent or unreadable — skip
+    }
+
+    // Explicit list from hooks config (covers claude.ai-routed servers like mcp-memory)
+    for (const name of (config.mcpCapabilityCheck?.knownMcpServers || [])) allServers.add(name);
+
+    if (allServers.size === 0) return [];
+
+    const unexplored = [];
+    for (const name of allServers) {
+        try {
+            const memories = await memoryClient.queryMemories(`mcp server capabilities ${name}`, 3);
+            const hasDoc = (memories || []).some(m => {
+                const tags = (m.tags || []).map(t => String(t).toLowerCase());
+                const body = (m.content || m.preview || '').toLowerCase();
+                return (tags.some(t => t.includes('mcp-explored') || t.includes('mcp-capabilities')) ||
+                        body.includes('capabilities')) &&
+                       body.includes(name.toLowerCase());
+            });
+            if (!hasDoc) unexplored.push(name);
+        } catch {
+            // Query failed — don't flag as unexplored to avoid false positives
+        }
+    }
+
+    return unexplored;
+}
+
+/**
  * Main session start hook function with enhanced visual output
  */
 async function onSessionStart(context) {
@@ -1369,6 +1414,19 @@ async function executeSessionStart(context) {
             }
         } else if (verbose && showMemoryDetails && !cleanMode) {
             console.log(`${CONSOLE_COLORS.YELLOW}📭 Memory Search${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.GRAY}No relevant memories found${CONSOLE_COLORS.RESET}`);
+        }
+
+        // MCP capability exploration check — flag servers not yet documented in memory
+        if (config.mcpCapabilityCheck?.enabled !== false && verbose && !cleanMode) {
+            try {
+                const unexplored = await checkMcpCapabilities(config, memoryClient);
+                if (unexplored.length > 0) {
+                    console.log(`\n${CONSOLE_COLORS.YELLOW}⚠️  Unexplored MCP Servers${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} ${unexplored.map(s => `${CONSOLE_COLORS.BRIGHT}${sanitizeForLog(s)}${CONSOLE_COLORS.RESET}`).join(', ')}`);
+                    console.log(`${CONSOLE_COLORS.YELLOW}   Action Required${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} Read each server's tool list, store capabilities to MCP memory with tag ${CONSOLE_COLORS.BRIGHT}mcp-explored${CONSOLE_COLORS.RESET}`);
+                }
+            } catch {
+                // Non-critical — skip silently
+            }
         }
 
     } catch (error) {

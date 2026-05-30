@@ -129,6 +129,17 @@
     "maxGitMemories": 3,
     "gitContextWeight": 1.2
   },
+  "mcpCapabilityCheck": {
+    "enabled": true,
+    "knownMcpServers": [
+      "mcp-memory",
+      "chunkhound",
+      "paperless",
+      "filesystem-go",
+      "sequential-thinking",
+      "git"
+    ]
+  },
   "output": {
     "verbose": true,
     "showMemoryDetails": true,
