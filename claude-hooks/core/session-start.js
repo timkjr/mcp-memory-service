@@ -905,6 +905,40 @@ async function executeSessionStart(context) {
         const showPhaseDetails = config.output?.showPhaseDetails !== false && config.output?.style !== 'balanced'; // Hide in balanced mode
 
         if (recentFirstMode) {
+            // Phase -1: Always-load foundational memories — no time filter, no project scoping.
+            // Split into two fetches so old foundational memories don't lose to newer critical ones.
+            if (memoryClient) {
+                if (verbose && showPhaseDetails && !cleanMode) {
+                    console.log(`${CONSOLE_COLORS.GREEN}🔒 Phase -1${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} Loading user-profile + critical memories (no time filter)`);
+                }
+                // 1. User profile — fetch 2, take the longest (most comprehensive)
+                const profileMemories = await memoryClient.queryMemoriesByTagsAndTime(
+                    ['user-profile'],
+                    null,
+                    10,
+                    false
+                );
+                if (profileMemories && profileMemories.length > 0) {
+                    const best = profileMemories.sort((a, b) =>
+                        (b.content || '').length - (a.content || '').length
+                    ).slice(0, 1);
+                    allMemories.push(...best.map(m => ({ ...m, _critical: true })));
+                }
+                // 2. Critical memories (3 slots) — skip user-profile duplicates
+                const criticalMemories = await memoryClient.queryMemoriesByTagsAndTime(
+                    ['critical'],
+                    null,
+                    3,
+                    false
+                );
+                if (criticalMemories && criticalMemories.length > 0) {
+                    const deduped = criticalMemories.filter(m =>
+                        !allMemories.some(existing => existing.id === m.id || existing.hash === m.hash)
+                    );
+                    allMemories.push(...deduped.map(m => ({ ...m, _critical: true })));
+                }
+            }
+
             // Phase 0: Git Context Phase (NEW - highest priority for repository-aware memories)
             if (gitContext && gitContext.developmentKeywords.keywords.length > 0) {
                 const maxGitMemories = config.gitAnalysis?.maxGitMemories || 3;
@@ -1221,8 +1255,9 @@ async function executeSessionStart(context) {
             }).sort((a, b) => b.relevanceScore - a.relevanceScore); // Re-sort after boost
 
             // Filter memories below minimum relevance threshold (loaded from config, default 0.3)
+            // Phase -1 critical memories are exempt — they must always appear regardless of score.
             const preFilterCount = scoredMemories.length;
-            scoredMemories = scoredMemories.filter(m => m.relevanceScore >= minRelevanceScore);
+            scoredMemories = scoredMemories.filter(m => m._critical || m.relevanceScore >= minRelevanceScore);
             if (verbose && showMemoryDetails && !cleanMode && preFilterCount !== scoredMemories.length) {
                 console.log(`[Memory Filter] Removed ${preFilterCount - scoredMemories.length} low-relevance memories (below ${(minRelevanceScore * 100).toFixed(0)}% threshold)`);
             }

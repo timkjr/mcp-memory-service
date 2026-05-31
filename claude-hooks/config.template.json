@@ -1,4 +1,7 @@
 {
+  "autoCapture": {
+    "enabled": false
+  },
   "memoryService": {
     "endpoint": "https://your-server:8443",
     "apiKey": "your-api-key-here",
