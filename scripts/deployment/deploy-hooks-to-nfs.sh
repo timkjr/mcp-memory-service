@@ -167,7 +167,6 @@ backup_dir "$NFS_HOOKS_CANONICAL"
 
 log_info "Syncing hooks..."
 rsync -av --delete \
-    --exclude='config.json' \
     --exclude='.git' \
     --exclude='*.backup' \
     --exclude='.sync-version' \
