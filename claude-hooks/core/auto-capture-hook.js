@@ -281,7 +281,7 @@ async function main() {
         if (overrides.forceRemember) {
             detection = {
                 isValuable: true,
-                memoryType: 'Context',
+                memoryType: 'note',
                 matchedPattern: 'user-override',
                 confidence: 1.0
             };
