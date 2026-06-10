@@ -2430,6 +2430,18 @@ SOLUTIONS:
             logger.error(error_msg)
             return False, error_msg
 
+    async def delete_memory(self, content_hash: str) -> bool:
+        """Delete a memory by content hash (consolidation protocol).
+
+        DreamInspiredConsolidator expects a ``delete_memory(hash) -> bool``
+        method during the Compression (replace-with-summary) and Controlled
+        Forgetting stages. SQLite-vec's native ``delete()`` returns
+        ``Tuple[bool, str]``; this thin proxy adapts the signature so
+        consolidation does not fail with ``AttributeError``.
+        """
+        success, _ = await self.delete(content_hash)
+        return success
+
     async def is_deleted(self, content_hash: str) -> bool:
         """
         Check if a memory has been soft-deleted (tombstone exists).
