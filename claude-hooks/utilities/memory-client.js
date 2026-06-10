@@ -427,6 +427,15 @@ class MemoryClient {
                                 });
                             resolve(memories);
                         } else {
+                            // Non-{results:[...]} shape usually means an API error response
+                            // (e.g. {"detail": "Could not parse time query: ..."}). Surface it
+                            // instead of silently returning [] — that silence is what hid the
+                            // hyphenated-time-query bug for an entire session.
+                            if (response && response.detail) {
+                                console.warn('[Memory Client] API error response:', response.detail);
+                            } else if (!response.results) {
+                                console.warn('[Memory Client] Unexpected response shape (no results array):', JSON.stringify(response).slice(0, 200));
+                            }
                             resolve([]);
                         }
                     } catch (parseError) {
