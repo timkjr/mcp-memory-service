@@ -65,6 +65,12 @@ class CreativeAssociationEngine(ConsolidationBase):
     
     async def process(self, memories: List[Memory], **kwargs) -> List[MemoryAssociation]:
         """Discover creative associations between memories."""
+        # Exclude consolidation-generated association records from the candidate
+        # pool. Without this, every run also relates prior associations to each
+        # other and to new ones, producing "meta-associations" (assoc_X_assoc_Y)
+        # that compound with each subsequent run.
+        memories = [m for m in memories if "association" not in m.tags]
+
         if not self._validate_memories(memories) or len(memories) < 2:
             return []
         
