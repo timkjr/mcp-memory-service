@@ -8,6 +8,7 @@ on:
 
 jobs:
   housekeeping:
+    if: github.repository == 'doobidoo/mcp-memory-service'
     runs-on: ubuntu-latest
     permissions:
       contents: write

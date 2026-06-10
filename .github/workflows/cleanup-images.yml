@@ -42,7 +42,7 @@ env:
 jobs:
   # Cleanup GitHub Container Registry images
   cleanup-ghcr:
-    if: github.repository == "doobidoo/mcp-memory-service" || github.repository == "timkjr/mcp-memory-service"
+    if: github.repository == "doobidoo/mcp-memory-service"
     runs-on: ubuntu-latest
     name: Cleanup GHCR Images
     permissions:
@@ -92,7 +92,7 @@ jobs:
   cleanup-dockerhub:
     runs-on: ubuntu-latest
     name: Cleanup Docker Hub Images
-    if: (github.repository == "doobidoo/mcp-memory-service" || github.repository == "timkjr/mcp-memory-service") && github.event_name != "pull_request"
+    if: github.repository == "doobidoo/mcp-memory-service" && github.event_name != "pull_request"
     
     steps:
     - name: Checkout repository
