@@ -315,8 +315,11 @@ class MidConversationHook {
             let memories = [];
 
             if (query.timeFilter) {
-                const timeQuery = `${query.semanticQuery} ${query.timeFilter}`;
-                memories = await this.memoryClient.queryMemoriesByTime(timeQuery, query.limit);
+                // Pass the time window and semantic text as separate fields —
+                // /api/search/by-time can't parse a combined string like
+                // "<topic words> last-month", it only accepts a time phrase
+                // in `query` plus an optional `semantic_query`.
+                memories = await this.memoryClient.queryMemoriesByTime(query.timeFilter, query.limit, query.semanticQuery);
             } else {
                 memories = await this.memoryClient.queryMemories(query.semanticQuery, query.limit);
             }

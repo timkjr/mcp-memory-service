@@ -11,6 +11,17 @@ const { MCPClient } = require('./mcp-client');
 // storeMemoryHTTP, and queryMemoriesHTTP duplicate request construction. See Gemini
 // review on PR #735.
 
+// /api/search/by-time's parser only understands natural-language phrases
+// ("last week", "last 2 weeks", "this month") and rejects the hyphenated
+// identifiers ("last-week", "last-2-weeks", "last-month") used throughout the
+// hook configs/queries, returning an unparseable-query error that
+// _performApiPost silently turns into []. Convert hyphens to spaces so the
+// server can parse it.
+function normalizeTimeQuery(timeQuery) {
+    if (!timeQuery) return timeQuery;
+    return timeQuery.replace(/-/g, ' ');
+}
+
 class MemoryClient {
     constructor(config) {
         this.config = config;
@@ -471,7 +482,7 @@ class MemoryClient {
      */
     async queryMemoriesByTimeHTTP(timeQuery, limit = 10, semanticQuery = null) {
         const payload = {
-            query: timeQuery,
+            query: normalizeTimeQuery(timeQuery),
             n_results: limit
         };
 

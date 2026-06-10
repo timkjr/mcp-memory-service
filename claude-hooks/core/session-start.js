@@ -933,7 +933,7 @@ async function executeSessionStart(context) {
                 );
                 if (criticalMemories && criticalMemories.length > 0) {
                     const deduped = criticalMemories.filter(m =>
-                        !allMemories.some(existing => existing.id === m.id || existing.hash === m.hash)
+                        !isDuplicateMemory(m, allMemories)
                     );
                     allMemories.push(...deduped.map(m => ({ ...m, _critical: true })));
                 }

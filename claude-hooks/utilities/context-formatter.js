@@ -1124,14 +1124,11 @@ function formatMemoriesForContext(memories, projectContext, options = {}) {
             const categories = groupMemoriesByCategory(validMemories.map(v => v.memory));
             
             const categoryTitles = {
-                gitContext: '### ⚡ Current Development (Git Context)',
-                recent: '### 🕒 Recent Work (Last Week)',
-                decisions: '### 🎯 Key Decisions',
-                architecture: '### 🏗️ Architecture & Design', 
-                insights: '### 💡 Insights & Learnings',
-                bugs: '### 🐛 Bug Fixes & Issues',
-                features: '### ✨ Features & Implementation',
-                other: '### 📝 Additional Context'
+                'recent-work': '### 🔥 Recent Work',
+                'current-problems': '### ⚠️ Current Problems',
+                'key-decisions': '### 🎯 Key Decisions',
+                'consolidated-memories': '### 📦 Consolidated Memories',
+                'additional-context': '### 📋 Additional Context'
             };
             
             let hasContent = false;
