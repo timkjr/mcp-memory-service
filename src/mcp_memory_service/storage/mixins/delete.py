@@ -4,7 +4,7 @@ import sqlite3
 import logging
 import time
 import traceback
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import List, Tuple, Optional
 
 from ...models.memory import Memory
@@ -250,8 +250,8 @@ class DeleteMixin:
             if not self.conn:
                 return 0, "Database not initialized"
 
-            start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-            end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
+            start_ts = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+            end_ts = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp()
 
             def _select_timeframe():
                 if tag:
@@ -293,7 +293,7 @@ class DeleteMixin:
             if not self.conn:
                 return 0, "Database not initialized"
 
-            before_ts = datetime.combine(before_date, datetime.min.time()).timestamp()
+            before_ts = datetime.combine(before_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
 
             def _select_before_date():
                 if tag:

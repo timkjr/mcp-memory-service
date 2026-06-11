@@ -1185,8 +1185,8 @@ class CloudflareStorage(MemoryStorage):
         """Delete memories within a specific date range."""
         try:
             # Convert dates to timestamps
-            start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-            end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
+            start_ts = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+            end_ts = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp()
 
             if tag:
                 # Delete with tag filter
@@ -1233,7 +1233,7 @@ class CloudflareStorage(MemoryStorage):
         """Delete memories created before a specific date."""
         try:
             # Convert date to timestamp
-            before_ts = datetime.combine(before_date, datetime.min.time()).timestamp()
+            before_ts = datetime.combine(before_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
 
             if tag:
                 # Delete with tag filter
