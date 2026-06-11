@@ -549,21 +549,17 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.74.1** (June 6, 2026)
+## Latest Release: **v10.74.2** (June 11, 2026)
 
-**Patch: OpenClaw harvest preamble noise filter (@filhocf)**
+**Patch: UTC-correct timeframe-delete date boundaries**
 
 **What's Fixed:**
-- `fix(harvest)`: reject OpenClaw gateway prompt preamble in `PatternExtractor` — "Sender (untrusted metadata): Conversation context:..." routing metadata no longer harvested as false-positive decisions (issue #43 fix 3, PR #46, @filhocf)
-
-**Includes everything from v10.74.0 (June 5, 2026):**
-- `refactor(dispatch)`: §13 — `server_impl.py` if/elif dispatch replaced by `TOOL_REGISTRY` + `ROUTING_TABLE`; `__getattr__` lazy delegation with `setattr` caching; 49 inline wrappers removed (PR #37, @filhocf)
-- `refactor(storage)`: §10 — `sqlite_vec.py` decomposed into 8 focused mixins under `storage/mixins/`; no public API changes (PR #42, @filhocf)
-- `fix(harvest)`: OpenClaw trajectory harvest deduplication + `role_filter` disabled for trajectory files (issue #43 fixes 1+2, PR #42, @filhocf)
+- `fix(storage)`: `delete_by_timeframe()` and `delete_before_date()` now build day boundaries with `tzinfo=timezone.utc` instead of naive local time, fixing silent misses near day boundaries on hosts west of UTC. Applied across `storage/mixins/delete.py`, `storage/cloudflare.py`, and `storage/milvus.py`, with the matching test fixture fixed in `tests/test_sqlite_vec_storage.py`
 
 ---
 
 **Previous Releases**:
+- **v10.74.1** - fix(harvest): OpenClaw prompt preamble noise filter (issue #43 fix 3, PR #46, @filhocf) (June 6, 2026)
 - **v10.74.0** - §13 declarative dispatch registry + §10 sqlite_vec mixin decomposition (both @filhocf) (June 5, 2026)
 - **v10.73.0** - §3 Consolidation Engine v2, §4 Bootstrap Profile, §5 Session Legacy, §6 Belief-Aware Quarantine, §9 Config Refactor (all @filhocf) (June 5, 2026)
 - **v10.72.0** - Milvus ranked-search parity, Schema Versioning migration registry + CLI, §2 Belief Store derivation pipeline (June 3, 2026)

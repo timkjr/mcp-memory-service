@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.74.2] - 2026-06-11
+
+### Fixed
+
+- fix(storage): use UTC midnight for timeframe-delete date boundaries — `delete_by_timeframe()` and `delete_before_date()` built day boundaries with `datetime.combine(date, time()).timestamp()`, which interprets the naive datetime as local time. Since `Memory.created_at` is a UTC epoch, this caused silent misses near day boundaries on hosts west of UTC. Fixed across `storage/mixins/delete.py`, `storage/cloudflare.py`, and `storage/milvus.py` by passing `tzinfo=timezone.utc` explicitly. Also fixes the matching naive-local-time bug in the `test_delete_by_timeframe_boundaries` test fixture (`tests/test_sqlite_vec_storage.py`)
+
 ## [10.74.1] - 2026-06-06
 
 ### Fixed
