@@ -1,10 +1,10 @@
 # /release — Full Release Cycle
 
-Execute the complete release workflow for mcp-memory-service by delegating to the `github-release-manager` agent.
+Execute the complete release workflow for mcp-memory-service by delegating to the `codeberg-release-manager` agent.
 
 ## What This Command Does
 
-Spawn the `github-release-manager` agent to handle the entire release lifecycle:
+Spawn the `codeberg-release-manager` agent to handle the entire release lifecycle:
 
 1. **Pre-Release**: List open PRs, merge approved ones, verify CI green on main
 2. **Version Bump**: Determine bump type (MAJOR/MINOR/PATCH) from PR labels, update `_version.py`, `pyproject.toml`, `README.md`, `uv.lock`
@@ -23,4 +23,4 @@ Spawn the `github-release-manager` agent to handle the entire release lifecycle:
 
 ## Invocation
 
-Spawn `github-release-manager` agent with context about what triggered the release (merged PRs, completed features, fixed issues).
+Spawn `codeberg-release-manager` agent with context about what triggered the release (merged PRs, completed features, fixed issues).

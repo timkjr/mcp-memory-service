@@ -92,7 +92,8 @@ async def _process_and_store_chunk(
     base_tags: List[str],
     context_tags: Dict[str, str],
     memory_type: str = "document",
-    extra_metadata: Optional[Dict[str, Any]] = None
+    extra_metadata: Optional[Dict[str, Any]] = None,
+    store: str = "default",
 ) -> Tuple[bool, Optional[str]]:
     """
     Process a document chunk and store it as a memory.
@@ -125,7 +126,7 @@ async def _process_and_store_chunk(
         )
 
         # Store the memory
-        success, error = await storage.store(memory)
+        success, error = await storage.store(memory, store=store)
         if not success:
             return False, f"{file_name} chunk {chunk.chunk_index}: {error}"
         return True, None

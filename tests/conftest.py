@@ -40,6 +40,38 @@ print(f"[Test Safety] Production databases are isolated and protected.")
 # Reserved tag for test memories - enables automatic cleanup
 TEST_MEMORY_TAG = "__test__"
 
+
+@pytest.fixture(autouse=True)
+def _disable_plugins(request, monkeypatch):
+    """Prevent external plugins from loading during tests (e.g. hostname-tag injection)."""
+    if 'enable_plugins' in [m.name for m in request.node.iter_markers()]:
+        yield
+        return
+    monkeypatch.setattr(
+        "mcp_memory_service.plugins.registry.PluginRegistry.discover_and_register",
+        lambda self: None,
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_caches():
+    """Reset embedding caches after each test for isolation."""
+    import mcp_memory_service.storage.mixins.embeddings as emb_mod
+    from mcp_memory_service.storage.mixins.embeddings import (
+        _MODEL_CACHE, _DIMENSION_CACHE, _EMBEDDING_CACHE
+    )
+    # SETUP: only reset warning flag (allow model reuse like main)
+    emb_mod._HASH_FALLBACK_WARNED = False
+    _EMBEDDING_CACHE.clear()
+    yield
+    # TEARDOWN: full cleanup (prevent ONNX/ST leak to next test)
+    _MODEL_CACHE.clear()
+    _DIMENSION_CACHE.clear()
+    _EMBEDDING_CACHE.clear()
+    emb_mod._HASH_FALLBACK_WARNED = False
+
+
 @pytest.fixture
 def temp_db_path():
     '''Create a temporary directory for database testing.'''

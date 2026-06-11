@@ -75,7 +75,10 @@ TAXONOMY: Final[Dict[str, List[str]]] = {
         "session",
         "document",
         "note",
-        "reference"
+        "reference",
+        "user_correction",
+        "tool_outcome",
+        "preference_signal",
     ],
     "decision": [
         "architecture",
@@ -188,6 +191,10 @@ RELATIONSHIPS: Final[Dict[str, Dict[str, List[str]]]] = {
     },
     "related": {
         "description": "A is related to B (generic association)",
+        "valid_patterns": ["any → any"]
+    },
+    "derived_from": {
+        "description": "Target was extracted or synthesized from source",
         "valid_patterns": ["any → any"]
     },
     "shares_entity": {

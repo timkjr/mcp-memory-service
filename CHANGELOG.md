@@ -10,6 +10,103 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [10.74.1] - 2026-06-06
+
+### Fixed
+
+- fix(harvest): reject OpenClaw prompt preamble noise in PatternExtractor — adds `_is_openclaw_preamble()` filter that inspects the first 200 chars for gateway markers ("Sender (untrusted metadata):", "Conversation context:", "(untrusted metadata):") and rejects the input before pattern matching. Eliminates false-positive harvest candidates caused by OpenClaw prepending metadata to user prompts. Fixes the third issue from #43 (PR #46, @filhocf)
+
+## [10.74.0] - 2026-06-05
+
+### Changed
+
+- refactor(dispatch): §13 — decompose monolithic if/elif tool dispatch in `server_impl.py` into a declarative `TOOL_REGISTRY` (in `tools/registry.py`) + `ROUTING_TABLE` (in `tools/routing.py`) lookup. Removes 49 inline `handle_*` wrapper methods; uses `__getattr__` lazy delegation via `_HANDLER_METHOD_MAP` with `setattr` caching for first-call performance. All 26 active tools registered including the 7 new tools from v10.73.0. 81 tests pass (+1427/-1407 across 7 files, PR #37, @filhocf)
+- refactor(storage): §10 — decompose monolithic 5800-line `storage/sqlite_vec.py` into 8 focused mixins under `storage/mixins/`: `BaseMixin`, `MigrationsMixin`, `EmbeddingsMixin`, `StoreMixin`, `RetrieveMixin`, `HybridMixin`, `DeleteMixin`, `MetadataMixin`. No public API changes. 265 tests pass (+5464/-5861 across 21 files, PR #42, @filhocf)
+
+### Fixed
+
+- fix(harvest): OpenClaw trajectory harvest fixes — file discovery deduplication prevents double-ingestion of trajectory files; `role_filter` disabled for trajectory files to avoid silently dropping assistant turns (issues from #43, merged via PR #42, @filhocf)
+
+## [10.73.0] - 2026-06-05
+
+### Added
+
+- feat(anti-hallucination): §6 belief-aware quarantine pipeline — new `consolidation/quarantine.py` (117 LOC) triggers quarantine when a memory contradicts active beliefs above CONTRADICTION_THRESHOLD. Two new MCP tools: `get_quarantined_memories` and `unquarantine_memory`. 290 LOC of new tests (RFC-1047 §6, PR #36, @filhocf)
+- feat(consolidation): §3 Consolidation Engine v2 — three new MCP tools: `memory_distill` (batch LLM rewriter for undistilled memories), `get_onboarding_guide`, and `commit_session_legacy`. Adds scheduled distill job (6h interval), `_consolidation_counter` post-store trigger, and harvest pipeline v2 (RFC-1047 §3, PR #39, @filhocf)
+- feat(bootstrap): §4 Bootstrap Profile + §5 Session Legacy — new `bootstrap/` package with Kiro/Claude/Generic formatters. Adds `get_bootstrap_profile` MCP tool. Confidence-weighted dedup (cosine threshold 0.70). Fixes deprecated `datetime.utcnow()` calls (RFC-1047 §4+§5, PR #40, @filhocf)
+
+### Changed
+
+- refactor(config): §9 — split monolithic 1327-line `config.py` into 12 domain modules (`base`, `backup`, `consolidation`, `documents`, `embedding`, `graph`, `oauth`, `ontology`, `quality`, `search`, `storage`, `transport`, `validation`) with full backward-compatible re-exports in `config/__init__.py`. 61 tests pass unchanged (PR #38, @filhocf)
+
+## [10.72.0] - 2026-06-03
+
+### Added
+
+- fix(milvus): support `mode="ranked"` and `ranking_weights` in `search_memories` — the Milvus backend was missing the ranked-mode contract introduced in v10.70.0. Every `memory_search` call on Milvus raised `TypeError: search_memories() got an unexpected keyword argument 'ranking_weights'`. The override now accepts `ranking_weights`, whitelists `ranked` mode, over-fetches 3x and applies the shared `apply_ranked_rerank` multi-signal reranker (semantic + time decay + access frequency + quality), reaching parity with the base/SQLite-Vec implementation (PR #32, @henry201605)
+- feat(schema-versioning): migration registry + CLI (#11) — checksum-verified migration registry, `check()` read-only safety probe, per-migration transactions, `_stamp_baseline()` for existing databases, and a `memory schema` CLI subcommand (`check`, `migrate`, `status`). Backward-compat `run_migrations_sync` wrapper preserved; `sqlite_vec.py` now routes all schema work through `runner.run_pending()` (RFC-1047 §6, PR #13, @filhocf)
+- feat(beliefs): §2 Belief Store — observation-to-belief derivation pipeline — new `belief` memory subtype, `belief.py` derivation engine (confidence scoring, contradiction detection, evidence linking), `belief_service.py` orchestrator, SQL migration `012_add_belief_store.sql`, and 417-test coverage in `tests/test_belief_store.py` (RFC-1047 §2, PR #33, @filhocf)
+
+## [10.71.0] - 2026-06-03
+
+First release published from Codeberg (Forgejo). It bundles the post-migration body of work: the §0/§1 memory-intelligence groundwork, the OpenClaw harvest parser, the §8 handler refactor, and the full Codeberg CI/CD + release tooling that replaces the retired GitHub Actions pipeline.
+
+### Added
+
+- feat(harvest): §0 harvest-quality pipeline — sentence-level extraction (captures the sentence(s) around a pattern match instead of the first 500 chars), an assistant-only role filter (user messages contribute conventions only), the confidence gate raised 0.6 → 0.75, and an optional multi-provider LLM rewriter (Groq/DeepSeek/Ollama, any OpenAI-compatible endpoint) that rewrites conversational text into standalone, timeless insights. Meta/temporal/generic noise filters are locale-aware via `harvest/patterns/{en,de,pt_BR}.yaml` (no project-specific strings in core); bootstrap dedup reuses the ONNX embedding singleton (RFC-1047 §0, Codeberg PR #2, @filhocf)
+- feat(ontology): §1 Observation Store — new `observation` subtypes (`user_correction`, `tool_outcome`, `preference_signal`) with `derived_from` preserved, so harvested signals classify into meaningful buckets instead of a generic catch-all (RFC-1047 §1, Codeberg PR #3, @filhocf)
+- feat(harvest): OpenClaw trajectory parser plus refreshed pt_BR v2 locale patterns — harvest now ingests OpenClaw session trajectories and recognises Brazilian-Portuguese decision/bug/convention cues (Codeberg PR #20, @filhocf)
+
+### Changed
+
+- ci(codeberg): add Forgejo Actions pipelines for the Codeberg mirror — `.forgejo/workflows/release.yml` (test → PyPI main+lite via API token → Docker Hub: full `amd64` + slim multi-arch `amd64`/`arm64`) and `cleanup-images.yml` (version-aware Docker Hub tag retention, ported from the GHCR cleanup). Both run on a self-hosted `forgejo-runner`, resolve actions via Codeberg's mirror, and use raw `docker buildx` so the release path is independent of GitHub Actions / PyPI OIDC (Codeberg PRs #12, #16, #17)
+- ci(codeberg): completed the GitHub→Codeberg CI/CD migration — removed the 21 leftover `.github/workflows/*.yml` (GitHub-only; `runs-on: ubuntu-latest` never matched the self-hosted Forgejo runner and left permanent "pending" phantom checks on PRs), scoped the Forgejo test job to a deterministic subset with report-only coverage, and archived the old workflows at git tag `archive/github-workflows-pre-codeberg` in case the project ever returns to GitHub (Codeberg PRs #14, #23, #25, #26)
+- refactor: extract inline MCP handlers out of `server_impl.py` into `server/handlers/*` for the §8 structural-improvements track — smaller, testable handler modules with no behavioral change (RFC #7 §8, Codeberg PR #15, @filhocf)
+- chore(agents): replace the GitHub-bound `github-release-manager` with a Forgejo-native `codeberg-release-manager` (Forgejo REST API, token from `.env`, never `gh`; Forgejo releases; PyPI/Docker publish via `.forgejo/workflows/release.yml`). The old agent is kept as a deprecated historical reference (Codeberg PRs #28, #29)
+- docs: multilingual embedding model selection + re-embedding guide (Codeberg PR #22)
+
+### Fixed
+
+- fix(milvus): support `mode="ranked"` and the `ranking_weights` parameter in the Milvus backend. The ranked search feature (v10.70.0, #1028) extended the `MemoryStorage.search_memories` base signature and the MCP tool handler now always forwards `ranking_weights=...`, but the Milvus override was never updated — so every `memory_search` call on a Milvus backend raised `TypeError: search_memories() got an unexpected keyword argument 'ranking_weights'`. The override now accepts `ranking_weights`, whitelists `ranked` mode, over-fetches 3× and applies the shared `apply_ranked_rerank` multi-signal reranker (semantic + time decay + access frequency + quality), keeping parity with the base/sqlite-vec implementation
+- fix(mistake-notes): reject empty/whitespace-only `correct_action` in `mistake_note_add` and `mistake_note_update`. JSON-schema `required` enforces presence, not non-emptiness, so a blank `correct_action` previously passed validation and stored a mistake note with an error pattern but no remediation. Both add and update now return a clear validation error instead (issue #1055, PR #1057, @Aigen-Protocol)
+
+## [10.70.3] - 2026-05-29
+
+### Fixed
+
+- fix(ci): multi-arch-safe GHCR cleanup — replace `actions/delete-package-versions` with `dataaxiom/ghcr-cleanup-action` and remove the `workflow_run`-after-release trigger. The old cleanup deleted per-platform manifests (untagged children of the multi-arch index) minutes after each publish, causing `docker pull` 404s for all multi-arch tags since v10.66. This release re-publishes fresh platform manifests that now survive cleanup (issue #1044, diagnosis by @jonatanbellido) (PR #1052)
+
+## [10.70.2] - 2026-05-29
+
+### Fixed
+
+- fix(security): wrap log f-strings in `storage/graph.py` with `_sanitize_log_value()` — resolves CodeQL `py/log-injection` alerts #483–#486 (`source_hash`, `target_hash`, `relationship_type`); alert #467 (`py/unused-global-variable` for `MCP_AUTO_EXTRACT_DEFAULT`) dismissed as false positive — imported via lazy cross-module import in `server/handlers/memory.py` (PR #1048)
+
+## [10.70.1] - 2026-05-29
+
+### Added
+
+- feat(auto-capture): `memory_observe`, `auto_extract`, and harvest pipeline — passive background capture, intent-driven extraction, and batch harvest ingestion (RFC #1008 §3, closes #1032, PR #1047, @filhocf)
+
+### Fixed
+
+- fix(ci): remove GHA build cache from `publish-docker` step — cache hits caused buildx to push only the index manifest while skipping platform layer uploads to GHCR, resulting in 404 on `docker pull` for all multi-arch tags since v10.66 (issue #1044, @jonatanbellido)
+
+## [10.70.0] - 2026-05-29
+
+### Added
+
+- feat(search): multi-signal ranked search mode (`mode="ranked"`) combining semantic similarity, time decay, access frequency, and quality scores via configurable weights; tag/time filtering delegated to shared post-retrieve tail with 5× oversample when filters active (RFC #1008 §2, closes #1028, PR #1046, @filhocf)
+
+### Fixed
+
+- fix(ci): update `docs/index.html` version badge to v10.69.0 — resolves version-drift-check CI failure
+- fix(security): dismiss 9 CodeQL `py/path-injection` false positives via API — paths are user-specified by design in authenticated MCP tool calls; remove unused `import tempfile` from `handlers/documents.py`
+
+### Changed
+
+- docs(claude): clarify landing page update is MANDATORY on every MINOR/MAJOR release — version-drift-check CI gate enforces it
+
 ## [10.69.0] - 2026-05-28
 
 ### Added

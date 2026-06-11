@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import List
 from .models import HarvestCandidate, HarvestConfig, HarvestResult
 from .parser import TranscriptParser
 from .extractor import PatternExtractor
+from .patterns import load_filters
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +23,21 @@ class SessionHarvester:
     def __init__(self, project_dir: Path, memory_service=None):
         self.project_dir = Path(project_dir)
         self.memory_service = memory_service
+        self._memory_service = memory_service
         self.parser = TranscriptParser()
         self.extractor = PatternExtractor()
         self._classifier = None
+
+        # Load filters from locale YAMLs
+        locale = os.environ.get("HARVEST_LOCALE", "en")
+        filters = load_filters(locale)
+        self._meta_keywords = filters["meta_keywords"]
+        self._temporal_re = re.compile(
+            "|".join(filters["temporal_filters"]), re.IGNORECASE
+        ) if filters["temporal_filters"] else None
+        self._generic_re = re.compile(
+            "|".join(filters["generic_filters"]), re.IGNORECASE
+        ) if filters["generic_filters"] else None
 
     def _get_classifier(self):
         """Lazy-init LLM classifier."""
@@ -30,6 +45,75 @@ class SessionHarvester:
             from .classifier import HarvestClassifier
             self._classifier = HarvestClassifier()
         return self._classifier
+
+    def _get_rewriter(self):
+        """Lazy-init LLM rewriter. Returns None if not configured."""
+        if not hasattr(self, '_rewriter'):
+            try:
+                from .rewriter import HarvestRewriter
+                self._rewriter = HarvestRewriter()
+                # Check if API key is available
+                if not self._rewriter._api_key:
+                    self._rewriter = None
+            except Exception:
+                self._rewriter = None
+        return self._rewriter
+
+    _META_KEYWORDS = []  # loaded from YAML at init
+    _TEMPORAL_RE = None
+    _GENERIC_RE = None
+
+    def _is_meta_or_temporal(self, text: str) -> bool:
+        """Reject meta-discussion, temporal facts, and generic statements."""
+        lower = text.lower()
+        if any(kw in lower for kw in self._meta_keywords):
+            return True
+        if self._temporal_re and self._temporal_re.search(text):
+            return True
+        if self._generic_re and self._generic_re.search(text):
+            return True
+        return False
+
+    def _consolidate_similar(self, candidates: List[HarvestCandidate], threshold: float = 0.35) -> List[HarvestCandidate]:
+        """Consolidate similar candidates, keeping the most complete one per cluster."""
+        if len(candidates) <= 1:
+            return candidates
+
+        def _jaccard(a: str, b: str) -> float:
+            wa = set(a.lower().split())
+            wb = set(b.lower().split())
+            if not wa or not wb:
+                return 0.0
+            return len(wa & wb) / len(wa | wb)
+
+        kept: List[HarvestCandidate] = []
+        used = set()
+        sorted_cands = sorted(enumerate(candidates), key=lambda x: -len(x[1].content))
+
+        for i, cand in sorted_cands:
+            if i in used:
+                continue
+            for j, other in sorted_cands:
+                if j != i and j not in used and _jaccard(cand.content, other.content) > threshold:
+                    used.add(j)
+            kept.append(cand)
+            used.add(i)
+
+        return kept
+
+    async def _is_duplicate_of_existing(self, content: str) -> bool:
+        """Check if content is semantically similar to existing memories."""
+        if not self._memory_service:
+            return False
+        try:
+            results = await self._memory_service.search(query=content, limit=1)
+            if results and len(results) > 0:
+                top = results[0]
+                similarity = top.get("similarity", top.get("score", 0))
+                return similarity > 0.85
+        except Exception:
+            pass
+        return False
 
     def harvest(self, config: HarvestConfig) -> List[HarvestResult]:
         """Parse sessions and extract candidates (synchronous, no storage)."""
@@ -145,9 +229,13 @@ class SessionHarvester:
         messages = self.parser.parse_file(filepath)
         session_id = filepath.stem
 
+        # OpenClaw trajectories: disable role_filter (context.compiled already
+        # filtered by parser; both user and assistant messages have value)
+        use_role_filter = ".trajectory." not in filepath.name
+
         all_candidates: List[HarvestCandidate] = []
         for msg in messages:
-            candidates = self.extractor.extract(msg)
+            candidates = self.extractor.extract(msg, role_filter=use_role_filter)
             all_candidates.extend(candidates)
 
         # Apply regex-level filters
@@ -157,16 +245,56 @@ class SessionHarvester:
             and c.memory_type in config.types
         ]
 
-        # Phase 2: LLM classification
+        # Phase 2: LLM rewrite (preferred) or classification (legacy)
         if config.use_llm and filtered:
-            context_texts = [m.text for m in messages]
-            classifier = self._get_classifier()
-            before_count = len(filtered)
-            filtered = classifier.classify(filtered, context_messages=context_texts)
-            logger.info(
-                f"LLM classification: {before_count} → {len(filtered)} candidates "
-                f"({before_count - len(filtered)} rejected)"
-            )
+            rewriter = self._get_rewriter()
+            if rewriter:
+                rewritten = []
+                accepted_so_far = []  # Passo 2: contexto acumulado
+                for candidate in filtered:
+                    result = rewriter.rewrite_sync(
+                        candidate.content,
+                        suggested_type=candidate.memory_type,
+                        already_extracted=accepted_so_far if accepted_so_far else None,
+                    )
+                    if result:
+                        rewritten.append(HarvestCandidate(
+                            content=result.content,
+                            memory_type=result.memory_type,
+                            tags=candidate.tags,
+                            confidence=min(candidate.confidence + 0.1, 1.0),
+                            source_line=candidate.source_line,
+                        ))
+                        accepted_so_far.append(result.content[:80])
+                logger.info(
+                    f"LLM rewrite: {len(filtered)} → {len(rewritten)} candidates "
+                    f"({len(filtered) - len(rewritten)} skipped)"
+                )
+                # Post-LLM filter: reject meta-discussion and temporal facts
+                filtered = [c for c in rewritten if not self._is_meta_or_temporal(c.content)]
+                if len(filtered) < len(rewritten):
+                    logger.info(
+                        f"Post-LLM filter: {len(rewritten)} → {len(filtered)} "
+                        f"({len(rewritten) - len(filtered)} meta/temporal rejected)"
+                    )
+                # Passo 3: consolidate similar candidates
+                before_consolidate = len(filtered)
+                filtered = self._consolidate_similar(filtered)
+                if len(filtered) < before_consolidate:
+                    logger.info(
+                        f"Consolidation: {before_consolidate} → {len(filtered)} "
+                        f"({before_consolidate - len(filtered)} duplicates merged)"
+                    )
+            else:
+                # Fallback to legacy classifier
+                context_texts = [m.text for m in messages]
+                classifier = self._get_classifier()
+                before_count = len(filtered)
+                filtered = classifier.classify(filtered, context_messages=context_texts)
+                logger.info(
+                    f"LLM classification: {before_count} → {len(filtered)} candidates "
+                    f"({before_count - len(filtered)} rejected)"
+                )
 
         by_type = dict(Counter(c.memory_type for c in filtered))
 

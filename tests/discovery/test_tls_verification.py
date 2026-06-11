@@ -83,7 +83,7 @@ class TestConfigDefaults:
         # Also verify the config source code has the correct default
         from pathlib import Path
         config_path = Path(__file__).parent.parent.parent / \
-            "src" / "mcp_memory_service" / "config.py"
+            "src" / "mcp_memory_service" / "config" / "transport.py"
         source = config_path.read_text()
         assert "os.getenv('MCP_PEER_VERIFY_SSL', 'true')" in source
 

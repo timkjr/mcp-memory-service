@@ -421,7 +421,8 @@ class MemoryStorage(ABC):
         tag_match: str = "any",
         before: Optional[str] = None,
         after: Optional[str] = None,
-        dry_run: bool = False
+        dry_run: bool = False,
+        store: Optional[str] = "default",
     ) -> Dict[str, Any]:
         """
         Unified memory deletion with flexible filtering.
@@ -829,6 +830,7 @@ class MemoryStorage(ABC):
         tag_match: str = "any",
         stale_days: Optional[int] = None,
         include_embeddings: bool = False,
+        store: Optional[str] = "default",
     ) -> List[Memory]:
         """
         Get all memories in storage ordered by creation time (newest first).
@@ -853,7 +855,7 @@ class MemoryStorage(ABC):
         """
         return []
     
-    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, tag_match: str = "any", stale_days: Optional[int] = None) -> int:
+    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, tag_match: str = "any", stale_days: Optional[int] = None, store: Optional[str] = "default") -> int:
         """
         Get total count of memories in storage.
 
@@ -1000,7 +1002,9 @@ class MemoryStorage(ABC):
         quality_boost: float = 0.0,
         limit: int = 10,
         include_debug: bool = False,
-        include_superseded: bool = False
+        include_superseded: bool = False,
+        ranking_weights: Optional[Dict[str, float]] = None,
+        store: Optional[str] = "default",
     ) -> Dict[str, Any]:
         """
         Unified memory search with flexible modes and filters.
@@ -1032,6 +1036,7 @@ class MemoryStorage(ABC):
             - semantic: Vector similarity search (default) - finds conceptually similar content
             - exact: Case-insensitive substring match - finds memories where content contains the query string
             - hybrid: Semantic search with quality-based reranking
+            - ranked: Semantic search with multi-signal reranking (time decay + access frequency + quality)
 
         Time Filters:
             - time_expr: Natural language like "yesterday", "last week", "2 days ago", "last month"
@@ -1083,13 +1088,13 @@ class MemoryStorage(ABC):
         """
         try:
             # Validate mode
-            if mode not in ("semantic", "exact", "hybrid"):
+            if mode not in ("semantic", "exact", "hybrid", "ranked"):
                 return {
                     "memories": [],
                     "total": 0,
                     "query": query,
                     "mode": mode,
-                    "error": f"Invalid mode: {mode}. Must be 'semantic', 'exact', or 'hybrid'"
+                    "error": f"Invalid mode: {mode}. Must be 'semantic', 'exact', 'hybrid', or 'ranked'"
                 }
 
             # Validate quality_boost
@@ -1157,7 +1162,32 @@ class MemoryStorage(ABC):
             # Perform search based on mode
             results = []
 
-            if mode == "exact":
+            if mode == "ranked":
+                # Multi-signal ranked search — feeds into shared post-filter tail
+                if not query:
+                    return {
+                        "memories": [],
+                        "total": 0,
+                        "query": query,
+                        "mode": mode,
+                        "error": "query required for ranked mode"
+                    }
+                from ..reasoning.ranked_search import apply_ranked_rerank, RankedSearchWeights
+                # Over-fetch without pre-filtering: the shared tail applies
+                # tag_match and time filters uniformly (fixes #1028 review).
+                oversample = limit * 5 if (tags or start_time or end_time) else limit * 3
+                candidates = await self.retrieve(
+                    query, n_results=oversample,
+                    include_superseded=include_superseded,
+                    store=store,
+                )
+                if candidates:
+                    weights = RankedSearchWeights.from_dict(ranking_weights)
+                    candidates = apply_ranked_rerank(candidates, weights=weights)
+                results = candidates
+                pre_filter_count = len(results)
+
+            elif mode == "exact":
                 # Exact string match
                 if not query:
                     return {
@@ -1222,7 +1252,7 @@ class MemoryStorage(ABC):
                                     include_superseded=include_superseded
                                 )
                             else:
-                                results = await self.retrieve(query, n_results=fetch_limit, tags=tags, include_superseded=include_superseded, start_time=start_time, end_time=end_time)
+                                results = await self.retrieve(query, n_results=fetch_limit, tags=tags, include_superseded=include_superseded, start_time=start_time, end_time=end_time, store=store)
                     elif quality_boost > 0:
                         # Use quality-boosted retrieval
                         results = await self.retrieve_with_quality_boost(
@@ -1235,7 +1265,7 @@ class MemoryStorage(ABC):
                         )
                     else:
                         # Standard semantic search
-                        results = await self.retrieve(query, n_results=fetch_limit, tags=tags, include_superseded=include_superseded, start_time=start_time, end_time=end_time)
+                        results = await self.retrieve(query, n_results=fetch_limit, tags=tags, include_superseded=include_superseded, start_time=start_time, end_time=end_time, store=store)
 
                     pre_filter_count = len(results)
                 else:

@@ -297,9 +297,9 @@ git reset --hard HEAD~1
 
 ## Integration with Other Agents
 
-**Relationship to github-release-manager**:
+**Relationship to codeberg-release-manager**:
 - Independent operation (no direct dependency)
-- Can be triggered after `github-release-manager` creates multiple releases
+- Can be triggered after `codeberg-release-manager` creates multiple releases
 - Should commit changes separately from release commits
 - Does not affect version numbering or release workflow
 

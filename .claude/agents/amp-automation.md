@@ -81,7 +81,7 @@ bash scripts/pr/amp_collect_results.sh --timeout 300    # Collect parallel resul
 
 ## Integration
 
-### With github-release-manager
+### With codeberg-release-manager
 - Amp runs pre-PR quality gate → agent creates PR
 
 ### With gemini-pr-automator
@@ -91,7 +91,7 @@ bash scripts/pr/amp_collect_results.sh --timeout 300    # Collect parallel resul
 Before reporting MERGE_READY:
 1. Fetch ALL open review comments (`gh api .../pulls/PR/reviews` + `.../pulls/PR/comments`)
 2. Apply fixes or explicitly reject with justification
-3. Report MERGE_READY or BLOCKED — github-release-manager treats BLOCKED as hard stop
+3. Report MERGE_READY or BLOCKED — codeberg-release-manager treats BLOCKED as hard stop
 
 **Incident (v10.23.0)**: Quality checks ran but inline review comments were not fetched/addressed. Three valid issues had to be fixed post-release.
 

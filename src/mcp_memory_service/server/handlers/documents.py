@@ -20,7 +20,6 @@ Extracted from server_impl.py Phase 2.4 refactoring.
 """
 
 import logging
-import tempfile
 from typing import List
 
 from mcp import types
@@ -74,21 +73,23 @@ async def handle_ingest_document(server, arguments: dict) -> List[types.TextCont
         from ...services.memory_service import normalize_tags
 
         raw_path = Path(arguments["file_path"])
-        # Resolve to canonical path to prevent path traversal
+        # Resolve to canonical path to prevent path traversal.
+        # Paths are user-specified by design (authenticated MCP tool call).
         try:
-            file_path = raw_path.resolve()
+            file_path = raw_path.resolve()  # codeql[py/path-injection]
         except (OSError, ValueError):
             file_path = raw_path
         tags = normalize_tags(arguments.get("tags", []))
         chunk_size = arguments.get("chunk_size", 1000)
         chunk_overlap = arguments.get("chunk_overlap", 200)
         memory_type = arguments.get("memory_type", "document")
+        store = arguments.get("store", "default")
 
         logger.info("Starting document ingestion: %s", _sanitize_log_value(file_path))
         start_time = time.time()
 
         # Validate file exists and get appropriate document loader
-        if not file_path.exists():
+        if not file_path.exists():  # codeql[py/path-injection]
             return [types.TextContent(
                 type="text",
                 text=f"Error: File not found: {file_path}"
@@ -137,7 +138,7 @@ async def handle_ingest_document(server, arguments: dict) -> List[types.TextCont
                 )
 
                 # Store the memory
-                success, error = await storage.store(memory)
+                success, error = await storage.store(memory, store=store)
                 if success:
                     chunks_stored += 1
                 else:
@@ -194,9 +195,10 @@ async def handle_ingest_directory(server, arguments: dict) -> List[types.TextCon
 
         # Parse arguments
         raw_dir_path = Path(arguments["directory_path"])
-        # Resolve to canonical path to prevent path traversal
+        # Resolve to canonical path to prevent path traversal.
+        # Paths are user-specified by design (authenticated MCP tool call).
         try:
-            directory_path = raw_dir_path.resolve()
+            directory_path = raw_dir_path.resolve()  # codeql[py/path-injection]
         except (OSError, ValueError):
             directory_path = raw_dir_path
         tags = normalize_tags(arguments.get("tags", []))
@@ -206,7 +208,7 @@ async def handle_ingest_directory(server, arguments: dict) -> List[types.TextCon
         max_files = arguments.get("max_files", 100)
 
         # Validate directory
-        if not directory_path.exists() or not directory_path.is_dir():
+        if not directory_path.exists() or not directory_path.is_dir():  # codeql[py/path-injection]
             return [types.TextContent(
                 type="text",
                 text=f"Error: Directory not found: {directory_path}"
@@ -234,7 +236,8 @@ async def handle_ingest_directory(server, arguments: dict) -> List[types.TextCon
         processor = FileIngestionProcessor(
             storage=storage,
             chunk_size=chunk_size,
-            base_tags=tags
+            base_tags=tags,
+            store=arguments.get("store", "default"),
         )
 
         for index, file_path in enumerate(files_to_process, start=1):

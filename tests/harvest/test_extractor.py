@@ -29,7 +29,7 @@ class TestPatternExtractor:
 
     def test_extract_learning(self, extractor):
         msg = ParsedMessage(role="user", text="I learned that ONNX models need warmup on first inference to avoid latency spikes.")
-        candidates = extractor.extract(msg)
+        candidates = extractor.extract(msg, min_confidence=0.6)
         types = [c.memory_type for c in candidates]
         assert "learning" in types
 

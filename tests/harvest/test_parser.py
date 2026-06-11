@@ -29,7 +29,7 @@ class TestHarvestModels:
 
     def test_config_defaults(self):
         cfg = HarvestConfig()
-        assert cfg.min_confidence == 0.6
+        assert cfg.min_confidence == 0.75
         assert cfg.dry_run is True
         assert "decision" in cfg.types
 

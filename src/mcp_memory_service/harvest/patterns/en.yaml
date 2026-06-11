@@ -39,3 +39,27 @@ patterns:
       confidence: 0.6
     - pattern: '\b(?:next steps?|todo|remaining work|blocked on)\b'
       confidence: 0.6
+
+meta_keywords:
+  - patternextractor
+  - harvester
+  - harvest pipeline
+  - rewriter
+  - bootstrap profile
+  - consolidator
+  - memory service
+  - memory-service
+  - extractor
+  - autodream
+  - autolearn
+  - meta-filter
+  - bootstrap_utils
+  - threshold
+
+temporal_filters:
+  - pattern: 'waiting\s+for\s+(review|action|response|merge)'
+  - pattern: 'pending\s+review'
+  - pattern: 'PR[s]?\s*#\d+'
+
+generic_filters:
+  - pattern: '^it\s+is\s+(important|necessary|essential)\s+'

@@ -1,6 +1,6 @@
 # Version Management - Release Workflow
 
-## ⚠️ CRITICAL: Always Use github-release-manager Agent
+## ⚠️ CRITICAL: Always Use codeberg-release-manager Agent
 
 **NEVER do manual releases** (major, minor, patch, or hotfixes). Manual workflows miss steps and are error-prone.
 
@@ -65,7 +65,7 @@ Branch protection configured to allow admin bypass:
 ## Hotfix Workflow (Critical Bugs)
 
 - **Speed target**: 8-10 minutes from bug report to release
-- **Process**: Fix → Test → Five-file bump → Commit → github-release-manager agent
+- **Process**: Fix → Test → Five-file bump → Commit → codeberg-release-manager agent
 - **Branch**: Can go directly to release branch if urgent
 - **Issue management**: Post detailed root cause analysis
 
@@ -85,4 +85,4 @@ Branch protection configured to allow admin bypass:
 - CHANGELOG properly formatted
 - Dashboard version correct
 
-**Lesson**: Always use github-release-manager agent, even for "simple" hotfixes. The five-file version bump is error-prone when done manually.
+**Lesson**: Always use codeberg-release-manager agent, even for "simple" hotfixes. The five-file version bump is error-prone when done manually.

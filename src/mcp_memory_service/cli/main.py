@@ -206,6 +206,117 @@ def status(storage_backend):
     asyncio.run(show_status())
 
 
+# ─── Schema migration commands ────────────────────────────────────────────────
+
+def _resolve_db_path():
+    """Resolve the SQLite database path from environment/defaults."""
+    for env_var in ['MCP_MEMORY_SQLITE_PATH', 'MCP_MEMORY_SQLITEVEC_PATH']:
+        if path := os.environ.get(env_var):
+            return path
+    home = os.path.expanduser("~")
+    if sys.platform == 'darwin':
+        base = os.path.join(home, 'Library', 'Application Support', 'mcp-memory')
+    elif sys.platform == 'win32':
+        base = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'mcp-memory')
+    else:
+        base = os.path.join(home, '.local', 'share', 'mcp-memory')
+    return os.path.join(base, 'sqlite_vec.db')
+
+
+@cli.command("check-db")
+@click.option('--db-path', default=None, help='Path to SQLite database (auto-detected if omitted)')
+def check_db(db_path):
+    """Check schema version and pending migrations (read-only)."""
+    import sqlite3
+    from pathlib import Path
+    from ..storage.migration_runner import MigrationRunner
+
+    db_path = db_path or _resolve_db_path()
+    if not os.path.exists(db_path):
+        click.echo(f"❌ Database not found: {db_path}", err=True)
+        sys.exit(1)
+
+    migrations_dir = Path(__file__).parent.parent / "storage" / "migrations"
+    runner = MigrationRunner(migrations_dir)
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        result = runner.check(conn)
+        conn.close()
+    except sqlite3.OperationalError as e:
+        click.echo(f"❌ Cannot open database: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"📋 Schema Check: {db_path}\n")
+    click.echo(f"   Current version: {result['current_version']}")
+    click.echo(f"   Applied migrations: {len(result['registry'])}")
+    click.echo(f"   Pending migrations: {len(result['pending'])}")
+
+    if result['pending']:
+        click.echo("\n   Pending:")
+        for m in result['pending']:
+            click.echo(f"     - {m['version']:03d}_{m['name']}")
+
+    if result['checksum_mismatches']:
+        click.echo("\n   ⚠️  Checksum mismatches (files changed after apply):")
+        for m in result['checksum_mismatches']:
+            click.echo(f"     - {m['filename']}")
+
+    if result['healthy']:
+        click.echo("\n✅ Schema is healthy and up-to-date")
+        sys.exit(0)
+    else:
+        click.echo("\n⚠️  Schema needs attention (run 'memory migrate' to apply)")
+        sys.exit(1)
+
+
+@cli.command("migrate")
+@click.option('--db-path', default=None, help='Path to SQLite database (auto-detected if omitted)')
+@click.option('--dry-run', is_flag=True, help='Show what would be applied without executing')
+def migrate(db_path, dry_run):
+    """Apply pending schema migrations."""
+    import sqlite3
+    from pathlib import Path
+    from ..storage.migration_runner import MigrationRunner
+
+    db_path = db_path or _resolve_db_path()
+    if not os.path.exists(db_path):
+        click.echo(f"❌ Database not found: {db_path}", err=True)
+        sys.exit(1)
+
+    migrations_dir = Path(__file__).parent.parent / "storage" / "migrations"
+    runner = MigrationRunner(migrations_dir)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        result = runner.run_pending(conn, dry_run=dry_run)
+        conn.close()
+    except sqlite3.OperationalError as e:
+        click.echo(f"❌ Cannot open database: {e}", err=True)
+        sys.exit(1)
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo(f"🔄 {prefix}Migration: {db_path}\n")
+
+    if result['applied']:
+        click.echo(f"   {prefix}Applied:")
+        for m in result['applied']:
+            click.echo(f"     ✓ {m['version']:03d}_{m['name']}")
+    else:
+        click.echo("   No pending migrations.")
+
+    if result['skipped']:
+        click.echo(f"   Skipped (already applied): {len(result['skipped'])}")
+
+    if result['error']:
+        click.echo(f"\n❌ Error: {result['error']}", err=True)
+        sys.exit(1)
+    else:
+        click.echo(f"\n✅ {prefix}Schema is up-to-date")
+        sys.exit(0)
+
+
 # ─── Lifecycle management commands (fast — no ML imports) ─────────────────────
 
 @cli.command()

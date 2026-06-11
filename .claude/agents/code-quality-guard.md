@@ -336,7 +336,7 @@ git commit -m "chore: update TODO tracker"
 
 ## Integration with Other Agents
 
-**With github-release-manager**:
+**With codeberg-release-manager**:
 - Run code quality checks before version bumps
 - Include TODO count in release notes if significant
 - Block releases if critical security issues found

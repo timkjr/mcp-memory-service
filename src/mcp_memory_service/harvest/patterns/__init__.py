@@ -84,6 +84,56 @@ def _parse_yaml_patterns(filepath: Path) -> PatternDict:
     return result
 
 
+def load_filters(locales: str = "en") -> dict:
+    """Load meta_keywords, temporal_filters, and generic_filters from locale YAMLs.
+
+    Returns:
+        Dict with keys 'meta_keywords' (list[str]), 'temporal_filters' (list[str]),
+        'generic_filters' (list[str]) — each filter is a regex pattern string.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {"meta_keywords": [], "temporal_filters": [], "generic_filters": []}
+
+    if isinstance(locales, str):
+        locale_list = [loc.strip() for loc in locales.split(",") if loc.strip()]
+    else:
+        locale_list = [str(loc).strip() for loc in locales if loc]
+    if not locale_list:
+        locale_list = ["en"]
+
+    meta_keywords: list = []
+    temporal_filters: list = []
+    generic_filters: list = []
+
+    for locale in locale_list:
+        filepath = PATTERNS_DIR / f"{locale}.yaml"
+        if not filepath.exists():
+            continue
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not data:
+            continue
+        for kw in data.get("meta_keywords", []):
+            if kw not in meta_keywords:
+                meta_keywords.append(kw)
+        for entry in data.get("temporal_filters", []):
+            pat = entry.get("pattern") if isinstance(entry, dict) else entry
+            if pat and pat not in temporal_filters:
+                temporal_filters.append(pat)
+        for entry in data.get("generic_filters", []):
+            pat = entry.get("pattern") if isinstance(entry, dict) else entry
+            if pat and pat not in generic_filters:
+                generic_filters.append(pat)
+
+    return {
+        "meta_keywords": meta_keywords,
+        "temporal_filters": temporal_filters,
+        "generic_filters": generic_filters,
+    }
+
+
 def _parse_yaml_simple(filepath: Path) -> PatternDict:
     """Minimal YAML parser for pattern files (no PyYAML dependency)."""
     result: PatternDict = {}

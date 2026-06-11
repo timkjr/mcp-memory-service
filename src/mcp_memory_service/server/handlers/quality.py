@@ -618,3 +618,50 @@ async def handle_maintain(server, arguments: dict) -> List[types.TextContent]:
 
     _last_maintain_run = report
     return [types.TextContent(type="text", text=json.dumps(report, indent=2, default=str))]
+
+
+# =============================================================================
+# Conflict Detection & Resolution Handlers
+# =============================================================================
+
+
+async def handle_memory_conflicts(server, arguments: dict) -> List[types.TextContent]:
+    """List unresolved memory conflicts."""
+    await server._ensure_storage_initialized()
+    conflicts = await server.storage.get_conflicts()
+    if not conflicts:
+        return [types.TextContent(type="text", text="No unresolved conflicts found.")]
+
+    lines = [f"Found {len(conflicts)} conflict(s):\n"]
+    for c in conflicts:
+        lines.append(f"- {c['hash_a'][:12]} vs {c['hash_b'][:12]} "
+                     f"(similarity: {c['similarity']:.2f}, divergence: {c.get('divergence', '?')})")
+        lines.append(f"  A: {c['content_a'][:100]}")
+        lines.append(f"  B: {c['content_b'][:100]}")
+    return [types.TextContent(type="text", text="\n".join(lines))]
+
+
+async def handle_memory_resolve(server, arguments: dict) -> List[types.TextContent]:
+    """Resolve a memory conflict. Accepts single pair or batch (hashes list)."""
+    await server._ensure_storage_initialized()
+
+    # Batch mode: list of {winner_hash, loser_hash} dicts
+    hashes = arguments.get("hashes")
+    if hashes and isinstance(hashes, list):
+        results = []
+        for pair in hashes:
+            w = pair.get("winner_hash", "")
+            l = pair.get("loser_hash", "")
+            if w and l:
+                ok, msg = await server.storage.resolve_conflict(w, l)
+                results.append(msg)
+        return [types.TextContent(type="text", text=f"Resolved {len(results)} conflict(s):\n" + "\n".join(results))]
+
+    # Single mode (backward compat)
+    winner = arguments.get("winner_hash", "")
+    loser = arguments.get("loser_hash", "")
+    if not winner or not loser:
+        return [types.TextContent(type="text", text="Error: winner_hash and loser_hash required (or pass hashes list for batch)")]
+
+    ok, msg = await server.storage.resolve_conflict(winner, loser)
+    return [types.TextContent(type="text", text=msg)]

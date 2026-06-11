@@ -34,6 +34,15 @@ context in 5ms — without cloud lock-in or API costs.
 
 ---
 
+## 📰 In the Media
+
+**[Agents Overdrawn at the Memory Bank](https://www.linkedin.com/pulse/humans-loop-deep-dive-agents-overdrawn-rbrcc/)** — Heavybit's *Humans in the Loop* deep dive talks to maintainer Heinrich Krupp about agent amnesia, why persistent memory is the missing infrastructure layer for agentic systems, and how mcp-memory-service closes the gap with local vector storage, ONNX embeddings, and typed knowledge graphs.
+
+> "Your project has inspired me in many ways. In my view, it's the best implementation of MCP memory I've found so far."
+> — **Michał Zubkowicz**
+
+---
+
 ## 🌐 Works with claude.ai (Browser)
 
 Unlike desktop-only MCP servers, **mcp-memory-service supports Remote MCP** for native claude.ai integration.
@@ -417,6 +426,37 @@ use TLS termination (reverse proxy with HTTPS) or VPN overlays.
 
 ## 💡 Why You Need This
 
+### Embedding Model Selection
+
+The default model (`all-MiniLM-L6-v2`) works well for **English-only** content. If you store memories in other languages, switch to a multilingual model:
+
+| Model | Languages | Dimensions | Use case |
+|-------|-----------|-----------|----------|
+| `all-MiniLM-L6-v2` (default) | English only | 384 | Fastest, English-only deployments |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 50+ languages | 384 | Mixed-language or non-English content |
+
+**Configuration:**
+
+```bash
+export MCP_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+```
+
+> ⚠️ **Switching models requires re-embedding existing memories.** Memories embedded with the old model will have degraded search quality (cross-language cosine drops from ~0.95 to ~0.10).
+
+**Re-embedding after model change:**
+
+```bash
+# Stop the service
+memory stop  # or: systemctl --user stop memory-service
+
+# Regenerate all embeddings with the new model
+CUDA_VISIBLE_DEVICES="" MCP_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2 \
+  python scripts/maintenance/regenerate_embeddings.py
+
+# Restart
+memory launch  # or: systemctl --user start memory-service
+```
+
 ### The Problem
 
 | Session 1 | Session 2 (Fresh Start) |
@@ -509,18 +549,30 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.69.0** (May 28, 2026)
+## Latest Release: **v10.74.1** (June 6, 2026)
 
-**Minor: feat(mistake_notes) update+delete tools + fix(ci) Docker multi-arch pull + chore(ci) log-injection guard**
+**Patch: OpenClaw harvest preamble noise filter (@filhocf)**
 
-**What's New:**
-- `feat(mistake_notes)`: Add `mistake_note_update` and `mistake_note_delete` MCP tools — update failure_count or content fields; delete by content_hash; both validate `memory_type='mistake'` before operating (closes #1035, PR #1045, @filhocf).
-- `fix(ci)`: Disable buildx provenance+sbom attestations in publish-docker job — ghcr.io multi-arch index referenced attestation manifests instead of platform layers, causing `manifest unknown` on docker pull (fixes #1044).
-- `chore(ci)`: pre_pr_check.sh now flags f-string logger calls missing `_sanitize_log_value()` (check 6.5) — catches py/log-injection locally before CodeQL runs; CLAUDE.md documents the Log Injection Guard pattern.
+**What's Fixed:**
+- `fix(harvest)`: reject OpenClaw gateway prompt preamble in `PatternExtractor` — "Sender (untrusted metadata): Conversation context:..." routing metadata no longer harvested as false-positive decisions (issue #43 fix 3, PR #46, @filhocf)
+
+**Includes everything from v10.74.0 (June 5, 2026):**
+- `refactor(dispatch)`: §13 — `server_impl.py` if/elif dispatch replaced by `TOOL_REGISTRY` + `ROUTING_TABLE`; `__getattr__` lazy delegation with `setattr` caching; 49 inline wrappers removed (PR #37, @filhocf)
+- `refactor(storage)`: §10 — `sqlite_vec.py` decomposed into 8 focused mixins under `storage/mixins/`; no public API changes (PR #42, @filhocf)
+- `fix(harvest)`: OpenClaw trajectory harvest deduplication + `role_filter` disabled for trajectory files (issue #43 fixes 1+2, PR #42, @filhocf)
 
 ---
 
 **Previous Releases**:
+- **v10.74.0** - §13 declarative dispatch registry + §10 sqlite_vec mixin decomposition (both @filhocf) (June 5, 2026)
+- **v10.73.0** - §3 Consolidation Engine v2, §4 Bootstrap Profile, §5 Session Legacy, §6 Belief-Aware Quarantine, §9 Config Refactor (all @filhocf) (June 5, 2026)
+- **v10.72.0** - Milvus ranked-search parity, Schema Versioning migration registry + CLI, §2 Belief Store derivation pipeline (June 3, 2026)
+- **v10.71.0** - first Codeberg (Forgejo) release: §0/§1 memory-intelligence groundwork, OpenClaw harvest, §8 handler refactor, and full Codeberg CI/CD + release tooling (June 3, 2026)
+- **v10.70.3** - fix(ci): multi-arch-safe GHCR cleanup — Docker pull 404s resolved for all multi-arch tags (issue #1044, PR #1052) (May 29, 2026)
+- **v10.70.2** - fix(security): wrap log f-strings in `storage/graph.py` with `_sanitize_log_value()` — CodeQL `py/log-injection` alerts #483–#486 (May 29, 2026)
+- **v10.70.1** - feat(auto-capture): memory_observe + auto_extract + harvest pipeline (RFC #1008 §3, @filhocf) + fix(ci): Docker multi-arch push 404 (May 29, 2026)
+- **v10.70.0** - feat(search): multi-signal ranked search mode (`mode="ranked"`) + fix(security): 9 CodeQL path-injection dismissals + fix(ci): version badge (May 29, 2026)
+- **v10.69.0** - feat(mistake_notes): `mistake_note_update` + `mistake_note_delete` MCP tools + fix(ci): Docker multi-arch pull + chore(ci): log-injection guard in pre_pr_check.sh (May 28, 2026)
 - **v10.68.0** - feat(reasoning): temporal edges + fact mutability + RRF fusion (RFC #1008, @filhocf) + fix(security): 32 CodeQL log/path-injection alerts resolved (May 28, 2026)
 - **v10.67.1** - fix(security): enforce auth on all /api/documents/* routes (GHSA-84hp-mqvj-3p8h, CVSSv3.1 9.8 CRITICAL, commit 907bac72) (May 28, 2026)
 - **v10.67.0** - feat(reasoning): NLI contradiction detection (RFC #732 Phase 3, PR #1027, @filhocf) + fix(mcp): full v10 HTTP tool surface (PR #1017, @laanwj) + fix(storage): BM25 log sanitization (CodeQL #440) (May 28, 2026)

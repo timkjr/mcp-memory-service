@@ -25,6 +25,11 @@ from mcp_memory_service.api import search, store, health
 from mcp_memory_service.api.types import CompactSearchResult, CompactHealthInfo
 from mcp_memory_service.api.client import reset_storage
 
+try:
+    from mcp_memory_service.storage.mixins.embeddings import SENTENCE_TRANSFORMERS_AVAILABLE
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
 
 @pytest.fixture(autouse=True)
 def reset_client():
@@ -140,6 +145,7 @@ class TestStoreOperation:
         assert isinstance(hash_val, str)
         assert len(hash_val) == 8, "Should return 8-char hash"
 
+    @pytest.mark.skipif(not SENTENCE_TRANSFORMERS_AVAILABLE, reason="Requires real embeddings for semantic search verification")
     def test_store_with_tags_list(self, unique_content):
         """Test storing with list of tags."""
         hash_val = store(

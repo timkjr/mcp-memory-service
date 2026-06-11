@@ -85,7 +85,7 @@ Auto-resolve PR review threads using GitHub GraphQL API (`scripts/pr/resolve_thr
 
 ## Integration with Other Agents
 
-### github-release-manager
+### codeberg-release-manager
 1. Agent creates release PR
 2. gemini-pr-automator runs quality gate + review loop
 3. Agent merges when approved + handles post-release
@@ -97,7 +97,7 @@ Auto-resolve PR review threads using GitHub GraphQL API (`scripts/pr/resolve_thr
 ## Complete Workflow
 
 ```bash
-# 1. Create PR (github-release-manager)
+# 1. Create PR (codeberg-release-manager)
 gh pr create --title "feat: new feature" --body "..."
 
 # 2. Quality gate (amp-automation, fast)
@@ -111,7 +111,7 @@ bash scripts/pr/auto_review.sh <PR> 5 true
 # 4. Watch mode for continuous monitoring
 bash scripts/pr/watch_reviews.sh <PR> 180 &
 
-# 5. Merge when approved (github-release-manager)
+# 5. Merge when approved (codeberg-release-manager)
 gh pr merge <PR> --squash
 ```
 

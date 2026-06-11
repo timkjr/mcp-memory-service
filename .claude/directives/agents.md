@@ -6,12 +6,12 @@ Workflow automation agents using Gemini CLI, Groq API, and Amp CLI.
 
 | Agent | Tool | Purpose | Priority | Usage |
 |-------|------|---------|----------|-------|
-| **github-release-manager** | GitHub CLI | Complete release workflow | Production | Proactive on feature completion |
+| **codeberg-release-manager** | Forgejo API | Complete release workflow | Production | Proactive on feature completion |
 | **amp-automation** | Amp CLI | Coding tasks + PR quality analysis | Production | File-based prompts |
 | **code-quality-guard** | Gemini CLI / Groq API | Fast code quality analysis | Active | Pre-commit, pre-PR |
 | **gemini-pr-automator** | Gemini CLI | Automated PR review loops | Active | Post-PR creation |
 
-## github-release-manager
+## codeberg-release-manager
 
 **Purpose**: Proactive release workflow automation with issue tracking, version management, and documentation updates.
 
@@ -20,21 +20,21 @@ Workflow automation agents using Gemini CLI, Groq API, and Amp CLI.
 - **CHANGELOG Management**: Format guidelines, conflict resolution
 - **Documentation Matrix**: Automatic CHANGELOG, CLAUDE.md, README.md updates
 - **Issue Tracking**: Auto-detects "fixes #", suggests closures with smart comments
-- **Release Procedure**: Merge → Tag → Push → Verify workflows
-- **Environment Detection** 🆕: Adapts workflow for local vs GitHub execution
+- **Release Procedure**: Merge (Forgejo API) → Tag → Push → Forgejo release → Verify
+- **Platform**: Codeberg/Forgejo REST API (token from `.env`); never `gh`/github.com
 
 **Usage:**
 ```bash
 # Proactive (agent invokes automatically on feature completion)
-@agent github-release-manager "Check if we need a release"
+@agent codeberg-release-manager "Check if we need a release"
 
 # Manual
-@agent github-release-manager "Create release for v8.20.0"
+@agent codeberg-release-manager "Create release for v8.20.0"
 ```
 
 **Post-Release Workflow**: Retrieves issues from release, suggests closures with PR links and CHANGELOG entries.
 
-See [`.claude/agents/github-release-manager.md`](../.claude/agents/github-release-manager.md) for complete workflows.
+See [`.claude/agents/codeberg-release-manager.md`](../.claude/agents/codeberg-release-manager.md) for complete workflows.
 
 ## code-quality-guard
 
@@ -120,7 +120,7 @@ See [`.claude/agents/amp-automation.md`](../.claude/agents/amp-automation.md) fo
 ```
 User: "@claude fix issue #254"
     ↓
-Claude: Fixes code + Auto-invokes github-release-manager
+Claude: Fixes code + Auto-invokes codeberg-release-manager
     ↓
 Agent: Creates claude/issue-254-xxx branch with version bump
     ↓

@@ -73,12 +73,12 @@ def get_loader_for_file(file_path: Path) -> Optional[DocumentLoader]:
     """
     # Resolve to an absolute, canonical path to prevent path traversal
     try:
-        resolved_path = file_path.resolve()
+        resolved_path = file_path.resolve()  # codeql[py/path-injection]
     except (OSError, ValueError) as exc:
         logger.warning("Could not resolve file path: %s", _sanitize_log_value(exc))
         return None
 
-    if not resolved_path.exists():
+    if not resolved_path.exists():  # codeql[py/path-injection]
         logger.warning("File does not exist: %s", _sanitize_log_value(resolved_path))
         return None
 

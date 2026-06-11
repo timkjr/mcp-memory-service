@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md', 'LICENSE', '.gitignore']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md', 'LICENSE', '.gitignore']
+
+jobs:
+  test:
+    runs-on: docker
+    name: Tests + Coverage
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install -e ".[dev,sqlite]"
+
+    - name: Verify install
+      run: |
+        python3 -c "import mcp_memory_service; print(mcp_memory_service.__file__)"
+        python3 -m pytest --version
+
+    - name: Run tests with coverage
+      env:
+        MCP_API_KEY: ""
+        MCP_OAUTH_ENABLED: "false"
+        MCP_ALLOW_ANONYMOUS_ACCESS: "true"
+      # Scope: deterministic suite on this minimal self-hosted runner.
+      # - tests/integration excluded: those shell out to `uv`, hit the network, or
+      #   need services not present in the runner image.
+      # - tests/consolidation, tests/benchmarks and `-m "not benchmark"` excluded
+      #   (benchmark fixture / heavy).
+      # - coverage is report-only for now (no --cov-fail-under): re-introduce a gate
+      #   once the deterministic-subset baseline is known and stable.
+      # - no -x: report all failures, not just the first.
+      run: |
+        python3 -m pytest tests/ \
+          --ignore=tests/consolidation \
+          --ignore=tests/benchmarks \
+          --ignore=tests/integration \
+          -m "not benchmark" \
+          --cov=mcp_memory_service \
+          --cov-report=term-missing:skip-covered \
+          --timeout=120 \
+          -q

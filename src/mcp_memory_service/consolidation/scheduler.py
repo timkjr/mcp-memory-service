@@ -30,6 +30,7 @@ except ImportError:
     APSCHEDULER_AVAILABLE = False
 
 from .consolidator import DreamInspiredConsolidator
+from .belief_service import BeliefService
 
 class ConsolidationScheduler:
     """
@@ -231,6 +232,16 @@ class ConsolidationScheduler:
         try:
             # Run the consolidation
             report = await self.consolidator.consolidate(time_horizon)
+            
+            # Run belief derivation (piggybacking on consolidation cadence)
+            belief_stats = {}
+            if hasattr(self.consolidator, 'storage'):
+                try:
+                    belief_svc = BeliefService(self.consolidator.storage)
+                    belief_stats = await belief_svc.derive_beliefs()
+                except Exception as be:
+                    self.logger.warning(f"Belief derivation error (non-fatal): {be}")
+
             
             # Record successful execution
             self.execution_stats['successful_jobs'] += 1

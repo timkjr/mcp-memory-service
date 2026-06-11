@@ -141,7 +141,7 @@ class TestDefaultHttpHostBinding:
         # Also verify the config source code has the correct default
         from pathlib import Path
         config_path = Path(__file__).parent.parent.parent.parent / \
-            "src" / "mcp_memory_service" / "config.py"
+            "src" / "mcp_memory_service" / "config" / "transport.py"
         source = config_path.read_text()
         assert "os.getenv('MCP_HTTP_HOST', '127.0.0.1')" in source, (
             "config.py must default HTTP_HOST to '127.0.0.1'"

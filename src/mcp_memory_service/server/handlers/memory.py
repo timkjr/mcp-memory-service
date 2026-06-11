@@ -198,6 +198,7 @@ async def handle_store_memory(server, arguments: dict) -> List[types.TextContent
         memory_type = metadata.get("type", "note")  # HTTP server uses metadata.type
         client_hostname = arguments.get("client_hostname")
         conversation_id = arguments.get("conversation_id")
+        store = arguments.get("store", "default")
 
         # Call shared MemoryService business logic
         result = await server.memory_service.store_memory(
@@ -207,6 +208,7 @@ async def handle_store_memory(server, arguments: dict) -> List[types.TextContent
             metadata=metadata,
             client_hostname=client_hostname,
             conversation_id=conversation_id,
+            store=store,
         )
 
         # Convert MemoryService result to MCP response format
@@ -255,11 +257,126 @@ async def handle_store_memory(server, arguments: dict) -> List[types.TextContent
             except Exception as e:
                 logger.debug(f"NLI on-store check failed: {e}")
 
+        # §6: Check against active beliefs (if belief service available)
+        if nli_on_store and result.get("success") and "memory" in result:
+            try:
+                from ...consolidation.belief_service import BeliefService
+                from ...consolidation.quarantine import check_beliefs_on_store
+
+                belief_svc = BeliefService(server.storage)
+                quarantine_result = await check_beliefs_on_store(
+                    server.storage, belief_svc,
+                    content, result["memory"]["content_hash"],
+                )
+                if quarantine_result and quarantine_result.get("status") == "quarantined":
+                    result["quarantine_warning"] = quarantine_result
+                    message += "\n⚠️ Memory quarantined: contradicts an active belief."
+            except Exception as e:
+                logger.debug(f"Belief quarantine check failed: {e}")
+
+        # RFC #1008 §3: optional inline auto-capture from stored content
+        from ...config import MCP_AUTO_EXTRACT_DEFAULT, MCP_AUTO_EXTRACT_MIN_CONFIDENCE
+        from ...harvest.auto_capture import AutoCaptureService, parent_hash_from_store_result
+
+        auto_extract = arguments.get("auto_extract")
+        if auto_extract is None:
+            auto_extract = MCP_AUTO_EXTRACT_DEFAULT
+
+        # Recursion guard: skip auto-extract for memories produced by auto-capture itself
+        metadata_arg = arguments.get("metadata") or {}
+        if isinstance(metadata_arg, dict) and metadata_arg.get("source") == "auto_capture":
+            auto_extract = False
+
+        if auto_extract and content:
+            try:
+                parent_hash = parent_hash_from_store_result(result)
+
+                min_conf = arguments.get("min_extract_confidence")
+                if min_conf is None:
+                    min_conf = MCP_AUTO_EXTRACT_MIN_CONFIDENCE
+                capture_service = AutoCaptureService(
+                    memory_service=server.memory_service,
+                    min_confidence=min_conf,
+                    types=arguments.get("extract_types"),
+                )
+                capture = await capture_service.capture(
+                    content,
+                    role=arguments.get("role") or "assistant",
+                    parent_hash=parent_hash,
+                    conversation_id=conversation_id,
+                    dry_run=False,
+                )
+                if capture.candidates:
+                    message += (
+                        f"\nAuto-capture: {capture.stored} stored, {capture.evolved} evolved "
+                        f"from {len(capture.candidates)} candidate(s)."
+                    )
+            except Exception as cap_err:
+                logger.warning("auto-capture failed: %s", cap_err)
+
         return [types.TextContent(type="text", text=message)]
 
     except Exception as e:
         logger.error(f"Error storing memory: {str(e)}\n{traceback.format_exc()}")
         return [types.TextContent(type="text", text=f"Error storing memory: {str(e)}")]
+
+
+async def handle_memory_observe(server, arguments: dict) -> List[types.TextContent]:
+    """Observe conversation text and auto-extract facts/decisions without storing raw content."""
+    import json
+    from ...config import MCP_AUTO_EXTRACT_MIN_CONFIDENCE
+    from ...harvest.auto_capture import AutoCaptureService, parent_hash_from_store_result
+    from ...services.memory_service import normalize_tags
+
+    content = arguments.get("content")
+    if not content:
+        return [types.TextContent(type="text", text="Error: content is required")]
+
+    try:
+        await server._ensure_storage_initialized()
+
+        dry_run = arguments.get("dry_run", False)
+        store_source = arguments.get("store_source", False)
+        conversation_id = arguments.get("conversation_id")
+        parent_hash = arguments.get("parent_hash")
+
+        if store_source:
+            metadata = arguments.get("metadata") or {}
+            tags = metadata.get("tags", "auto-capture-source")
+            store_result = await server.memory_service.store_memory(
+                content=content,
+                tags=normalize_tags(tags),
+                memory_type=metadata.get("type", "observation"),
+                metadata=metadata,
+                conversation_id=conversation_id,
+            )
+            if not store_result.get("success"):
+                return [types.TextContent(
+                    type="text",
+                    text=f"Error storing source: {store_result.get('error', 'unknown')}",
+                )]
+            parent_hash = parent_hash_from_store_result(store_result)
+
+        min_conf = arguments.get("min_confidence")
+        if min_conf is None:
+            min_conf = MCP_AUTO_EXTRACT_MIN_CONFIDENCE
+        service = AutoCaptureService(
+            memory_service=server.memory_service,
+            min_confidence=min_conf,
+            types=arguments.get("types"),
+        )
+        capture = await service.capture(
+            content,
+            role=arguments.get("role") or "assistant",
+            parent_hash=parent_hash,
+            conversation_id=conversation_id,
+            dry_run=dry_run,
+        )
+        return [types.TextContent(type="text", text=json.dumps(capture.to_dict(), indent=2))]
+
+    except Exception as e:
+        logger.error(f"Error in memory_observe: {str(e)}\n{traceback.format_exc()}")
+        return [types.TextContent(type="text", text=f"Error in memory_observe: {str(e)}")]
 
 
 async def handle_store_session(server, arguments: dict) -> List[types.TextContent]:
@@ -277,6 +394,7 @@ async def handle_store_session(server, arguments: dict) -> List[types.TextConten
     extra_tags = arguments.get("tags", [])
     if isinstance(extra_tags, str):
         extra_tags = [t.strip() for t in extra_tags.split(",") if t.strip()]
+    store = arguments.get("store", "default")
 
     lines = []
     for turn in turns:
@@ -308,6 +426,7 @@ async def handle_store_session(server, arguments: dict) -> List[types.TextConten
                 memory_type="session",
                 metadata=arguments.get("metadata", {}),
                 client_hostname=arguments.get("client_hostname"),
+                store=store,
             )
             if not result.get("success"):
                 return [types.TextContent(type="text", text=f"Error storing session: {result.get('error', 'Unknown error')}")]
@@ -330,6 +449,7 @@ async def handle_store_session(server, arguments: dict) -> List[types.TextConten
                 memory_type="session",
                 metadata=arguments.get("metadata", {}),
                 client_hostname=arguments.get("client_hostname"),
+                store=store,
             )
             if not result.get("success"):
                 error = result.get("error", "Unknown error")
@@ -571,6 +691,9 @@ async def handle_memory_list(server, arguments: dict) -> List[types.TextContent]
         tag_match = arguments.get("tag_match", "any")
         memory_type = arguments.get("memory_type")
         stale_days = arguments.get("stale_days")
+        store = arguments.get("store", "default")
+        if store == "all":
+            store = None
 
         # Normalize tags if provided
         if tags:
@@ -584,6 +707,7 @@ async def handle_memory_list(server, arguments: dict) -> List[types.TextContent]
             tag_match=tag_match,
             memory_type=memory_type,
             stale_days=stale_days,
+            store=store,
         )
 
         # Check for errors
@@ -792,6 +916,10 @@ async def handle_memory_delete(server, arguments: dict) -> List[types.TextConten
         if tags:
             tags = normalize_tags(tags)
 
+        store = arguments.get("store", "default")
+        if store == "all":
+            store = None
+
         # Call unified delete_memories method
         result = await storage.delete_memories(
             content_hash=arguments.get("content_hash"),
@@ -799,7 +927,8 @@ async def handle_memory_delete(server, arguments: dict) -> List[types.TextConten
             tag_match=arguments.get("tag_match", "any"),
             before=arguments.get("before"),
             after=arguments.get("after"),
-            dry_run=arguments.get("dry_run", False)
+            dry_run=arguments.get("dry_run", False),
+            store=store,
         )
 
         # Format response
@@ -834,6 +963,31 @@ async def handle_cleanup_duplicates(server, arguments: dict) -> List[types.TextC
         return [types.TextContent(type="text", text=f"Error cleaning up duplicates: {str(e)}")]
 
 
+async def _format_beliefs_section(arguments: dict, storage) -> str:
+    """Append beliefs section if include_beliefs=True."""
+    if not arguments.get("include_beliefs"):
+        return ""
+    try:
+        from ...consolidation.belief_service import BeliefService
+
+        svc = BeliefService(storage)
+        beliefs = await svc.get_beliefs()
+
+        if not beliefs:
+            return ""
+
+        lines = ["\n\n--- Beliefs (derived knowledge) ---"]
+        for idx, b in enumerate(beliefs, 1):
+            lines.append(
+                f"{idx}. [conf={b['confidence']:.2f}] {b['content']}\n"
+                f"   Hash: {b['belief_hash']}\n"
+                f"   Status: {b['status']} | Sources: {len(b.get('derived_from', []))}"
+            )
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 async def handle_memory_search(server, arguments: dict) -> List[types.TextContent]:
     """Unified handler for memory search with flexible modes and filters."""
     import json
@@ -851,6 +1005,11 @@ async def handle_memory_search(server, arguments: dict) -> List[types.TextConten
         # Get max_response_chars for truncation
         max_response_chars = _get_max_response_chars(arguments)
 
+        # Extract store param
+        store = arguments.get("store", "default")
+        if store == "all":
+            store = None
+
         # Call unified search_memories method
         query = arguments.get("query")
         limit = arguments.get("limit", 10)
@@ -865,7 +1024,9 @@ async def handle_memory_search(server, arguments: dict) -> List[types.TextConten
             quality_boost=arguments.get("quality_boost", 0.0),
             limit=limit,
             include_debug=arguments.get("include_debug", False),
-            include_superseded=arguments.get("include_superseded", False)
+            include_superseded=arguments.get("include_superseded", False),
+            ranking_weights=arguments.get("ranking_weights"),
+            store=store,
         )
 
         # Check for errors
@@ -979,7 +1140,8 @@ async def handle_memory_search(server, arguments: dict) -> List[types.TextConten
                 header += f" for query: '{result['query']}'"
             header += "\n\n"
 
-            response_text = header + format_truncated_response(truncated, meta)
+            beliefs_section = await _format_beliefs_section(arguments, storage)
+            response_text = header + format_truncated_response(truncated, meta) + beliefs_section
             return [types.TextContent(type="text", text=response_text)]
 
         # Format response without truncation
@@ -987,7 +1149,8 @@ async def handle_memory_search(server, arguments: dict) -> List[types.TextConten
             response = "No memories found"
             if result.get("query"):
                 response += f" for query: '{result['query']}'"
-            return [types.TextContent(type="text", text=response)]
+            beliefs_section = await _format_beliefs_section(arguments, storage)
+            return [types.TextContent(type="text", text=response + beliefs_section)]
 
         # Format memories (memories are dicts from storage.search_memories())
         formatted_results = []
@@ -1030,9 +1193,10 @@ async def handle_memory_search(server, arguments: dict) -> List[types.TextConten
                 if tf.get('start_timestamp') or tf.get('end_timestamp'):
                     header += f"\n  Time range: {tf.get('start_timestamp')} - {tf.get('end_timestamp')}"
 
+        beliefs_section = await _format_beliefs_section(arguments, storage)
         return [types.TextContent(
             type="text",
-            text=header + "\n\n" + "\n\n".join(formatted_results)
+            text=header + "\n\n" + "\n\n".join(formatted_results) + beliefs_section
         )]
 
     except Exception as e:

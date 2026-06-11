@@ -536,7 +536,7 @@ class CloudflareStorage(MemoryStorage):
                 raise ValueError(f"R2 bucket '{self.r2_bucket}' not found")
             raise
     
-    async def store(self, memory: Memory, skip_semantic_dedup: bool = False) -> Tuple[bool, str]:
+    async def store(self, memory: Memory, skip_semantic_dedup: bool = False, store: str = "default") -> Tuple[bool, str]:
         """Store a memory in Cloudflare storage.
 
         Args:
@@ -710,7 +710,7 @@ class CloudflareStorage(MemoryStorage):
         if response.status_code not in [200, 201]:
             raise ValueError(f"Failed to store content in R2: {response.status_code}")
     
-    async def retrieve(self, query: str, n_results: int = 5, tags: Optional[List[str]] = None, min_confidence: float = 0.0, include_superseded: bool = False, start_time: Optional[float] = None, end_time: Optional[float] = None) -> List[MemoryQueryResult]:
+    async def retrieve(self, query: str, n_results: int = 5, tags: Optional[List[str]] = None, min_confidence: float = 0.0, include_superseded: bool = False, start_time: Optional[float] = None, end_time: Optional[float] = None, store: str = "default") -> List[MemoryQueryResult]:
         """Retrieve memories by semantic search."""
         try:
             # Generate query embedding
@@ -1796,6 +1796,7 @@ class CloudflareStorage(MemoryStorage):
         tag_match: str = "any",
         stale_days: Optional[int] = None,
         include_embeddings: bool = False,
+        store: str = "default",
     ) -> List[Memory]:
         """
         Get all memories in storage ordered by creation time (newest first).
@@ -2128,7 +2129,7 @@ class CloudflareStorage(MemoryStorage):
             logger.error(f"Error getting memories by time range: {str(e)}")
             return []
 
-    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, tag_match: str = "any", stale_days: Optional[int] = None) -> int:
+    async def count_all_memories(self, memory_type: Optional[str] = None, tags: Optional[List[str]] = None, tag_match: str = "any", stale_days: Optional[int] = None, store: str = "default") -> int:
         """
         Get total count of memories in storage.
 

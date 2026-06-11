@@ -100,6 +100,7 @@ class TestPluginRegistry:
             registry.discover_and_register()
         assert registry.loaded_plugins == []
 
+    @pytest.mark.enable_plugins
     def test_discover_with_plugin(self, registry):
         mock_register = MagicMock()
         mock_ep = MagicMock()

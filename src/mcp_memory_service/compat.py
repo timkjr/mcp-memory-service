@@ -253,6 +253,27 @@ def get_new_tool_name(deprecated_name: str) -> Optional[str]:
     return None
 
 
+def get_deprecated_tool_defs():
+    """Generate ToolDef-compatible dicts for all deprecated tools.
+
+    Used by list_tools() to conditionally advertise deprecated names
+    when MCP_SHOW_LEGACY_TOOLS=true.
+    """
+    from .tools.registry import ToolDef
+
+    defs = []
+    for old_name, (new_name, _) in DEPRECATED_TOOLS.items():
+        defs.append(ToolDef(
+            name=old_name,
+            description=f"[DEPRECATED] Use '{new_name}' instead.",
+            input_schema={"type": "object", "properties": {}},
+            annotations={"readOnlyHint": False},
+            deprecated=True,
+            deprecated_replacement=new_name,
+        ))
+    return defs
+
+
 def get_deprecation_message(tool_name: str) -> str:
     """Get a human-readable deprecation message for a tool."""
     if tool_name not in DEPRECATED_TOOLS:

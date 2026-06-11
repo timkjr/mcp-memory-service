@@ -10,14 +10,25 @@ import pytest
 import pytest_asyncio
 import asyncio
 from mcp_memory_service.server import MemoryServer
+from mcp_memory_service.storage.mixins.embeddings import SENTENCE_TRANSFORMERS_AVAILABLE
+
+pytestmark = pytest.mark.skipif(
+    not SENTENCE_TRANSFORMERS_AVAILABLE,
+    reason="Requires real embedding model for semantic similarity"
+)
 
 @pytest_asyncio.fixture
 async def memory_server():
     """Create a test instance of the memory server."""
     server = MemoryServer()
-    # MemoryServer initializes itself, no initialize() call needed
     yield server
-    # No cleanup needed
+
+@pytest.fixture(autouse=True)
+def _skip_if_hash_embeddings(memory_server):
+    """Skip semantic search tests when no ML embedding backend is available."""
+    storage = getattr(memory_server, 'storage', None)
+    if storage and type(getattr(storage, 'embedding_model', None)).__name__ == "_HashEmbeddingModel":
+        pytest.skip("Semantic search requires real embeddings (install mcp-memory-service[ml])")
 
 @pytest.mark.asyncio
 async def test_semantic_similarity(memory_server):

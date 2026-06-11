@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Memory for AI Agents — REST, MCP, OAuth, CLI · mcp-memory-service v10.66.0</title>
+<title>Memory for AI Agents — REST, MCP, OAuth, CLI · mcp-memory-service v10.74.0</title>
 <meta name="description" content="Memory layer for AI agents. REST API + MCP + OAuth + CLI + dashboard — one self-hosted service, every transport. 14+ client integrations, knowledge graph, automatic consolidation. LongMemEval R@5 86%, session ingestion, zero cloud cost.">
-<meta property="og:title" content="MCP Memory Service v10.66.0">
+<meta property="og:title" content="MCP Memory Service v10.74.0">
 <meta property="og:description" content="Reasoning engine: transitive closure, abductive inference, entity grouping, insight cards (RFC #732). SQL-level time filter enforcement. Self-hosted AI memory — REST, MCP, OAuth 2.1, CLI. LongMemEval R@5 86%.">
 <meta property="og:type" content="website">
 <style>
@@ -116,7 +116,7 @@ footer a{color:var(--cyan)}
 <!-- Hero -->
 <header class="hero">
   <img src="brain-icon.png" alt="Memory for AI Agents" class="hero-logo">
-  <span class="hero-badge">mcp-memory-service v10.66 &mdash; Now Available</span>
+  <span class="hero-badge">mcp-memory-service v10.74 &mdash; Now Available</span>
   <h1>Memory for AI Agents</h1>
   <p>Persistent memory for AI agents &mdash; REST API, MCP, OAuth, CLI, dashboard. Semantic search, knowledge graph, automatic consolidation. One self-hosted service, every transport.</p>
   <div class="hero-buttons">
@@ -136,23 +136,23 @@ footer a{color:var(--cyan)}
 <!-- Features -->
 <section id="features">
   <div class="container">
-    <h2 class="section-title">What's New in v10.66</h2>
-    <p class="section-subtitle">Reasoning engine (RFC #732): transitive closure, abductive inference, entity grouping, insight cards. SQL-level time filter enforcement. ~1,828 tests.</p>
+    <h2 class="section-title">What's New in v10.74</h2>
+    <p class="section-subtitle">Internal architecture sprint: declarative dispatch registry (§13) and sqlite_vec mixin decomposition (§10) — both by @filhocf. No public API changes. ~1,828 tests.</p>
     <div class="features-grid">
       <div class="feature-card" data-delay="0">
         <div class="feature-icon consolidation">&#129504;</div>
-        <h3>Transitive Closure + Abductive Inference</h3>
-        <p>Phase 1a of the reasoning engine (RFC #732). Transitive closure walks multi-hop graph edges to surface indirect memory connections. Abductive inference proposes the most plausible explanations for observed memory patterns using NLI-backed scoring. (PR #1009)</p>
+        <h3>Belief-Aware Quarantine (SS6)</h3>
+        <p>Memories that contradict active beliefs are automatically quarantined. Two new MCP tools — get_quarantined_memories and unquarantine_memory — let agents review and restore quarantined memories. Threshold-driven, 290 LOC of tests. (RFC-1047 SS6, PR #36)</p>
       </div>
       <div class="feature-card" data-delay="150">
         <div class="feature-icon http">&#128101;</div>
-        <h3>Entity Grouping</h3>
-        <p>Phase 1b clusters co-referenced entities across memories into canonical groups, enabling accurate cross-memory entity resolution. Entity groups feed directly into the transitive closure engine so edges between aliased entities are correctly traversed. (PR #1010)</p>
+        <h3>Consolidation Engine v2 + memory_distill (SS3)</h3>
+        <p>Three new MCP tools: memory_distill rewrites undistilled memories in batch via LLM, get_onboarding_guide surfaces a structured onboarding narrative, and commit_session_legacy commits legacy sessions. Includes a scheduled distill job (6h interval) and harvest pipeline v2. (RFC-1047 SS3, PR #39)</p>
       </div>
       <div class="feature-card" data-delay="300">
         <div class="feature-icon privacy">&#128203;</div>
-        <h3>Insight Cards + SQL Time Filter</h3>
-        <p>Phase 3 introduces insight cards — structured summaries synthesised from related memory clusters, surfaced via REST API and the memory_graph tool. Also fixes time-range filters (<code>start_date</code>, <code>end_date</code>, <code>stale_days</code>) to be enforced at SQL level, eliminating out-of-window results. (PR #1011, #1014)</p>
+        <h3>Bootstrap Profile + Config Domain Refactor (SS4/SS5/SS9)</h3>
+        <p>get_bootstrap_profile tool with Kiro/Claude/Generic formatters and confidence-weighted dedup (cosine 0.70). Monolithic 1327-line config.py split into 12 domain modules with full backward-compatible re-exports. (RFC-1047 SS4+SS5, PR #40; SS9, PR #38)</p>
       </div>
     </div>
   </div>
@@ -242,7 +242,7 @@ footer a{color:var(--cyan)}
       <a href="blog/remote-mcp-tutorial.html" class="btn btn-secondary">
         Blog: 5-Min claude.ai Setup
       </a>
-      <a href="https://github.com/doobidoo/mcp-memory-service/releases/tag/v10.66.0" class="btn btn-secondary" target="_blank">
+      <a href="https://codeberg.org/doobidoo/mcp-memory-service/releases/tag/v10.74.0" class="btn btn-secondary" target="_blank">
         Release Notes
       </a>
     </div>

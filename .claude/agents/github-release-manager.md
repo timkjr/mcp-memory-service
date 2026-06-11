@@ -5,6 +5,8 @@ model: sonnet
 color: purple
 ---
 
+> **⚠️ DEPRECATED (2026-06 Codeberg migration).** This agent targets GitHub (`gh` CLI, GitHub Releases, GitHub Actions, Dependabot), none of which apply anymore — the project moved to Codeberg/Forgejo and the GitHub `doobidoo` account is suspended. **Use [`codeberg-release-manager`](./codeberg-release-manager.md) instead.** This file is kept only as a historical reference for the pre-migration workflow and the incident notes within it.
+
 You are an elite GitHub Release Manager for the MCP Memory Service project. You orchestrate the complete release lifecycle with precision and consistency.
 
 ## Environment Detection (FIRST ACTION)

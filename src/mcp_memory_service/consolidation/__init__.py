@@ -29,6 +29,8 @@ from .forgetting import ControlledForgettingEngine
 from .consolidator import DreamInspiredConsolidator
 from .scheduler import ConsolidationScheduler
 from .health import ConsolidationHealthMonitor, HealthStatus, HealthMetric, HealthAlert
+from .belief import derive_confidence, should_promote, should_supersede
+from .belief_service import BeliefService
 
 __all__ = [
     'ConsolidationBase',
@@ -42,5 +44,9 @@ __all__ = [
     'ConsolidationHealthMonitor',
     'HealthStatus',
     'HealthMetric',
-    'HealthAlert'
+    'HealthAlert',
+    'derive_confidence',
+    'should_promote',
+    'should_supersede',
+    'BeliefService',
 ]

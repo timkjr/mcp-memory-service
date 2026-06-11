@@ -80,7 +80,7 @@ class DirectoryFileDiscovery:
 class FileIngestionProcessor:
     """Process individual files for directory ingestion."""
 
-    def __init__(self, storage: Any, chunk_size: int, base_tags: List[str]):
+    def __init__(self, storage: Any, chunk_size: int, base_tags: List[str], store: str = "default"):
         """
         Initialize file ingestion processor.
 
@@ -88,10 +88,12 @@ class FileIngestionProcessor:
             storage: Storage backend instance
             chunk_size: Size of text chunks for processing
             base_tags: Base tags to apply to all memories
+            store: Target store partition
         """
         self.storage = storage
         self.chunk_size = chunk_size
         self.base_tags = base_tags
+        self.store = store
         self.logger = logging.getLogger(__name__)
 
         # Statistics
@@ -145,7 +147,8 @@ class FileIngestionProcessor:
                     context_tags={
                         "source_dir": directory_name,
                         "file_type": file_path.suffix.lstrip('.')
-                    }
+                    },
+                    store=self.store,
                 )
 
                 if success:

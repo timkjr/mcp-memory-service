@@ -38,7 +38,7 @@ class HarvestConfig:
     sessions: int = 1
     session_ids: Optional[List[str]] = None
     types: List[str] = field(default_factory=lambda: list(HARVEST_TYPES))
-    min_confidence: float = 0.6
+    min_confidence: float = 0.75
     dry_run: bool = True
     project_path: Optional[str] = None  # Override project dir
     use_llm: bool = False  # Phase 2: LLM-based classification

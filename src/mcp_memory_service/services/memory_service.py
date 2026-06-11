@@ -281,6 +281,7 @@ class MemoryService:
         tag_match: str = "any",
         memory_type: Optional[str] = None,
         stale_days: Optional[int] = None,
+        store: Optional[str] = "default",
     ) -> Union[ListMemoriesSuccess, ListMemoriesError]:
         """
         List memories with pagination and optional filtering.
@@ -315,6 +316,7 @@ class MemoryService:
                 tags=tags_list,
                 tag_match=tag_match,
                 stale_days=stale_days,
+                store=store,
             )
 
             # Get accurate total count for pagination
@@ -323,6 +325,7 @@ class MemoryService:
                 tags=tags_list,
                 tag_match=tag_match,
                 stale_days=stale_days,
+                store=store,
             )
 
             # Format results for API response
@@ -361,7 +364,8 @@ class MemoryService:
         memory_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         client_hostname: Optional[str] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        store: str = "default",
     ) -> Union[StoreMemorySingleSuccess, StoreMemoryChunkedSuccess, StoreMemoryFailure]:
         """
         Store a new memory with validation and content processing.
@@ -444,7 +448,7 @@ class MemoryService:
                         metadata=chunk_metadata
                     )
 
-                    success, message = await self.storage.store(memory, skip_semantic_dedup=skip_dedup)
+                    success, message = await self.storage.store(memory, skip_semantic_dedup=skip_dedup, store=store)
                     if success:
                         stored_memories.append(self._format_memory_response(memory))
                         # Queue chunk for AI quality scoring if enabled
@@ -485,7 +489,7 @@ class MemoryService:
                     metadata=final_metadata
                 )
 
-                success, message = await self.storage.store(memory, skip_semantic_dedup=skip_dedup)
+                success, message = await self.storage.store(memory, skip_semantic_dedup=skip_dedup, store=store)
 
                 if success:
                     # Queue for AI quality scoring if enabled
@@ -825,7 +829,20 @@ class MemoryService:
         Returns:
             Dictionary with operation result
         """
+        import os
         from ..config import MCP_MISTAKE_NOTE_DEDUP_THRESHOLD
+
+        # A mistake note's value is its remediation. Reject empty correct_action —
+        # JSON-schema `required` enforces presence, not non-emptiness (issue #1055).
+        if not (correct_action or "").strip():
+            return {
+                "status": "error",
+                "message": "correct_action must not be empty — a mistake note requires a remediation, not just an error pattern",
+            }
+
+        ERROR_WEIGHT = float(os.getenv("MCP_ERROR_WEIGHT", "3.0"))
+        LEARNING_RATE = float(os.getenv("MCP_LEARNING_RATE", "0.1"))
+        FRUSTRATION_THRESHOLD = float(os.getenv("MCP_FRUSTRATION_THRESHOLD", "5.0"))
 
         content = (
             f"Pattern: {error_pattern}\n"
@@ -854,6 +871,11 @@ class MemoryService:
                         count = old_meta.get("failure_count", 1) + 1
                         old_meta["failure_count"] = count
 
+                        # P4: Update confidence and frustration
+                        old_meta["confidence"] = min(1.0, old_meta.get("confidence", 0.5) + LEARNING_RATE * ERROR_WEIGHT)
+                        old_meta["frustration_score"] = old_meta.get("frustration_score", 0.0) + 1.0
+                        old_meta["is_avoid_rule"] = old_meta["frustration_score"] >= FRUSTRATION_THRESHOLD
+
                         await self.storage.update_memory_metadata(
                             content_hash=content_hash,
                             updates={"metadata": old_meta},
@@ -866,21 +888,34 @@ class MemoryService:
                             "message": f"Existing mistake note updated (seen {count} times)",
                         }
 
-            # No match — store new mistake note
+            # No match — store new mistake note with initial confidence/frustration
+            initial_meta = {
+                "failure_count": 1,
+                "confidence": 0.5,
+                "frustration_score": 1.0,
+                "is_avoid_rule": False,
+            }
             result = await self.store_memory(
                 content=content,
                 tags="mistake-note,error-replay",
                 memory_type="mistake",
-                metadata={"failure_count": 1},
+                metadata=initial_meta,
             )
 
             if not result.get("success"):
                 # Handle race condition: store's semantic dedup rejected, but we can
                 # still increment the existing note it found (#1034)
                 error_msg = str(result.get("error", ""))
+                existing_hash = None
                 match = re.search(r"semantically similar to ([a-f0-9]+)", error_msg, re.IGNORECASE)
                 if match:
                     existing_hash = match.group(1)
+                elif "exact match" in error_msg.lower():
+                    # Compute hash from content for exact match case
+                    from ..utils.hashing import generate_content_hash
+                    existing_hash = generate_content_hash(content)
+
+                if existing_hash:
                     existing = await self.storage.get_by_hash(existing_hash)
                     if existing:
                         old_meta = existing.metadata or {}
@@ -888,6 +923,9 @@ class MemoryService:
                             old_meta = json.loads(old_meta) if old_meta else {}
                         count = old_meta.get("failure_count", 1) + 1
                         old_meta["failure_count"] = count
+                        old_meta["confidence"] = min(1.0, old_meta.get("confidence", 0.5) + LEARNING_RATE * ERROR_WEIGHT)
+                        old_meta["frustration_score"] = old_meta.get("frustration_score", 0.0) + 1.0
+                        old_meta["is_avoid_rule"] = old_meta["frustration_score"] >= FRUSTRATION_THRESHOLD
                         await self.storage.update_memory_metadata(
                             content_hash=existing_hash,
                             updates={"metadata": old_meta},
@@ -950,6 +988,7 @@ class MemoryService:
                     "content": mem["content"],
                     "similarity": mem.get("similarity_score", 0),
                     "failure_count": meta.get("failure_count", 1),
+                    "metadata": meta,
                     "updated_at": mem.get("updated_at"),
                 })
 
@@ -981,6 +1020,13 @@ class MemoryService:
         Returns:
             Dictionary with operation result
         """
+        # Don't allow an existing note's remediation to be blanked (issue #1055).
+        if correct_action is not None and not correct_action.strip():
+            return {
+                "status": "error",
+                "message": "correct_action must not be empty — a mistake note requires a remediation, not just an error pattern",
+            }
+
         try:
             mem = await self.storage.get_by_hash(content_hash)
             if not mem:

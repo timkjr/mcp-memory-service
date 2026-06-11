@@ -1,5 +1,5 @@
 language: pt-BR
-version: 1
+version: 2
 
 patterns:
   decision:
@@ -57,3 +57,61 @@ patterns:
       confidence: 0.6
     - pattern: '\b(?:em andamento|work in progress|WIP)\b'
       confidence: 0.6
+    - pattern: '(?:^|\n)\*\*Status:\*\*\s*[✅❌⚠️🔄📌]'
+      confidence: 0.7
+    - pattern: '(?:^|\n)\- \[([ x])\]'
+      confidence: 0.6
+    - pattern: '\bPrioridade:\s*[🔴🟠🟢]'
+      confidence: 0.65
+    - pattern: '\b(?:Nada pendente|Nada urgente|HEARTBEAT_OK)\b'
+      confidence: 0.5
+    - pattern: '\bObjetivo cumprido\??\s*:?\s*(Sim|Não|Parcial)'
+      confidence: 0.7
+
+  tech_decision:
+    - pattern: '(?:^|\n)\*\*Recomendo\b|\*\*Alternativa:\*\*|\*\*Solução:\*\*'
+      confidence: 0.75
+    - pattern: '\b(?:analisei as opções|comparei|alternativa mais rápida|melhor caminho)\b'
+      confidence: 0.7
+    - pattern: '\b(?:configurei|implementei|instalei|atualizei|trocando para|mudei para|adicionei)\b'
+      confidence: 0.65
+
+  summary:
+    - pattern: '\b(?:Lições Curadas|Achados principais|Resumo Final|Documentos Criados)\b'
+      confidence: 0.8
+    - pattern: '\b(?:O que foi feito|Resultado|Veredito|Conclusão)\b\s*:'
+      confidence: 0.7
+    - pattern: '\b(?:O que aprendemos|O que mudou|O que ficou)\b'
+      confidence: 0.7
+    - pattern: '\b(?:Infra|Lições Aprendidas|Documentação)\b\s*[✅❌⚠️🔄]'
+      confidence: 0.7
+
+meta_keywords:
+  - patternextractor
+  - harvester
+  - harvest pipeline
+  - rewriter
+  - bootstrap profile
+  - consolidator
+  - memory service
+  - memory-service
+  - extractor
+  - autodream
+  - autolearn
+  - meta-filter
+  - bootstrap_utils
+  - threshold
+  - prompt mais rigoroso
+  - rodar harvest
+  - pipeline de harvest
+  - bootstrap vai melhorar
+
+temporal_filters:
+  - pattern: 'aguardando\s+(review|ação|resposta|merge)'
+  - pattern: 'pendente[s]?\s+de\s+review'
+  - pattern: 'PR[s]?\s*#\d+'
+  - pattern: 'conta.*suspens[ao]'
+  - pattern: 'email\s+(enviado|recebido|mandou)'
+
+generic_filters:
+  - pattern: '^é\s+(importante|necessário|fundamental|essencial)\s+'
