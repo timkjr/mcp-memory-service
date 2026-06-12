@@ -173,6 +173,8 @@ pip install -e ".[full]"          # Install all features
 
 **Version bumps:** NEVER manual. Use `github-release-manager` agent.
 
+**Git remotes:** Push to `forgejo` ONLY (`ssh://git@git.k-lab.lan:2222/timkjr/mcp-memory-service.git`). Never push to `github` or `upstream` — those are read-only mirrors.
+
 ## Code Style Guidelines
 
 ### Formatting
