@@ -41,5 +41,45 @@
     "useLlm": false,
     "minConfidence": 0.6,
     "types": ["decision", "bug", "convention", "learning", "context"]
+  },
+  "naturalTriggers": {
+    "enabled": true,
+    "triggerThreshold": 0.6,
+    "cooldownPeriod": 30000,
+    "maxMemoriesPerTrigger": 3
+  },
+  "gitAnalysis": {
+    "enabled": true,
+    "commitLookback": 14,
+    "maxCommits": 20,
+    "includeChangelog": true,
+    "maxGitMemories": 3,
+    "gitContextWeight": 1.2
+  },
+  "mode": {
+    "profile": "balanced",
+    "profiles": {
+      "speed_focused": {
+        "maxMemoriesPerSession": 4,
+        "loadTimeoutMs": 1000,
+        "naturalTriggersEnabled": false,
+        "gitAnalysisEnabled": false,
+        "description": "Fastest response, minimal memory awareness"
+      },
+      "balanced": {
+        "maxMemoriesPerSession": 8,
+        "loadTimeoutMs": 2500,
+        "naturalTriggersEnabled": true,
+        "gitAnalysisEnabled": true,
+        "description": "Moderate latency, smart memory triggers"
+      },
+      "memory_aware": {
+        "maxMemoriesPerSession": 12,
+        "loadTimeoutMs": 5000,
+        "naturalTriggersEnabled": true,
+        "gitAnalysisEnabled": true,
+        "description": "Full memory awareness, accept higher latency"
+      }
+    }
   }
 }

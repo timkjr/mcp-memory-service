@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import http from "node:http"
 import https from "node:https"
 import path from "node:path"
+import { execSync } from "node:child_process"
 
 const STATUS_FILE = path.join(homedir(), ".config", "opencode", ".memory-status.json")
 
@@ -37,6 +38,8 @@ function httpsFetch(url, options = {}) {
     req.end()
   })
 }
+
+const AGENT_ID = "opencode"
 
 const DEFAULT_CONFIG = {
   memoryService: {
@@ -81,6 +84,49 @@ const DEFAULT_CONFIG = {
     minConfidence: 0.6,
     types: ["decision", "bug", "convention", "learning", "context"],
   },
+  // --- NEW: Natural Memory Triggers (mid-conversation retrieval) ---
+  naturalTriggers: {
+    enabled: true,
+    triggerThreshold: 0.6,
+    cooldownPeriod: 30000,
+    maxMemoriesPerTrigger: 3,
+  },
+  // --- NEW: Git-aware context ---
+  gitAnalysis: {
+    enabled: true,
+    commitLookback: 14,
+    maxCommits: 20,
+    includeChangelog: true,
+    maxGitMemories: 3,
+    gitContextWeight: 1.2,
+  },
+  // --- NEW: Memory mode controller ---
+  mode: {
+    profile: "balanced",
+    profiles: {
+      speed_focused: {
+        maxMemoriesPerSession: 4,
+        loadTimeoutMs: 1000,
+        naturalTriggersEnabled: false,
+        gitAnalysisEnabled: false,
+        description: "Fastest response, minimal memory awareness",
+      },
+      balanced: {
+        maxMemoriesPerSession: 8,
+        loadTimeoutMs: 2500,
+        naturalTriggersEnabled: true,
+        gitAnalysisEnabled: true,
+        description: "Moderate latency, smart memory triggers",
+      },
+      memory_aware: {
+        maxMemoriesPerSession: 12,
+        loadTimeoutMs: 5000,
+        naturalTriggersEnabled: true,
+        gitAnalysisEnabled: true,
+        description: "Full memory awareness, accept higher latency",
+      },
+    },
+  },
 }
 
 function parseInteger(value) {
@@ -114,6 +160,11 @@ function environmentOverrides() {
     overrides.memoryService.loadTimeoutMs = loadTimeoutMs
   }
 
+  const mode = process.env.OPENCODE_MEMORY_MODE
+  if (mode) {
+    overrides.mode = { profile: mode }
+  }
+
   return overrides
 }
 
@@ -141,6 +192,22 @@ function mergeConfig(base, overrides = {}) {
     harvest: {
       ...base.harvest,
       ...(overrides.harvest || {}),
+    },
+    naturalTriggers: {
+      ...base.naturalTriggers,
+      ...(overrides.naturalTriggers || {}),
+    },
+    gitAnalysis: {
+      ...base.gitAnalysis,
+      ...(overrides.gitAnalysis || {}),
+    },
+    mode: {
+      ...base.mode,
+      ...(overrides.mode || {}),
+      profiles: {
+        ...base.mode?.profiles,
+        ...(overrides.mode?.profiles || {}),
+      },
     },
   }
 }
@@ -177,6 +244,14 @@ async function loadConfig(directory) {
   }
 
   config = mergeConfig(config, environmentOverrides())
+
+  const profile = config.mode?.profiles?.[config.mode?.profile]
+  if (profile) {
+    if (profile.maxMemoriesPerSession !== undefined) config.memoryService.maxMemoriesPerSession = profile.maxMemoriesPerSession
+    if (profile.loadTimeoutMs !== undefined) config.memoryService.loadTimeoutMs = profile.loadTimeoutMs
+    if (profile.naturalTriggersEnabled !== undefined && config.naturalTriggers) config.naturalTriggers.enabled = profile.naturalTriggersEnabled
+    if (profile.gitAnalysisEnabled !== undefined && config.gitAnalysis) config.gitAnalysis.enabled = profile.gitAnalysisEnabled
+  }
 
   return config
 }
@@ -415,6 +490,98 @@ function detectValuableContent(text, config) {
   return { isValuable: true, memoryType: bestType, matchedPattern: "sentence-split", confidence: 0.8, matchedContent: matched.join("\n") }
 }
 
+// --- NEW: Memory-seeking query detection (Natural Memory Triggers) ---
+const MEMORY_SEEKING_PATTERNS = [
+  /\b(what did we|what have we|what was|what about|tell me about|recall|remember|remind me)\b/i,
+  /\b(how did we|how was|how does|how do we|how should we)\b.*\b(before|previously|last|earlier|past|old|prior)\b/i,
+  /\b(where is|where are|where did we|where do we)\b/i,
+  /\b(who is|who was|who did|who has)\b/i,
+  /\b(why did we|why was|why is|why does)\b.*\b(decide|choose|pick|select|go with)\b/i,
+  /\b(do you know|do we have|have we ever|is there a|are there any)\b.*\b(memory|stored|saved|previous|past|before|decision|reason|context)\b/i,
+  /\b(what.*decision|what.*choice|what.*reason|what.*context)\b/i,
+  /\b(check.*memory|look.*memory|search.*memory|find.*memory|get.*context)\b/i,
+  /\b(load|fetch|retrieve|pull).*memory/i,
+  /\b(previous|past|earlier).*(discussion|conversation|session|chat|work|project|task)\b/i,
+]
+
+function detectMemorySeekingQuery(text, config) {
+  if (!config.naturalTriggers?.enabled) return null
+
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length < 20) return null
+
+  const lower = trimmed.toLowerCase()
+  const matches = []
+
+  for (const pattern of MEMORY_SEEKING_PATTERNS) {
+    if (pattern.test(lower)) {
+      matches.push(pattern)
+    }
+  }
+
+  if (matches.length === 0) return null
+
+  const confidence = Math.min(1, matches.length / 3)
+  if (confidence < config.naturalTriggers.triggerThreshold) return null
+
+  const query = trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed
+  return { query, confidence, patternCount: matches.length }
+}
+
+// --- NEW: Git-aware context ---
+function getRecentCommits(directory, config) {
+  if (!config.gitAnalysis?.enabled) return []
+
+  try {
+    const maxCount = config.gitAnalysis.maxCommits || 20
+    const lookback = config.gitAnalysis.commitLookback || 14
+    const since = new Date(Date.now() - lookback * 86400000).toISOString().split("T")[0]
+    const raw = execSync(
+      `git log --oneline --since="${since}" --max-count=${maxCount} 2>/dev/null`,
+      { cwd: directory, encoding: "utf8", timeout: 3000 },
+    )
+    return raw.trim().split("\n").filter(Boolean).map((line) => {
+      const idx = line.indexOf(" ")
+      return { hash: line.slice(0, idx || 7), message: line.slice((idx || 0) + 1) }
+    })
+  } catch {
+    return []
+  }
+}
+
+function extractGitQueries(commits, projectName, config) {
+  if (!commits.length) return []
+
+  const queries = new Set()
+  const prefixes = ["feat", "fix", "refactor", "perf", "feature", "update", "add", "implement", "change"]
+
+  for (const commit of commits) {
+    const msg = commit.message
+    const lower = msg.toLowerCase()
+
+    // Use the full commit message if it looks meaningful
+    if (msg.length > 10 && !lower.includes("merge") && !lower.includes("wip") && !lower.includes("changelog")) {
+      queries.add(msg)
+    }
+
+    // Extract topic from conventional commit prefix
+    for (const prefix of prefixes) {
+      if (lower.startsWith(prefix)) {
+        const topic = msg.replace(/^[^(]*\(?([^)]*)\)?\s*:\s*/, "").trim()
+        if (topic.length > 5) {
+          queries.add(`${projectName} ${topic}`)
+        }
+        break
+      }
+    }
+  }
+
+  const maxGitMemories = config.gitAnalysis?.maxGitMemories || 3
+  return [...queries].slice(0, maxGitMemories)
+}
+
+// --- END NEW ---
+
 function analyzeSessionMessages(messages) {
   const analysis = {
     topics: [],
@@ -499,10 +666,6 @@ async function postHarvest(config, body) {
 }
 
 async function searchMemories(config, query, tags, limit) {
-  // /api/search is semantic-only and ignores tag filters server-side
-  // (see SemanticSearchRequest in src/mcp_memory_service/web/api/search.py).
-  // When the caller passes tags, over-fetch and filter client-side so
-  // project-scoped searches actually stay scoped.
   const hasTagFilter = tags.length > 0
   const payload = {
     query,
@@ -538,9 +701,50 @@ async function searchMemories(config, query, tags, limit) {
   return normalized
 }
 
+async function callMCPTool(config, toolName, toolArgs) {
+  try {
+    const mcpEndpoint = "/mcp"
+    const body = await requestJson(config, mcpEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: toolName, arguments: toolArgs },
+        id: 1,
+      }),
+    })
+    const text = body?.result?.content?.[0]?.text || ""
+    return text
+  } catch {
+    return ""
+  }
+}
+
+async function getBootstrapProfile(config, projectName, taskSummary) {
+  const text = await callMCPTool(config, "get_bootstrap_profile", {
+    agent_ids: [AGENT_ID],
+    project_id: projectName,
+    task_summary: taskSummary || `Working on ${projectName}`,
+    max_tokens: 2048,
+  })
+  return text || ""
+}
+
+async function commitSession(config, sessionID, projectName, stateData) {
+  await callMCPTool(config, "commit_session_legacy", {
+    session_id: sessionID,
+    agent_id: AGENT_ID,
+    task_summary: `Session for ${projectName}`,
+    outcome: "success",
+    decisions: (stateData?.decisions || []).slice(0, 10),
+    errors: (stateData?.errors || []).slice(0, 10),
+    user_corrections: (stateData?.userCorrections || []).slice(0, 10),
+    belief_updates: (stateData?.beliefUpdates || []).slice(0, 10),
+  })
+}
+
 async function getHealth(config) {
-  // /api/health was hardened (GHSA-73hc-m4hx-79pj) and returns only {status}.
-  // Storage backend info now lives on /api/health/detailed (requires API key).
   try {
     return await requestJson(config, "/api/health/detailed")
   } catch (_) {
@@ -560,6 +764,17 @@ async function loadSessionMemories({ config, directory, logInfo, logWarn, health
   const projectName = projectNameFromDirectory(directory)
   const tags = tagsForProject(projectName, config)
   const queries = buildQueries(projectName, config)
+
+  // --- NEW: Add git-aware queries ---
+  if (config.gitAnalysis?.enabled) {
+    const commits = getRecentCommits(directory, config)
+    if (commits.length > 0) {
+      const gitQueries = extractGitQueries(commits, projectName, config)
+      queries.push(...gitQueries)
+    }
+  }
+  // --- END NEW ---
+
   const perQueryLimit = Math.max(2, Math.ceil(config.memoryService.maxMemoriesPerSession / Math.max(queries.length, 1)))
 
   if (!healthState.checked) {
@@ -604,12 +819,6 @@ const createPlugin = async ({ directory, client }) => {
   const healthState = { checked: false }
   const harvestFirstRun = { done: false }
 
-  // Per-instance status snapshot. Each plugin instance owns its own picture
-  // of memory activity and writes the whole object to disk on update so that
-  // a sibling plugin instance from a different project cannot leak fields
-  // into our snapshot via partial merges. The file therefore reflects the
-  // most recently active plugin instance — fine for the single-user case the
-  // TUI sidebar widget targets.
   const status = {
     projectName: projectNameFromDirectory(directory),
     loadedCount: 0,
@@ -702,6 +911,35 @@ const createPlugin = async ({ directory, client }) => {
     return sessionState.get(sessionID)
   }
 
+  // --- NEW: Mid-conversation memory retrieval ---
+  const doNaturalTriggerSearch = async (sessionID, query) => {
+    const state = sessionState.get(sessionID)
+    if (!state) return
+
+    const tags = tagsForProject(state.projectName, config)
+    const maxResults = config.naturalTriggers?.maxMemoriesPerTrigger || 3
+
+    try {
+      const results = await searchMemories(config, query, tags, maxResults)
+      if (results.length === 0) return
+
+      const existingIds = new Set((state.memories || []).map((m) => m.id))
+      const newOnes = results.filter((m) => !existingIds.has(m.id))
+      if (newOnes.length === 0) return
+
+      state.memories = sortMemories(dedupeMemories([...state.memories, ...newOnes]))
+      state._pendingNaturalMemories = newOnes
+
+      await logInfo(`Natural trigger: found ${newOnes.length} additional memories`)
+      await writeStatus({
+        lastAction: `Natural trigger: ${newOnes.length} memories (${query.slice(0, 40)}...)`,
+      })
+    } catch (error) {
+      await logWarn(`Natural trigger search failed: ${error.message}`)
+    }
+  }
+  // --- END NEW ---
+
   const handleSessionEnd = async (sessionID, sessionDirectory) => {
     try {
       let state = sessionState.get(sessionID)
@@ -784,6 +1022,14 @@ const createPlugin = async ({ directory, client }) => {
         }
       }
 
+      // --- Commit session to bootstrap learning pipeline ---
+      commitSession(config, sessionID, state.projectName, {
+        decisions: state._decisions || [],
+        errors: state._errors || [],
+        userCorrections: state._userCorrections || [],
+        beliefUpdates: state._beliefUpdates || [],
+      })
+
       // --- Session-End Harvest ---
       const harvestCfg = config.harvest
       if (harvestCfg.enabled && state.messages?.length >= (harvestCfg.minSessionMessages || 10)) {
@@ -834,11 +1080,32 @@ const createPlugin = async ({ directory, client }) => {
 
     state.messages.push({ role: "unknown", content: text })
 
+    // --- NEW: Natural Memory Triggers — detect memory-seeking queries ---
+    const triggerResult = detectMemorySeekingQuery(text, config)
+    if (triggerResult) {
+      const now = Date.now()
+      if (!state._lastNaturalTriggerAt || (now - state._lastNaturalTriggerAt) > (config.naturalTriggers?.cooldownPeriod || 30000)) {
+        state._lastNaturalTriggerAt = now
+        doNaturalTriggerSearch(sessionID, triggerResult.query)
+      }
+    }
+    // --- END NEW ---
+
     const detection = detectValuableContent(text, config)
     const isValuable = overrides.forceRemember || detection.isValuable
 
     if (isValuable) {
       const projectName = state.projectName
+      if (!state._decisions) state._decisions = []
+      if (!state._errors) state._errors = []
+      if (!state._userCorrections) state._userCorrections = []
+      if (!state._beliefUpdates) state._beliefUpdates = []
+      if (detection.memoryType === "decision") {
+        state._decisions.push({ what: detection.matchedContent?.slice(0, 200) || text.slice(0, 200), why: "auto-captured" })
+      }
+      if (detection.memoryType === "error") {
+        state._errors.push({ tool: "assistant", error: text.slice(0, 200), count: 1, severity: "info" })
+      }
       const memoryType = overrides.forceRemember ? "note" : detection.memoryType
       const tags = [
         ...config.autoCapture.tags,
@@ -945,6 +1212,20 @@ const createPlugin = async ({ directory, client }) => {
           if (memCount !== undefined) lines.push(`- Total memories: ${memCount}`)
           lines.push(`- Endpoint: ${config.memoryService.endpoint}`)
           block = lines.join("\n")
+        } else if (sub === "mode" && tokens.length > 1) {
+          const newMode = tokens[1].toLowerCase()
+          if (config.mode?.profiles?.[newMode]) {
+            config.mode.profile = newMode
+            const profile = config.mode.profiles[newMode]
+            if (profile.maxMemoriesPerSession !== undefined) config.memoryService.maxMemoriesPerSession = profile.maxMemoriesPerSession
+            if (profile.loadTimeoutMs !== undefined) config.memoryService.loadTimeoutMs = profile.loadTimeoutMs
+            if (profile.naturalTriggersEnabled !== undefined && config.naturalTriggers) config.naturalTriggers.enabled = profile.naturalTriggersEnabled
+            if (profile.gitAnalysisEnabled !== undefined && config.gitAnalysis) config.gitAnalysis.enabled = profile.gitAnalysisEnabled
+            block = `# Memory Mode — ${newMode}\n\n${profile.description}`
+          } else {
+            const available = Object.keys(config.mode?.profiles || {}).join(", ")
+            block = `# Unknown mode: "${newMode}"\n\nAvailable modes: ${available}`
+          }
         } else {
           // Read from this plugin instance's in-memory snapshot — not from
           // STATUS_FILE — so the displayed status is always the current
@@ -953,7 +1234,9 @@ const createPlugin = async ({ directory, client }) => {
           const sessionMemories = input.sessionID
             ? sessionState.get(input.sessionID)?.memories?.length
             : undefined
+          const modeLabel = config.mode?.profile || "balanced"
           const lines = [`# Memory Status — ${projectName}`, ""]
+          lines.push(`- Mode: ${modeLabel}`)
           lines.push(`- Project: ${status.projectName || projectName}`)
           lines.push(`- Loaded this session: ${sessionMemories ?? status.loadedCount ?? 0}`)
           lines.push(`- Auto-captured: ${status.capturedCount ?? 0}`)
@@ -961,7 +1244,7 @@ const createPlugin = async ({ directory, client }) => {
           if (status.lastSummaryAt) lines.push(`- Last summary: ${status.lastSummaryAt}`)
           if (status.updatedAt) lines.push(`- Updated: ${status.updatedAt}`)
           lines.push("")
-          lines.push("Usage: `/memory`, `/memory search <query>`, `/memory health`")
+          lines.push("Usage: `/memory`, `/memory search <query>`, `/memory health`, `/memory mode <profile>`")
           block = lines.join("\n")
         }
       } catch (error) {
@@ -978,14 +1261,28 @@ const createPlugin = async ({ directory, client }) => {
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return
 
-      // session.created fires before bus subscription starts — refreshSession
-      // might never have been called. Load memories on first system prompt request.
       let state = sessionState.get(input.sessionID)
       if (!state) {
         refreshSession(input.sessionID, directory)
         state = sessionState.get(input.sessionID)
       }
       state = await waitForSession(input.sessionID, directory)
+      if (!state?) return
+
+      // Load bootstrap profile (fire-and-forget, non-blocking)
+      if (!state._bootstrapLoaded) {
+        state._bootstrapLoaded = true
+        getBootstrapProfile(config, state.projectName).then((profile) => {
+          if (profile) {
+            state._bootstrapProfile = profile
+          }
+        })
+      }
+
+      if (state?._bootstrapProfile) {
+        output.system.push(state._bootstrapProfile)
+      }
+
       if (!state?.memories?.length) return
 
       const formatted = formatMemories(state.projectName, state.memories, config)

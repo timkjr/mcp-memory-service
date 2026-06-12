@@ -5,6 +5,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const http = require('http');
+const https = require('https');
 
 // Import utilities
 const { detectProjectContext } = require('../utilities/project-detector');
@@ -1354,8 +1356,62 @@ async function executeSessionStart(context) {
                 contentLengthConfig: config.contentLength
             });
             
+            // Fetch bootstrap profile to inject alongside memory context
+            let bootstrapProfile = null;
+            try {
+                const mcpUrl = new URL('/mcp', config.memoryService?.http?.endpoint || 'http://127.0.0.1:8000');
+                const apiKey = config.memoryService?.http?.apiKey || '';
+                const mcpPayload = JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: 'tools/call',
+                    params: {
+                        name: 'get_bootstrap_profile',
+                        arguments: { agent_ids: ['claude-code'], max_tokens: 1024 },
+                    },
+                    id: 1,
+                });
+                const isHttps = mcpUrl.protocol === 'https:';
+                const mod = isHttps ? https : http;
+                bootstrapProfile = await new Promise((resolve) => {
+                    const opts = {
+                        hostname: mcpUrl.hostname,
+                        port: mcpUrl.port || (isHttps ? 443 : 80),
+                        path: mcpUrl.pathname,
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Content-Length': Buffer.byteLength(mcpPayload),
+                            ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+                        },
+                        timeout: 8000,
+                        rejectUnauthorized: false,
+                    };
+                    const req = mod.request(opts, (res) => {
+                        let d = '';
+                        res.on('data', c => d += c);
+                        res.on('end', () => {
+                            try {
+                                const parsed = JSON.parse(d);
+                                const text = parsed?.result?.content?.[0]?.text;
+                                resolve(text || null);
+                            } catch { resolve(null); }
+                        });
+                    });
+                    req.on('error', () => resolve(null));
+                    req.on('timeout', () => { req.destroy(); resolve(null); });
+                    req.write(mcpPayload);
+                    req.end();
+                });
+            } catch {
+                // non-fatal
+            }
+
             // Inject context into session
             if (context.injectSystemMessage) {
+                // Inject bootstrap profile first if available
+                if (bootstrapProfile && !bootstrapProfile.includes('Bootstrap disabled') && !bootstrapProfile.includes('No data available')) {
+                    await context.injectSystemMessage(bootstrapProfile);
+                }
                 await context.injectSystemMessage(contextMessage);
                 // Note: Don't console.log here - injectSystemMessage handles display
                 // console.log would cause duplicate output in Claude Code
