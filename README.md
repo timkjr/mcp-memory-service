@@ -555,20 +555,20 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v11.0.0** (June 13, 2026)
+## Latest Release: **v11.0.1** (June 13, 2026)
 
-**MAJOR: Legacy alias removal + optional ML dependencies**
-
-BREAKING CHANGE: the 34 legacy tool-name aliases deprecated in v10.x are removed. See docs/MIGRATION.md for the rename mapping before upgrading.
+**PATCH: Bootstrap profile + harvest-aware session hooks**
 
 **What's New:**
-- `feat(deps)`: torch and transformers are now optional — the default install uses ONNX Runtime only, dramatically reducing install size and startup time (PR #49, @filhocf)
-- `feat(v11)!`: remove the full deprecation layer (DEPRECATED_TOOLS, transform_deprecated_call, MCP_SHOW_LEGACY_TOOLS, ToolDef.deprecated) and all 34 legacy tool-name aliases. mcp_memory_service.compat is retained for _sanitize_log_value() (PR #72, supersedes #60)
-- `docs`: README, architecture guide, quality guide, and wiki examples migrated to the current 28-tool registry names (PR #71)
+- `feat(hooks)`: session-start now calls `get_bootstrap_profile` to inject a behavioral profile into session context before memories load; session-end feeds harvest results into `commit_session_legacy` for the bootstrap learning pipeline
+- `feat(hooks)`: `mapCandidatesToLegacyArgs()` derives decisions/errors/belief_updates arrays from `/api/harvest` candidates (mirroring the server-side `auto_commit` bridge in `handle_memory_harvest`), replacing hardcoded empty arrays and fixing a dead `stored_count`/`candidates` read that never matched `HarvestResponse`'s shape
+- `feat`: Natural Memory Triggers, git-aware context, and a memory mode controller added to the OpenCode memory plugin; `AGENTS.md` updated; new `scripts/hooks/post-edit-tests.sh` runs scoped pytest on Python edits
+- `docs`: git remote policy documented — Forgejo only for pushes
 
 ---
 
 **Previous Releases**:
+- **v11.0.0** - MAJOR: legacy alias removal + optional ML dependencies / ONNX-first fallback (PR #49) + docs migration to current tool names (PR #71) (June 13, 2026)
 - **v10.74.2** - fix(storage): UTC-correct timeframe-delete date boundaries across sqlite_vec/Cloudflare/Milvus backends (June 11, 2026)
 - **v10.74.1** - fix(harvest): OpenClaw preamble noise filter in PatternExtractor (PR #46, @filhocf) (June 6, 2026)
 - **v10.74.0** - §13 declarative dispatch registry + §10 sqlite_vec mixin decomposition (both @filhocf) (June 5, 2026)
