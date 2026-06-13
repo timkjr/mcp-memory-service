@@ -10,6 +10,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [11.0.0] - 2026-06-13
+
+MAJOR release. The default install is now dramatically smaller and faster: torch and transformers are optional extras, ONNX is the primary embedding backend. The tool surface is cleaner too — 28 well-named tools, no legacy aliases cluttering clients that support tool discovery.
+
+BREAKING CHANGE: the 34 legacy tool-name aliases that were deprecated in v10.x are removed. Clients still using old names (e.g. retrieve_memory, store_memory, delete_by_tag, search_by_tag, rate_memory, and the consolidation/graph/ingest aliases) must update to the current names before upgrading. See docs/MIGRATION.md for the complete mapping.
+
+### Added
+
+- feat(deps): torch and transformers are now optional extras (install extras: [ml] or [full]). The default install uses ONNX Runtime for embeddings, which requires no GPU, has a much smaller footprint, and starts faster. Existing deployments that rely on sentence-transformers can add [ml] to their install command and nothing else changes (PR #49, @filhocf).
+
+### Changed
+
+- feat(v11)!: remove the full deprecation layer — DEPRECATED_TOOLS dict, transform_deprecated_call(), is_deprecated(), get_new_tool_name(), get_deprecated_tool_defs(), get_deprecation_message(), MCP_SHOW_LEGACY_TOOLS env var, and ToolDef.deprecated field are all gone. The 34 legacy aliases they backed (retrieve_memory, store_memory, delete_by_tag, search_by_tag, rate_memory, and all consolidation/graph/ingest shims) no longer exist as callable MCP tools. The module mcp_memory_service.compat is retained for _sanitize_log_value() which is still used by the log-injection guard throughout the codebase (PR #72, supersedes #60).
+- docs: README, architecture guide, quality guide, and wiki examples migrated to the current 28-tool registry names. No prose references to legacy aliases remain (PR #71).
+
+### Migration
+
+Clients must rename calls before upgrading to v11. Full mapping: docs/MIGRATION.md. The canonical tool surface is the 28 tools in src/mcp_memory_service/tools/registry.py. Quick reference for the most common renames:
+
+- retrieve_memory -> memory_search
+- store_memory -> memory_store
+- delete_by_tag -> memory_delete
+- search_by_tag -> memory_list
+- rate_memory -> memory_quality
+
 ## [10.74.2] - 2026-06-11
 
 ### Fixed

@@ -209,3 +209,84 @@ class TestMultiStoreToolWiring:
         text = result[0].text
         # Should either be empty results or not contain our content
         assert "no memories found" in text.lower() or "0 memories" in text.lower() or '"memories": []' in text
+
+
+async def _build_pre_62_db(db_path):
+    """Create a database in the pre-#62 state: a vec0 `memory_embeddings`
+    table WITHOUT the store partition key (plus its shadow tables and one row),
+    so re-opening triggers the multi-store migration on an existing DB.
+
+    Returns the original embedding rowids for later verification.
+    """
+    s = SqliteVecMemoryStorage(db_path)
+    await s.initialize()
+    await s.store(Memory(content="legacy chunk before #62", content_hash="legacy_pre62_1", tags=["t"]))
+    rows = s.conn.execute("SELECT rowid, content_embedding FROM memory_embeddings").fetchall()
+    dim = s.embedding_dimension
+    # Downgrade the table to the pre-#62 shape (no partition key). vec0 DROP
+    # removes the partitioned shadow tables; the fresh CREATE makes old-style ones.
+    s.conn.execute("DROP TABLE memory_embeddings")
+    s.conn.execute(
+        f"CREATE VIRTUAL TABLE memory_embeddings USING vec0("
+        f"content_embedding FLOAT[{dim}] distance_metric=cosine)"
+    )
+    for rid, emb in rows:
+        s.conn.execute(
+            "INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+            (rid, emb),
+        )
+    s.conn.commit()
+    await s.close()
+    return rows
+
+
+class TestMultiStoreMigrationExistingDB:
+    """Issue #68: multi-store vec0 migration must not abort on an existing DB."""
+
+    @pytest.mark.asyncio
+    async def test_migration_on_existing_pre62_db_succeeds(self, tmp_path):
+        """Re-opening a pre-#62 database runs the migration without aborting,
+        preserves embeddings, and leaves writes working."""
+        db_path = str(tmp_path / "pre62.db")
+        original = await _build_pre_62_db(db_path)
+        assert len(original) == 1
+
+        # Re-open: this is where the migration runs. Pre-fix it raised
+        # RuntimeError("Multi-store vec0 migration failed (aborting): ...
+        # memory_embeddings_info already exists").
+        s2 = SqliteVecMemoryStorage(db_path)
+        await s2.initialize()
+        try:
+            sql = s2.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='memory_embeddings'"
+            ).fetchone()[0]
+            assert 'partition' in sql.lower(), "partition key not added by migration"
+
+            count = s2.conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0]
+            assert count == 1, "existing embedding lost during migration"
+
+            res = await s2.store(
+                Memory(content="written after migration", content_hash="post_migration_1", tags=["t"])
+            )
+            assert res[0] is True, "writes still broken after migration"
+        finally:
+            await s2.close()
+
+    @pytest.mark.asyncio
+    async def test_migration_is_idempotent(self, tmp_path):
+        """Running initialize() twice on a migrated DB is a no-op, not a re-abort."""
+        db_path = str(tmp_path / "pre62_idem.db")
+        await _build_pre_62_db(db_path)
+        s2 = SqliteVecMemoryStorage(db_path)
+        await s2.initialize()
+        await s2.close()
+        # Second open must also succeed cleanly.
+        s3 = SqliteVecMemoryStorage(db_path)
+        await s3.initialize()
+        try:
+            sql = s3.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='memory_embeddings'"
+            ).fetchone()[0]
+            assert 'partition' in sql.lower()
+        finally:
+            await s3.close()

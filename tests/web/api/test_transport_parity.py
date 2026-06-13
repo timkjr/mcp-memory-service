@@ -127,20 +127,15 @@ async def test_local_only_tools_excluded_from_http_list(test_app):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_local_only_tools_rejected_on_http_call(test_app):
-    """Calling a local-only tool over HTTP — or via one of its deprecated
-    aliases — must return JSON-RPC -32601 (method not found). The
-    handler must not run."""
+    """Calling a local-only tool over HTTP must return JSON-RPC -32601
+    (method not found). The handler must not run."""
     import mcp_memory_service.server  # noqa: F401
     from mcp_memory_service.web.api.mcp import _get_memory_server
-    from mcp_memory_service.compat import DEPRECATED_TOOLS
 
     server = _get_memory_server()
     local_only = server.local_only_tools()
 
     targets = list(local_only)
-    targets += [
-        old for old, (new, _) in DEPRECATED_TOOLS.items() if new in local_only
-    ]
     assert targets, "Test premise broken: no local-only names to check"
 
     for name in targets:

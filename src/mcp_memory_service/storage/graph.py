@@ -28,6 +28,9 @@ import sqlite3
 import json
 import logging
 import asyncio
+import re
+import hashlib
+import unicodedata
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timezone
 
@@ -35,6 +38,26 @@ from mcp_memory_service.models.ontology import is_symmetric_relationship, valida
 from mcp_memory_service.compat import _sanitize_log_value
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_entity_id(name: str) -> str:
+    """Canonical, deterministic, consolidation-stable entity_id slug.
+
+    NFKD-decomposes the surface form, strips combining marks, then slugifies to
+    ``[a-z0-9-]``. Scripts with no ASCII decomposition (CJK, Cyrillic, Greek,
+    Arabic, ...) fall back to a stable ``e-<sha1[:8]>`` hash so every entity
+    still gets a usable id. Two distinct surface forms that slugify identically
+    are disambiguated by callers appending the same short hash suffix.
+
+    This is the single source of truth shared by the graph layer and the
+    explore/detail handlers — do not duplicate the logic elsewhere.
+    """
+    nfkd = unicodedata.normalize('NFKD', name or '')
+    ascii_ish = ''.join(c for c in nfkd if not unicodedata.combining(c))
+    slug = re.sub(r'[^a-z0-9]+', '-', ascii_ish.lower().strip()).strip('-')
+    if not slug:
+        return 'e-' + hashlib.sha1((name or '').encode('utf-8')).hexdigest()[:8]
+    return slug
 
 # SQL query templates for graph traversal
 # These templates use .format() for safe variable substitution (not user input)

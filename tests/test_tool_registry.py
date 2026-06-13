@@ -3,7 +3,7 @@
 import pytest
 
 
-# All 26 tools that must be in the registry
+# All 28 tools that must be in the registry
 EXPECTED_TOOLS = [
     "memory_store",
     "memory_store_session",
@@ -31,6 +31,8 @@ EXPECTED_TOOLS = [
     "get_bootstrap_profile",
     "get_onboarding_guide",
     "memory_distill",
+    "memory_explore",
+    "memory_detail",
 ]
 
 
@@ -68,6 +70,27 @@ class TestToolRegistry:
         store_tool = next(t for t in TOOL_REGISTRY if t.name == "memory_store")
         assert store_tool.annotations.get("destructiveHint") is False
 
+    def test_two_phase_query_tools_read_only(self):
+        """memory_explore/memory_detail are read-only — readOnlyHint MUST be set
+        so the HTTP /mcp layer treats them as read-scope (GHSA-2r68-g678-7qr3)."""
+        from mcp_memory_service.tools.registry import TOOL_REGISTRY
+        for name in ("memory_explore", "memory_detail"):
+            tool = next((t for t in TOOL_REGISTRY if t.name == name), None)
+            assert tool is not None, f"{name} not registered"
+            assert tool.annotations.get("readOnlyHint") is True, \
+                f"{name} must declare readOnlyHint=True"
+
+    def test_two_phase_query_tools_required_params(self):
+        """Contract from #61: explore requires query, detail requires entity_id."""
+        from mcp_memory_service.tools.registry import TOOL_REGISTRY
+        explore = next(t for t in TOOL_REGISTRY if t.name == "memory_explore")
+        detail = next(t for t in TOOL_REGISTRY if t.name == "memory_detail")
+        assert explore.input_schema.get("required") == ["query"]
+        assert detail.input_schema.get("required") == ["entity_id"]
+        # store param accepted on both (composes with #62 multi-store scoping)
+        assert "store" in explore.input_schema["properties"]
+        assert "store" in detail.input_schema["properties"]
+
     def test_tooldef_frozen(self):
         """ToolDef should be immutable (frozen dataclass)."""
         from mcp_memory_service.tools.registry import TOOL_REGISTRY
@@ -91,13 +114,13 @@ class TestRoutingTable:
         missing = registry_names - routing_names
         assert not missing, f"Tools in registry but not in routing: {missing}"
 
-    def test_routing_covers_legacy_aliases(self):
-        """Legacy/alias tool names in call_tool must also route."""
+    def test_legacy_aliases_removed_in_v11(self):
+        """The v10 deprecated tool-name aliases must NOT route in V11 (Issue #53)."""
         from mcp_memory_service.tools.routing import ROUTING_TABLE
-        # Some critical legacy names that call_tool handles
-        legacy = ["retrieve_memory", "recall_memory", "delete_by_tag", "search_by_tag"]
-        for name in legacy:
-            assert name in ROUTING_TABLE, f"Legacy alias missing: {name}"
+        removed = ["retrieve_memory", "recall_memory", "delete_by_tag", "search_by_tag",
+                   "store_memory", "ingest_document", "consolidate_memories"]
+        for name in removed:
+            assert name not in ROUTING_TABLE, f"Deprecated alias still present in V11: {name}"
 
     def test_routing_values_are_callable_or_tuple(self):
         from mcp_memory_service.tools.routing import ROUTING_TABLE

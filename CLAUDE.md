@@ -58,7 +58,7 @@ Before merging or releasing:
 
 MCP Memory Service is a semantic memory layer for AI applications, accessible via REST API and MCP transport. It provides persistent storage for 14+ AI clients including Claude Desktop, OpenCode, LangGraph, CrewAI, and any HTTP client. It uses vector embeddings for semantic search, supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), and includes advanced features like memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
 
-**Current Version:** v10.74.2 - fix(storage): UTC-correct timeframe-delete date boundaries across sqlite_vec/Cloudflare/Milvus backends — ~1,828 tests — see [CHANGELOG.md](CHANGELOG.md) for details
+**Current Version:** v11.0.0 - MAJOR release: legacy tool-name alias removal (PR #72) + optional ML dependencies / ONNX-first fallback (PR #49) + docs migration to current tool names (PR #71) — ~1,828 tests — see [CHANGELOG.md](CHANGELOG.md) for details
 
 > **🎯 v10.0.0 Milestone**: This major release represents a complete API consolidation - 34 tools unified into 12 with enhanced capabilities. All deprecated tools continue working with warnings until v11.0. See `docs/MIGRATION.md` for migration guide.
 
@@ -469,7 +469,7 @@ export MCP_EXTERNAL_EMBEDDING_API_KEY=sk-xxx  # Optional
 1. Add a handler function (or method) — these live in `src/mcp_memory_service/server/handlers/*.py` and follow the `async def handle_X(server, arguments) -> List[types.TextContent]` shape.
 2. Add a `types.Tool(...)` entry to `MemoryServer.list_tools()` in `src/mcp_memory_service/server_impl.py` with name, description, `inputSchema`, and `annotations`. Set `annotations=types.ToolAnnotations(readOnlyHint=True, ...)` if the tool does not mutate state — otherwise the HTTP `/mcp` layer will treat it as a write tool and require the OAuth `write` scope to call it (GHSA-2r68-g678-7qr3).
 3. Add a dispatch branch in `MemoryServer.call_tool()` routing the tool name to your handler.
-4. If you're renaming an existing tool, register the old name in `compat.DEPRECATED_TOOLS` so deprecated callers keep working.
+4. Renaming an existing tool is a **breaking change**. As of V11 there is no legacy tool-name alias layer (`compat.DEPRECATED_TOOLS` was removed in Issue #53), so a rename drops the old name outright. Avoid renames; if unavoidable, treat it as a major-version change and document the migration in `docs/MIGRATION.md`.
 5. Add tests in `tests/server/test_handlers.py`.
 
 **Add a new storage backend:**

@@ -141,7 +141,7 @@ class MCPTestClient:
                     "jsonrpc": "2.0",
                     "method": "call_tool",
                     "params": {
-                        "name": "store_memory",
+                        "name": "memory_store",
                         "arguments": memory
                     },
                     "id": self.get_message_id()

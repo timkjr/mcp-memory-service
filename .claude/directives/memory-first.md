@@ -22,7 +22,7 @@ When you need information about this project, follow this order:
 
 **Search memory when files don't explain WHY:**
 
-Use `mcp__memory__retrieve_memory(query)` for:
+Use `mcp__memory__memory_search(query)` for:
 - **Design decisions**: Why was X chosen over Y?
 - **Known issues**: Has this problem been solved before?
 - **Performance baselines**: What metrics did we measure?
@@ -32,13 +32,13 @@ Use `mcp__memory__retrieve_memory(query)` for:
 **Common search patterns:**
 ```bash
 # Design decisions
-mcp__memory__retrieve_memory("consolidation design decision")
+mcp__memory__memory_search("consolidation design decision")
 
 # Known issues
-mcp__memory__search_by_tag(["bug-fix", "troubleshooting"])
+mcp__memory__memory_search(tags=["bug-fix", "troubleshooting"])
 
 # Performance context
-mcp__memory__retrieve_memory("performance baseline measurements")
+mcp__memory__memory_search("performance baseline measurements")
 ```
 
 **Tags to search**: `mcp-memory-service`, `architecture`, `decision`, `bug-fix`, `performance`, `release`
@@ -105,7 +105,7 @@ Ask user
 
 - **Be specific**: `"consolidation cluster deduplication"` not just `"consolidation"`
 - **Use project tag**: All relevant memories tagged with `mcp-memory-service`
-- **Search by tags**: `retrieve_by_tags(["architecture", "decision"])`
+- **Search by tags**: `memory_search(tags=["architecture", "decision"])`
 - **Timeframe matters**: Recent decisions may override old ones (check created_at)
 - **Check quality**: High-quality memories (score ≥0.7) are more reliable
 

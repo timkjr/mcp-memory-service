@@ -19,8 +19,6 @@ class ToolDef:
     description: str
     input_schema: dict[str, Any]
     annotations: dict[str, Any] = field(default_factory=dict)
-    deprecated: bool = False
-    deprecated_replacement: str | None = None
 
 
 TOOL_REGISTRY: list[ToolDef] = [
@@ -1107,5 +1105,125 @@ Examples:
                         },
                     },
         annotations={'destructiveHint': False},
+    ),
+    ToolDef(
+        name="memory_explore",
+        description="""Explore a knowledge map of entities related to a query (LLM-free).
+
+USE THIS WHEN:
+- User wants a high-level overview ("what do I know about X", "map out", "explore")
+- Need entities + their relationships rather than raw memory chunks
+- Building a knowledge graph view or entity dashboard
+
+Returns a list of entities. Per entity:
+- entity_id: canonical slug (NFKD-normalized, hash fallback for non-Latin scripts)
+- name, entity_type
+- summary: extractive (LLM-free) summary from top chunks
+- relation_count: number of graph relationships
+- top_chunks: most relevant memory chunks for the entity
+
+Read-only. Composes with `store` for multi-store scoping.
+
+Examples:
+{"query": "authentication design"}
+{"query": "python", "max_entities": 5, "chunks_per_entity": 2}
+{"query": "database", "tags": ["reference"], "min_score": 0.3}
+""",
+        input_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query used to discover candidate entities"
+                            },
+                            "max_entities": {
+                                "type": "integer",
+                                "default": 10,
+                                "minimum": 1,
+                                "maximum": 100,
+                                "description": "Maximum number of entities to return"
+                            },
+                            "chunks_per_entity": {
+                                "type": "integer",
+                                "default": 3,
+                                "minimum": 1,
+                                "maximum": 50,
+                                "description": "Maximum top chunks to include per entity"
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Restrict candidate retrieval to memories with any of these tags"
+                            },
+                            "min_score": {
+                                "type": "number",
+                                "default": 0.0,
+                                "minimum": 0.0,
+                                "maximum": 1.0,
+                                "description": "Minimum relevance score for candidate chunks"
+                            },
+                            "store": {
+                                "type": "string",
+                                "description": "Optional store/namespace to scope retrieval (composes with multi-store support)"
+                            }
+                        },
+                        "required": ["query"]
+                    },
+        annotations={'readOnlyHint': True},
+    ),
+    ToolDef(
+        name="memory_detail",
+        description="""Get the full ranked detail for a single entity.
+
+USE THIS WHEN:
+- User drills into one entity from a knowledge map ("tell me more about X")
+- Need the full ranked list of chunks for an entity plus its related entities
+
+Returns:
+- entity_id, name
+- chunks: ranked memory chunks (relevance now; composite_score + score_components once #55 lands)
+- related_entities: neighbouring entities (gated by include_related / max_hops)
+
+Read-only.
+
+Examples:
+{"entity_id": "authentication-design"}
+{"entity_id": "python", "limit": 20, "include_related": false}
+{"entity_id": "database", "max_hops": 2}
+""",
+        input_schema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Canonical entity id (slug) returned by memory_explore"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 50,
+                                "minimum": 1,
+                                "maximum": 200,
+                                "description": "Maximum ranked chunks to return"
+                            },
+                            "include_related": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "Include related entities discovered via graph traversal"
+                            },
+                            "max_hops": {
+                                "type": "integer",
+                                "default": 1,
+                                "minimum": 1,
+                                "maximum": 4,
+                                "description": "Maximum hops for related-entity discovery"
+                            },
+                            "store": {
+                                "type": "string",
+                                "description": "Optional store/namespace to scope retrieval (composes with multi-store support)"
+                            }
+                        },
+                        "required": ["entity_id"]
+                    },
+        annotations={'readOnlyHint': True},
     ),
 ]

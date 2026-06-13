@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from ..._version import __version__
-from ...compat import DEPRECATED_TOOLS
 from ..oauth.middleware import require_read_access, AuthenticationResult
 
 logger = logging.getLogger(__name__)
@@ -31,18 +30,10 @@ def _is_local_only(server, tool_name: Optional[str]) -> bool:
     server process can read. The canonical list lives on `MemoryServer`
     so any future local transport (e.g. a unix socket) inherits the same
     restriction by importing the same source of truth.
-
-    Deprecated aliases (e.g. `ingest_document` → `memory_ingest`) are
-    resolved to their v10 target before classification — otherwise a
-    remote client could call the local-only tool through its old name.
     """
     if not tool_name:
         return False
-    target = tool_name
-    alias = DEPRECATED_TOOLS.get(tool_name)
-    if alias is not None:
-        target = alias[0]
-    return target in server.local_only_tools()
+    return tool_name in server.local_only_tools()
 
 
 async def _requires_write(server, tool_name: Optional[str]) -> bool:
@@ -60,20 +51,12 @@ async def _requires_write(server, tool_name: Optional[str]) -> bool:
     caching (the alternative would risk a stale cache locked in before the
     consolidator finished initializing).
 
-    Deprecated aliases (e.g. `store_memory` → `memory_store`) are resolved
-    to their v10 target before classification — without this a read-only
-    token could call `store_memory` and have it silently dispatched past
-    the scope gate (GHSA-2r68-g678-7qr3 regression risk).
-
     Conservative default: a tool name we don't recognise is treated as
     requiring write scope.
     """
     if not tool_name:
         return False
     target = tool_name
-    alias = DEPRECATED_TOOLS.get(tool_name)
-    if alias is not None:
-        target = alias[0]
     # Fail closed if list_tools() raises during classification: the request
     # MUST NOT be allowed through the scope gate just because we couldn't
     # introspect the surface. A read-only token gets a clean -32003/403;

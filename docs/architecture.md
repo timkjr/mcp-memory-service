@@ -241,12 +241,9 @@ Automatic detection and optimization for different platforms:
 
 | Operation | Description | Parameters |
 |-----------|-------------|------------|
-| `store_memory` | Store new memory with tags | content, tags, metadata |
-| `retrieve_memory` | Semantic search | query, n_results |
-| `recall_memory` | Time-based retrieval | time_expression, n_results |
-| `search_by_tag` | Tag-based search | tags[] |
-| `delete_memory` | Delete by hash | content_hash |
-| `delete_by_tags` | Bulk deletion | tags[] |
+| `memory_store` | Store new memory with tags | content, tags, metadata |
+| `memory_search` | Semantic, tag, and time-based search | query, tags, time_expression, n_results |
+| `memory_delete` | Delete by hash or by tags | content_hash, tags[] |
 
 ### Utility Operations
 
@@ -269,7 +266,7 @@ Automatic detection and optimization for different platforms:
 
 ### Memory Storage Flow
 ```
-1. Client sends store_memory request
+1. Client sends memory_store request
 2. Server validates and enriches metadata
 3. Content is hashed for deduplication
 4. Text is embedded using sentence transformers
@@ -279,7 +276,7 @@ Automatic detection and optimization for different platforms:
 
 ### Memory Retrieval Flow
 ```
-1. Client sends retrieve_memory request
+1. Client sends memory_search request
 2. Query is embedded to vector representation
 3. Vector similarity search performed
 4. Results ranked by similarity score
@@ -288,7 +285,7 @@ Automatic detection and optimization for different platforms:
 
 ### Time-Based Recall Flow
 ```
-1. Client sends recall_memory with time expression
+1. Client sends memory_search with time expression
 2. Time parser extracts temporal boundaries
 3. Semantic query combined with time filter
 4. Filtered results returned chronologically

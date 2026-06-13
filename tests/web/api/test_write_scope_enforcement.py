@@ -150,12 +150,11 @@ def test_store_memory_allowed_with_write_scope(read_write_client):
 
 @pytest.mark.integration
 def test_read_tools_allowed_with_read_only_scope(read_only_client):
-    """read scope can still call retrieve_memory, search_by_tag, list_memories."""
+    """read scope can still call read tools (v10 canonical names)."""
     for tool, args in [
-        ("retrieve_memory", {"query": "test query"}),
-        ("search_by_tag", {"tags": ["test"]}),
-        ("check_database_health", {}),
-        ("list_memories", {}),
+        ("memory_search", {"query": "test query"}),
+        ("memory_list", {}),
+        ("memory_health", {}),
     ]:
         response = read_only_client.post(
             "/mcp",

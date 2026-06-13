@@ -33,6 +33,8 @@ _PRIMARY: dict[str, tuple[str, str]] = {
     "memory_harvest": ("__self__", "handle_memory_harvest"),
     "memory_quality": _handler("quality", "handle_memory_quality"),
     "memory_graph": _handler("graph", "handle_memory_graph"),
+    "memory_explore": _handler("graph", "handle_memory_explore"),
+    "memory_detail": _handler("graph", "handle_memory_detail"),
     "memory_conflicts": _handler("quality", "handle_memory_conflicts"),
     "memory_resolve": _handler("quality", "handle_memory_resolve"),
     "mistake_note_add": _handler("mistake_notes", "handle_mistake_note_add"),
@@ -47,48 +49,16 @@ _PRIMARY: dict[str, tuple[str, str]] = {
     "memory_distill": ("__self__", "handle_memory_distill"),
 }
 
-# Legacy/alias names (not advertised but still handled in call_tool)
+# Active, non-advertised handlers. These are NOT deprecated aliases and stay
+# in V11. The v10 legacy tool-name aliases (the old compat.DEPRECATED_TOOLS
+# set: retrieve_memory, store_memory, delete_by_tag, search_by_tag, ...) were
+# removed here in Issue #53 Step 3 — those names are now simply unknown.
 _LEGACY: dict[str, tuple[str, str]] = {
-    # Memory retrieval aliases
-    "retrieve_memory": _handler("memory", "handle_retrieve_memory"),
-    "recall_memory": _handler("memory", "handle_recall_memory"),
-    "recall_by_timeframe": _handler("memory", "handle_recall_memory"),
-    "retrieve_with_quality_boost": _handler("memory", "handle_retrieve_with_quality_boost"),
-    "exact_match_retrieve": _handler("memory", "handle_exact_match_retrieve"),
-    "debug_retrieve": _handler("memory", "handle_debug_retrieve"),
     "get_raw_embedding": _handler("memory", "handle_get_raw_embedding"),
-    # Search aliases
-    "search_by_tag": _handler("memory", "handle_search_by_tag"),
-    # Delete aliases
-    "delete_memory": _handler("memory", "handle_delete_memory"),
-    "delete_by_tag": _handler("memory", "handle_delete_by_tag"),
-    "delete_by_tags": _handler("memory", "handle_delete_by_tags"),
-    "delete_by_all_tags": _handler("memory", "handle_delete_by_all_tags"),
-    "delete_before_date": _handler("memory", "handle_memory_delete"),
-    "delete_by_timeframe": _handler("memory", "handle_memory_delete"),
-    # Consolidation aliases
-    "consolidate_memories": _handler("consolidation", "handle_consolidate_memories"),
-    "consolidation_status": _handler("consolidation", "handle_consolidation_status"),
-    "consolidation_recommendations": _handler("consolidation", "handle_consolidation_recommendations"),
-    "scheduler_status": _handler("consolidation", "handle_scheduler_status"),
-    "trigger_consolidation": _handler("consolidation", "handle_trigger_consolidation"),
-    "pause_consolidation": _handler("consolidation", "handle_pause_consolidation"),
-    "resume_consolidation": _handler("consolidation", "handle_resume_consolidation"),
-    # Quality aliases
     "memory_rate": _handler("quality", "handle_rate_memory"),
-    "get_memory_quality": _handler("quality", "handle_get_memory_quality"),
-    "analyze_quality_distribution": _handler("quality", "handle_analyze_quality_distribution"),
-    # Graph aliases
-    "find_connected_memories": _handler("graph", "handle_find_connected_memories"),
-    "find_shortest_path": _handler("graph", "handle_find_shortest_path"),
-    "get_memory_subgraph": _handler("graph", "handle_get_memory_subgraph"),
     "infer": _handler("graph", "handle_infer"),
-    # Document aliases
-    "ingest_document": _handler("documents", "handle_ingest_document"),
-    "ingest_directory": _handler("documents", "handle_ingest_directory"),
-    # Observe (inline in server_impl)
+    # Inline / non-advertised handlers (e.g. RFC #1008 auto-capture)
     "memory_observe": _handler("memory", "handle_memory_observe"),
-    # Other inline handlers
     "memory_review": ("__self__", "handle_memory_review"),
     "memory_analysis": ("__self__", "handle_memory_analysis"),
     "knowledge_export": ("__self__", "handle_knowledge_export"),

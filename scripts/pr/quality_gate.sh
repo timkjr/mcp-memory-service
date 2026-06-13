@@ -37,8 +37,11 @@ if ! command -v gh &> /dev/null; then
 fi
 
 if ! command -v gemini &> /dev/null; then
-    echo "Error: Gemini CLI is not installed"
-    exit 1
+    echo "WARNING: Gemini CLI is not installed - skipping AI-based quality checks."
+    echo "   This gate's complexity/security analysis requires the Gemini CLI."
+    echo "   Skipped, NOT passed: code quality was not evaluated locally."
+    echo "   Install the Gemini CLI to run the full gate, or rely on CI for these checks."
+    exit 0
 fi
 
 echo "=== PR Quality Gate for #$PR_NUMBER ==="

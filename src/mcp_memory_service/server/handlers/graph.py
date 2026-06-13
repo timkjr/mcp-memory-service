@@ -26,7 +26,7 @@ import logging
 from typing import List, Optional
 
 from mcp import types
-from ...storage.graph import GraphStorage
+from ...storage.graph import GraphStorage, normalize_entity_id
 from ...config import SQLITE_VEC_PATH, STORAGE_BACKEND
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ async def get_graph_storage() -> Optional[GraphStorage]:
         try:
             return GraphStorage(SQLITE_VEC_PATH)
         except Exception as e:
-            logger.error(f"Failed to initialize GraphStorage: {e}")
+            logger.error("Failed to initialize GraphStorage: %s", e)
             return None
     elif STORAGE_BACKEND == 'milvus':
         try:
@@ -67,7 +67,7 @@ async def get_graph_storage() -> Optional[GraphStorage]:
             await gs.initialize()
             return gs
         except Exception as e:
-            logger.error(f"Failed to initialize MilvusGraphStorage: {e}")
+            logger.error("Failed to initialize MilvusGraphStorage: %s", e)
             return None
     return None
 
@@ -382,7 +382,7 @@ async def handle_find_connected_memories(
         )]
 
     except Exception as e:
-        logger.error(f"Error finding connected memories: {e}")
+        logger.error("Error finding connected memories: %s", e)
         result = {
             "success": False,
             "error": str(e),
@@ -467,7 +467,7 @@ async def handle_find_shortest_path(
                 "path": path,
                 "length": len(path)
             }
-            logger.info(f"Found path of length {len(path)} between memories")
+            logger.info("Found path of length %s between memories", len(path))
         else:
             result = {
                 "success": True,
@@ -483,7 +483,7 @@ async def handle_find_shortest_path(
         )]
 
     except Exception as e:
-        logger.error(f"Error finding shortest path: {e}")
+        logger.error("Error finding shortest path: %s", e)
         result = {
             "success": False,
             "error": str(e),
@@ -592,7 +592,7 @@ async def handle_get_memory_subgraph(
         )]
 
     except Exception as e:
-        logger.error(f"Error extracting subgraph: {e}")
+        logger.error("Error extracting subgraph: %s", e)
         result = {
             "success": False,
             "error": str(e),
@@ -604,4 +604,246 @@ async def handle_get_memory_subgraph(
         return [types.TextContent(
             type="text",
             text=json.dumps(result, indent=2)
+        )]
+
+
+async def _retrieve_candidates(storage, query: str, n_results: int, tags, store):
+    """Thin, forward-compatible wrapper around storage.retrieve().
+
+    Passes ``store`` only if the active backend's ``retrieve`` accepts it, so
+    this composes the moment multi-store scoping reaches the retrieve path
+    (#62) without breaking on backends that do not yet support it.
+    """
+    import inspect
+
+    kwargs = {"n_results": n_results, "tags": tags}
+    try:
+        params = inspect.signature(storage.retrieve).parameters
+        if store is not None and "store" in params:
+            kwargs["store"] = store
+    except (TypeError, ValueError):
+        pass
+    return await storage.retrieve(query, **kwargs)
+
+
+async def _build_knowledge_map(graph, entities_raw, chunk_pool, chunks_per_entity):
+    """Assemble the memory_explore response shape from discovered entities.
+
+    Returns the locked per-entity shape with placeholder aggregation.
+
+    TODO(filhocf): phase-1 aggregation fills this in —
+      - entity discovery / dedup via normalize_entity_id (collision -> hash suffix)
+      - extractive (LLM-free) summary from each entity's top-N chunks
+      - per-entity top_chunks ranking against existing relevance
+    Placeholder here: entity_type from profile, summary="", top_chunks =
+    shared candidate-pool slice, relation_count = graph degree.
+    """
+    knowledge_map = []
+    for ent in entities_raw:
+        name = ent.get("entity_name", "")
+        profile = await graph.get_entity_profile(name) if graph else {}
+        entity_types = profile.get("entity_types") or []
+        knowledge_map.append({
+            "entity_id": normalize_entity_id(name),
+            "name": name,
+            "entity_type": entity_types[0] if entity_types else "",
+            "summary": "",  # filled by aggregation
+            "relation_count": ent.get("count", 0),
+            "top_chunks": chunk_pool[:chunks_per_entity],  # placeholder ranking
+        })
+    return knowledge_map
+
+
+async def handle_memory_explore(server, arguments: dict) -> List[types.TextContent]:
+    """Explore a knowledge map of entities related to a query (read-only, LLM-free).
+
+    SKELETON (#56/#61): does real candidate retrieval + real graph entity
+    discovery and returns the locked response shape. The entity grouping,
+    extractive summary, and per-entity top_chunks ranking are stubbed at the
+    TODO(filhocf) boundary in ``_build_knowledge_map`` for the phase-1
+    aggregation slice.
+
+    Response: {"entities": [{entity_id, name, entity_type, summary,
+    relation_count, top_chunks[]}], "count": N}.
+    """
+    query = arguments.get("query", "")
+    if not query:
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({"success": False, "error": "Missing required parameter: query",
+                             "entities": [], "count": 0}, indent=2)
+        )]
+
+    max_entities = arguments.get("max_entities", 10)
+    chunks_per_entity = arguments.get("chunks_per_entity", 3)
+    tags = arguments.get("tags")
+    min_score = arguments.get("min_score", 0.0)
+    store = arguments.get("store")  # forwarded to retrieve() when supported (now wired via #62)
+
+    try:
+        # 1. Candidate retrieval (real) — semantic search scoped by tags/store.
+        candidates = await _retrieve_candidates(
+            server.storage, query,
+            n_results=max(max_entities * chunks_per_entity, max_entities),
+            tags=tags, store=store,
+        )
+        chunk_pool = [
+            {
+                "hash": r.memory.content_hash,
+                "content": r.memory.content[:500],
+                "relevance": r.relevance_score,
+            }
+            for r in candidates
+            if r.relevance_score >= min_score
+        ]
+
+        # 2. Entity discovery (real graph degree) — None when backend has no graph.
+        graph = await get_graph_storage()
+        entities_raw = await graph.list_entities(limit=max_entities) if graph else []
+
+        knowledge_map = await _build_knowledge_map(
+            graph, entities_raw, chunk_pool, chunks_per_entity
+        )
+        knowledge_map = knowledge_map[:max_entities]
+
+        logger.info(
+            "memory_explore: query=%s entities=%d candidates=%d",
+            _sanitize_log_value(query), len(knowledge_map), len(chunk_pool)
+        )
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({"entities": knowledge_map, "count": len(knowledge_map)}, indent=2)
+        )]
+
+    except Exception as e:
+        logger.error("Error in memory_explore: %s", e, exc_info=True)
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({"success": False, "error": str(e), "entities": [], "count": 0}, indent=2)
+        )]
+
+
+async def _resolve_entity_name(graph, entity_id: str):
+    """Resolve a canonical slug back to its stored entity name (or None)."""
+    entities = await graph.list_entities(limit=500)
+    return next(
+        (e.get("entity_name", "") for e in entities
+         if normalize_entity_id(e.get("entity_name", "")) == entity_id),
+        None,
+    )
+
+
+async def _hydrate_chunks(storage, memory_hashes):
+    """Fetch real chunk content for an entity's linked memories.
+
+    TODO(filhocf): chunk ranking refinement (composite_score + score_components
+    once #55 lands) is the phase-1 aggregation slice. ``relevance`` is left None
+    here as the placeholder ranking field.
+    """
+    chunks = []
+    for h in memory_hashes:
+        mem = await storage.get_by_hash(h)
+        chunks.append({
+            "hash": h,
+            "content": mem.content[:500] if mem else None,
+            "relevance": None,
+        })
+    return chunks
+
+
+async def _discover_related_entities(graph, memory_hashes, max_hops: int):
+    """Discover related entities via shared neighbours (unranked skeleton).
+
+    TODO(filhocf): scoring / dedup ranking of related_entities is the phase-1
+    aggregation slice. Names are normalized but otherwise unranked here.
+    """
+    related = []
+    seen = set()
+    for h in memory_hashes[:max_hops + 1]:
+        for cand_hash, shared, _deg in await graph.common_neighbors(h):
+            if cand_hash in seen:
+                continue
+            seen.add(cand_hash)
+            related.append({
+                "entity_id": normalize_entity_id(cand_hash),
+                "name": cand_hash,
+                "shared_count": shared,
+            })
+    return related
+
+
+async def handle_memory_detail(server, arguments: dict) -> List[types.TextContent]:
+    """Full ranked detail for a single entity (read-only).
+
+    SKELETON (#56/#61): resolves entity_id -> entity name (slug scan over real
+    graph entities), fetches the entity's real memory chunks, and returns the
+    locked response shape. Chunk ranking refinement and related-entity scoring
+    are stubbed at the TODO(filhocf) boundary (see ``_hydrate_chunks`` and
+    ``_discover_related_entities``).
+
+    Response: {"entity_id", "name", "chunks": [{hash, content, relevance}],
+    "related_entities": [...]}.
+    """
+    entity_id = arguments.get("entity_id")
+    if not entity_id:
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({"success": False, "error": "Missing required parameter: entity_id",
+                             "chunks": [], "related_entities": []}, indent=2)
+        )]
+
+    limit = arguments.get("limit", 50)
+    include_related = arguments.get("include_related", True)
+    max_hops = arguments.get("max_hops", 1)
+
+    graph = await get_graph_storage()
+    if graph is None:
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": f"Graph operations not available for backend: {STORAGE_BACKEND}",
+                "entity_id": entity_id, "chunks": [], "related_entities": [],
+            }, indent=2)
+        )]
+
+    try:
+        name = await _resolve_entity_name(graph, entity_id)
+        if name is None:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "success": False, "error": f"Unknown entity_id: {entity_id}",
+                    "entity_id": entity_id, "chunks": [], "related_entities": [],
+                }, indent=2)
+            )]
+
+        memory_hashes = await graph.find_memories_by_entity(name, limit=limit)
+        chunks = await _hydrate_chunks(server.storage, memory_hashes)
+        related_entities = (
+            await _discover_related_entities(graph, memory_hashes, max_hops)
+            if include_related else []
+        )
+
+        logger.info(
+            "memory_detail: entity_id=%s name=%s chunks=%d related=%d",
+            _sanitize_log_value(entity_id), _sanitize_log_value(name),
+            len(chunks), len(related_entities)
+        )
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "entity_id": entity_id,
+                "name": name,
+                "chunks": chunks,
+                "related_entities": related_entities,
+            }, indent=2)
+        )]
+
+    except Exception as e:
+        logger.error("Error in memory_detail: %s", e, exc_info=True)
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({"success": False, "error": str(e),
+                             "entity_id": entity_id, "chunks": [], "related_entities": []}, indent=2)
         )]

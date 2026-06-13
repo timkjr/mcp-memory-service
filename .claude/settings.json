@@ -3,6 +3,18 @@
     "superpowers@claude-plugins-official": true
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/worktree_guard.sh\" guard",
+            "timeout": 20,
+            "statusMessage": "Checking for worktree collisions..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",

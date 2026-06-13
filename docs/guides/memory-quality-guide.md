@@ -451,7 +451,7 @@ Override AI scores with manual ratings:
 
 ```bash
 # Rate a memory (MCP tool)
-rate_memory(
+memory_quality(
     content_hash="abc123...",
     rating=1,  # -1 (bad), 0 (neutral), 1 (good)
     feedback="This was very helpful!"
@@ -732,10 +732,10 @@ analyze_quality_distribution()
 Rate important memories manually:
 ```bash
 # After finding a very helpful memory
-rate_memory(content_hash="abc123...", rating=1, feedback="Critical info!")
+memory_quality(content_hash="abc123...", rating=1, feedback="Critical info!")
 
 # After finding unhelpful memory
-rate_memory(content_hash="def456...", rating=-1, feedback="Outdated")
+memory_quality(content_hash="def456...", rating=-1, feedback="Outdated")
 ```
 
 Manual ratings weighted 60%, AI scores 40%.

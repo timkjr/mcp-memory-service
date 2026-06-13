@@ -382,3 +382,148 @@ async def test_graph_tools_cloudflare_graceful_fallback(memory_server):
     response = json.loads(result[0].text)
     assert response["success"] is False
     assert "Graph operations not available" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# Two-phase query skeleton (#56/#61): normalize_entity_id + handler contracts
+# ---------------------------------------------------------------------------
+
+class TestNormalizeEntityId:
+    """Canonical entity_id normalization — deterministic + consolidation-stable."""
+
+    def test_ascii_slug(self):
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        assert normalize_entity_id("Hello World") == "hello-world"
+        assert normalize_entity_id("FastAPI") == "fastapi"
+        assert normalize_entity_id("  spaced  out  ") == "spaced-out"
+        assert normalize_entity_id("foo/bar_baz.qux") == "foo-bar-baz-qux"
+
+    def test_accented_decomposes_to_ascii(self):
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        assert normalize_entity_id("Café") == "cafe"
+        assert normalize_entity_id("Müller") == "muller"
+        assert normalize_entity_id("naïve résumé") == "naive-resume"
+
+    def test_cjk_and_non_latin_fall_back_to_hash(self):
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        for name in ("记忆服务", "Привет", "Ελληνικά", "مرحبا"):
+            slug = normalize_entity_id(name)
+            assert slug.startswith("e-"), f"{name!r} -> {slug!r}"
+            assert len(slug) == 10  # 'e-' + 8 hex chars
+
+    def test_deterministic_and_stable(self):
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        assert normalize_entity_id("记忆服务") == normalize_entity_id("记忆服务")
+        assert normalize_entity_id("Café") == normalize_entity_id("Café")
+
+    def test_collision_same_surface_forms_share_suffix(self):
+        """Distinct surface forms that slugify identically get the same id —
+        callers append the same short hash suffix to disambiguate."""
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        assert normalize_entity_id("Hello World") == normalize_entity_id("hello   world")
+
+    def test_empty_and_none_safe(self):
+        from mcp_memory_service.storage.graph import normalize_entity_id
+        assert normalize_entity_id("").startswith("e-")
+        assert normalize_entity_id(None).startswith("e-")
+
+
+@pytest.mark.asyncio
+async def test_memory_explore_missing_query(memory_server):
+    """memory_explore validates required 'query' before touching storage."""
+    from mcp_memory_service.server.handlers.graph import handle_memory_explore
+    result = await handle_memory_explore(memory_server, {})
+    assert len(result) == 1
+    response = json.loads(result[0].text)
+    assert response["success"] is False
+    assert "Missing required parameter: query" in response["error"]
+    assert response["entities"] == []
+
+
+@pytest.mark.asyncio
+async def test_memory_explore_returns_contract_shape(memory_server, setup_graph_data):
+    """memory_explore returns the locked response shape (entities/count)."""
+    if STORAGE_BACKEND not in ['sqlite_vec', 'hybrid']:
+        pytest.skip(f"Graph operations not supported for backend: {STORAGE_BACKEND}")
+    from mcp_memory_service.server.handlers.graph import handle_memory_explore
+    result = await handle_memory_explore(memory_server, {"query": "graph test memory"})
+    assert len(result) == 1
+    response = json.loads(result[0].text)
+    assert "entities" in response
+    assert "count" in response
+    assert isinstance(response["entities"], list)
+    assert response["count"] == len(response["entities"])
+    # Every entity (if any) must carry the full contract keys.
+    for ent in response["entities"]:
+        assert set(ent) >= {
+            "entity_id", "name", "entity_type", "summary",
+            "relation_count", "top_chunks",
+        }
+        assert isinstance(ent["top_chunks"], list)
+
+
+@pytest.mark.asyncio
+async def test_memory_detail_missing_entity_id(memory_server):
+    """memory_detail validates required 'entity_id' before touching the graph."""
+    from mcp_memory_service.server.handlers.graph import handle_memory_detail
+    result = await handle_memory_detail(memory_server, {})
+    assert len(result) == 1
+    response = json.loads(result[0].text)
+    assert response["success"] is False
+    assert "Missing required parameter: entity_id" in response["error"]
+    assert response["chunks"] == []
+    assert response["related_entities"] == []
+
+
+@pytest.mark.asyncio
+async def test_retrieve_candidates_forwards_store_when_supported():
+    """_retrieve_candidates forwards `store` when the backend retrieve() accepts
+    it (composes with multi-store scoping, #62)."""
+    from mcp_memory_service.server.handlers.graph import _retrieve_candidates
+
+    class StoreAwareStorage:
+        def __init__(self):
+            self.kwargs = None
+
+        async def retrieve(self, query, n_results=5, tags=None, store="default"):
+            self.kwargs = {"query": query, "n_results": n_results, "tags": tags, "store": store}
+            return []
+
+    s = StoreAwareStorage()
+    await _retrieve_candidates(s, "q", n_results=3, tags=["t"], store="docs")
+    assert s.kwargs["store"] == "docs"
+    assert s.kwargs["n_results"] == 3
+
+
+@pytest.mark.asyncio
+async def test_retrieve_candidates_omits_store_when_unsupported():
+    """A backend whose retrieve() lacks `store` must not receive it (no crash)."""
+    from mcp_memory_service.server.handlers.graph import _retrieve_candidates
+
+    class LegacyStorage:
+        def __init__(self):
+            self.kwargs = None
+
+        async def retrieve(self, query, n_results=5, tags=None):
+            self.kwargs = {"query": query, "n_results": n_results, "tags": tags}
+            return []
+
+    s = LegacyStorage()
+    await _retrieve_candidates(s, "q", n_results=3, tags=None, store="docs")
+    assert "store" not in s.kwargs
+
+
+@pytest.mark.asyncio
+async def test_memory_detail_unknown_entity(memory_server, graph_storage):
+    """Unknown entity_id resolves to a clean error shape, not a crash."""
+    if STORAGE_BACKEND not in ['sqlite_vec', 'hybrid']:
+        pytest.skip(f"Graph operations not supported for backend: {STORAGE_BACKEND}")
+    from mcp_memory_service.server.handlers.graph import handle_memory_detail
+    result = await handle_memory_detail(
+        memory_server, {"entity_id": "definitely-not-a-real-entity-zzz"}
+    )
+    assert len(result) == 1
+    response = json.loads(result[0].text)
+    assert response["success"] is False
+    assert "Unknown entity_id" in response["error"]
+    assert response["chunks"] == []

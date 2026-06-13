@@ -156,17 +156,33 @@ class MigrationsMixin:
                                 return False  # Already migrated
 
                             logger.info("Migrating memory_embeddings to add store partition key...")
-                            # Read existing embeddings
+                            # Snapshot existing embeddings into memory. The `memories`
+                            # table is the source of truth and embeddings are derivable,
+                            # so re-inserting from this snapshot is a safe migration path.
                             existing = self.conn.execute(
                                 "SELECT rowid, content_embedding FROM memory_embeddings"
                             ).fetchall()
-
-                            # Rename old table
-                            self.conn.execute("ALTER TABLE memory_embeddings RENAME TO memory_embeddings_old")
+                            embedding_dim_val = self.embedding_dimension
 
                             try:
-                                # Create new table with partition key
-                                embedding_dim_val = self.embedding_dimension
+                                # Drop-and-recreate instead of rename. `memory_embeddings`
+                                # is a vec0 virtual table; ALTER TABLE ... RENAME does NOT
+                                # carry its shadow tables (memory_embeddings_info/_chunks/
+                                # _rowids/...), so the rename-based migration collided with
+                                # 'memory_embeddings_info already exists' on existing DBs
+                                # (issue #68). vec0's DROP removes the shadow tables cleanly.
+                                self.conn.execute("DROP TABLE IF EXISTS memory_embeddings")
+                                self.conn.execute("DROP TABLE IF EXISTS memory_embeddings_old")
+                                # Defensively clear any orphaned vec0 shadow tables left by an
+                                # earlier aborted run (parent virtual table already gone).
+                                orphans = self.conn.execute(
+                                    "SELECT name FROM sqlite_master WHERE type='table' "
+                                    "AND name LIKE 'memory_embeddings\\_%' ESCAPE '\\'"
+                                ).fetchall()
+                                for (orphan_name,) in orphans:
+                                    self.conn.execute(f'DROP TABLE IF EXISTS "{orphan_name}"')
+
+                                # Create the partitioned table fresh (no rename -> no collision).
                                 self.conn.execute(f'''
                                     CREATE VIRTUAL TABLE memory_embeddings USING vec0(
                                         content_embedding FLOAT[{embedding_dim_val}] distance_metric=cosine,
@@ -185,16 +201,11 @@ class MigrationsMixin:
                                     raise RuntimeError(
                                         f"Migration verification failed: expected {len(existing)}, got {new_count}"
                                     )
-                                # Drop old table
-                                self.conn.execute("DROP TABLE memory_embeddings_old")
                                 self.conn.commit()
-                                logger.info(f"Multi-store migration complete: {new_count} embeddings migrated")
+                                logger.info("Multi-store migration complete: %s embeddings migrated", new_count)
                             except Exception as e:
-                                # Rollback: drop new, rename old back
-                                logger.error(f"Multi-store migration failed, rolling back: {e}")
-                                self.conn.execute("DROP TABLE IF EXISTS memory_embeddings")
-                                self.conn.execute("ALTER TABLE memory_embeddings_old RENAME TO memory_embeddings")
-                                self.conn.commit()
+                                self.conn.rollback()
+                                logger.error("Multi-store migration failed: %s", e)
                                 raise
                             return True
 

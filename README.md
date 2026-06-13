@@ -104,24 +104,30 @@ MCP_ALLOW_ANONYMOUS_ACCESS=true memory server --http
 ```
 
 ```python
+import asyncio
 import httpx
 
 BASE_URL = "http://localhost:8000"
 
-# Store — auto-tag with X-Agent-ID header
-async with httpx.AsyncClient() as client:
-    await client.post(f"{BASE_URL}/api/memories", json={
-        "content": "API rate limit is 100 req/min",
-        "tags": ["api", "limits"],
-    }, headers={"X-Agent-ID": "researcher"})
-    # Stored with tags: ["api", "limits", "agent:researcher"]
 
-# Search — scope to a specific agent
-    results = await client.post(f"{BASE_URL}/api/memories/search", json={
-        "query": "API rate limits",
-        "tags": ["agent:researcher"],
-    })
-    print(results.json()["memories"])
+async def main():
+    async with httpx.AsyncClient() as client:
+        # Store — auto-tag with X-Agent-ID header
+        await client.post(f"{BASE_URL}/api/memories", json={
+            "content": "API rate limit is 100 req/min",
+            "tags": ["api", "limits"],
+        }, headers={"X-Agent-ID": "researcher"})
+        # Stored with tags: ["api", "limits", "agent:researcher"]
+
+        # Search — scope to a specific agent
+        results = await client.post(f"{BASE_URL}/api/memories/search", json={
+            "query": "API rate limits",
+            "tags": ["agent:researcher"],
+        })
+        print(results.json()["memories"])
+
+
+asyncio.run(main())
 ```
 
 **Framework-specific guides:** [docs/agents/](docs/agents/)
@@ -549,17 +555,22 @@ The `:quality-cpu` image pre-exports both models at build time and ships only `o
 ---
 
 
-## Latest Release: **v10.74.2** (June 11, 2026)
+## Latest Release: **v11.0.0** (June 13, 2026)
 
-**Patch: UTC-correct timeframe-delete date boundaries**
+**MAJOR: Legacy alias removal + optional ML dependencies**
 
-**What's Fixed:**
-- `fix(storage)`: `delete_by_timeframe()` and `delete_before_date()` now build day boundaries with `tzinfo=timezone.utc` instead of naive local time, fixing silent misses near day boundaries on hosts west of UTC. Applied across `storage/mixins/delete.py`, `storage/cloudflare.py`, and `storage/milvus.py`, with the matching test fixture fixed in `tests/test_sqlite_vec_storage.py`
+BREAKING CHANGE: the 34 legacy tool-name aliases deprecated in v10.x are removed. See docs/MIGRATION.md for the rename mapping before upgrading.
+
+**What's New:**
+- `feat(deps)`: torch and transformers are now optional — the default install uses ONNX Runtime only, dramatically reducing install size and startup time (PR #49, @filhocf)
+- `feat(v11)!`: remove the full deprecation layer (DEPRECATED_TOOLS, transform_deprecated_call, MCP_SHOW_LEGACY_TOOLS, ToolDef.deprecated) and all 34 legacy tool-name aliases. mcp_memory_service.compat is retained for _sanitize_log_value() (PR #72, supersedes #60)
+- `docs`: README, architecture guide, quality guide, and wiki examples migrated to the current 28-tool registry names (PR #71)
 
 ---
 
 **Previous Releases**:
-- **v10.74.1** - fix(harvest): OpenClaw prompt preamble noise filter (issue #43 fix 3, PR #46, @filhocf) (June 6, 2026)
+- **v10.74.2** - fix(storage): UTC-correct timeframe-delete date boundaries across sqlite_vec/Cloudflare/Milvus backends (June 11, 2026)
+- **v10.74.1** - fix(harvest): OpenClaw preamble noise filter in PatternExtractor (PR #46, @filhocf) (June 6, 2026)
 - **v10.74.0** - §13 declarative dispatch registry + §10 sqlite_vec mixin decomposition (both @filhocf) (June 5, 2026)
 - **v10.73.0** - §3 Consolidation Engine v2, §4 Bootstrap Profile, §5 Session Legacy, §6 Belief-Aware Quarantine, §9 Config Refactor (all @filhocf) (June 5, 2026)
 - **v10.72.0** - Milvus ranked-search parity, Schema Versioning migration registry + CLI, §2 Belief Store derivation pipeline (June 3, 2026)
