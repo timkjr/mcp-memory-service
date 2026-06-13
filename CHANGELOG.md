@@ -10,6 +10,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [11.0.1] - 2026-06-13
+
+PATCH release: bootstrap profile wiring and harvest-aware session hooks for claude-hooks and the OpenCode memory plugin.
+
+### Added
+
+- feat(hooks): session-start.js now calls get_bootstrap_profile to inject a behavioral profile into session context before memories are loaded.
+- feat(hooks): session-end.js now calls commit_session_legacy after harvest, feeding decisions/errors/belief_updates into the bootstrap learning pipeline.
+- feat(hooks): mapCandidatesToLegacyArgs() derives the commit_session_legacy decisions/errors/belief_updates arrays from harvest candidates already returned by /api/harvest, mirroring the server-side auto_commit bridge in handle_memory_harvest (server_impl.py:1930-1955). Previously these arrays were hardcoded empty.
+- feat: Natural Memory Triggers, git-aware context, and a memory mode controller added to opencode/memory-plugin.js.
+- chore: new scripts/hooks/post-edit-tests.sh runs scoped pytest automatically on Python file edits.
+- docs: AGENTS.md updated for the new hook wiring.
+- docs: git remote policy documented — Forgejo is the only push target for this fork.
+
+### Fixed
+
+- fix(hooks): session-end.js previously read stored_count/candidates fields that never matched the actual HarvestResponse shape returned by /api/harvest; this dead read is removed now that mapCandidatesToLegacyArgs() consumes the real response shape.
+
 ## [11.0.0] - 2026-06-13
 
 MAJOR release. The default install is now dramatically smaller and faster: torch and transformers are optional extras, ONNX is the primary embedding backend. The tool surface is cleaner too — 28 well-named tools, no legacy aliases cluttering clients that support tool discovery.
