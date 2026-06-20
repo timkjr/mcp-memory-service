@@ -5,7 +5,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const http = require('http');
+const https = require('https');
 
 // Import utilities
 const { detectProjectContext } = require('../utilities/project-detector');
@@ -35,7 +36,7 @@ const { detectUserOverrides, logOverride } = require('../utilities/user-override
  */
 async function loadConfig() {
     try {
-        const configPath = resolveConfigPath(__dirname);
+        const configPath = path.join(__dirname, '../config.json');
         const configData = await fs.readFile(configPath, 'utf8');
         return JSON.parse(configData);
     } catch (error) {
@@ -592,6 +593,51 @@ async function withRetry(fn, maxAttempts = 4, initialDelayMs = 2000, verbose = t
 }
 
 /**
+ * Check which MCP servers have not been capability-documented in memory.
+ * Reads local claude_desktop_config.json + knownMcpServers from hooks config.
+ * Returns server names that have no memory tagged 'mcp-explored'.
+ */
+async function checkMcpCapabilities(config, memoryClient) {
+    if (!memoryClient) return [];
+
+    const allServers = new Set();
+
+    // Local Claude Code MCP servers from claude_desktop_config.json
+    try {
+        const os = require('os');
+        const desktopConfigPath = path.join(os.homedir(), '.claude', 'claude_desktop_config.json');
+        const desktopConfig = JSON.parse(await fs.readFile(desktopConfigPath, 'utf8'));
+        for (const name of Object.keys(desktopConfig.mcpServers || {})) allServers.add(name);
+    } catch {
+        // File absent or unreadable — skip
+    }
+
+    // Explicit list from hooks config (covers claude.ai-routed servers like mcp-memory)
+    for (const name of (config.mcpCapabilityCheck?.knownMcpServers || [])) allServers.add(name);
+
+    if (allServers.size === 0) return [];
+
+    const unexplored = [];
+    for (const name of allServers) {
+        try {
+            const memories = await memoryClient.queryMemories(`mcp server capabilities ${name}`, 3);
+            const hasDoc = (memories || []).some(m => {
+                const tags = (m.tags || []).map(t => String(t).toLowerCase());
+                const body = (m.content || m.preview || '').toLowerCase();
+                return (tags.some(t => t.includes('mcp-explored') || t.includes('mcp-capabilities')) ||
+                        body.includes('capabilities')) &&
+                       body.includes(name.toLowerCase());
+            });
+            if (!hasDoc) unexplored.push(name);
+        } catch {
+            // Query failed — don't flag as unexplored to avoid false positives
+        }
+    }
+
+    return unexplored;
+}
+
+/**
  * Main session start hook function with enhanced visual output
  */
 async function onSessionStart(context) {
@@ -861,6 +907,40 @@ async function executeSessionStart(context) {
         const showPhaseDetails = config.output?.showPhaseDetails !== false && config.output?.style !== 'balanced'; // Hide in balanced mode
 
         if (recentFirstMode) {
+            // Phase -1: Always-load foundational memories — no time filter, no project scoping.
+            // Split into two fetches so old foundational memories don't lose to newer critical ones.
+            if (memoryClient) {
+                if (verbose && showPhaseDetails && !cleanMode) {
+                    console.log(`${CONSOLE_COLORS.GREEN}🔒 Phase -1${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} Loading user-profile + critical memories (no time filter)`);
+                }
+                // 1. User profile — fetch 2, take the longest (most comprehensive)
+                const profileMemories = await memoryClient.queryMemoriesByTagsAndTime(
+                    ['user-profile'],
+                    null,
+                    10,
+                    false
+                );
+                if (profileMemories && profileMemories.length > 0) {
+                    const best = profileMemories.sort((a, b) =>
+                        (b.content || '').length - (a.content || '').length
+                    ).slice(0, 1);
+                    allMemories.push(...best.map(m => ({ ...m, _critical: true })));
+                }
+                // 2. Critical memories (3 slots) — skip user-profile duplicates
+                const criticalMemories = await memoryClient.queryMemoriesByTagsAndTime(
+                    ['critical'],
+                    null,
+                    3,
+                    false
+                );
+                if (criticalMemories && criticalMemories.length > 0) {
+                    const deduped = criticalMemories.filter(m =>
+                        !isDuplicateMemory(m, allMemories)
+                    );
+                    allMemories.push(...deduped.map(m => ({ ...m, _critical: true })));
+                }
+            }
+
             // Phase 0: Git Context Phase (NEW - highest priority for repository-aware memories)
             if (gitContext && gitContext.developmentKeywords.keywords.length > 0) {
                 const maxGitMemories = config.gitAnalysis?.maxGitMemories || 3;
@@ -1177,8 +1257,9 @@ async function executeSessionStart(context) {
             }).sort((a, b) => b.relevanceScore - a.relevanceScore); // Re-sort after boost
 
             // Filter memories below minimum relevance threshold (loaded from config, default 0.3)
+            // Phase -1 critical memories are exempt — they must always appear regardless of score.
             const preFilterCount = scoredMemories.length;
-            scoredMemories = scoredMemories.filter(m => m.relevanceScore >= minRelevanceScore);
+            scoredMemories = scoredMemories.filter(m => m._critical || m.relevanceScore >= minRelevanceScore);
             if (verbose && showMemoryDetails && !cleanMode && preFilterCount !== scoredMemories.length) {
                 console.log(`[Memory Filter] Removed ${preFilterCount - scoredMemories.length} low-relevance memories (below ${(minRelevanceScore * 100).toFixed(0)}% threshold)`);
             }
@@ -1275,8 +1356,62 @@ async function executeSessionStart(context) {
                 contentLengthConfig: config.contentLength
             });
             
+            // Fetch bootstrap profile to inject alongside memory context
+            let bootstrapProfile = null;
+            try {
+                const mcpUrl = new URL('/mcp', config.memoryService?.http?.endpoint || 'http://127.0.0.1:8000');
+                const apiKey = config.memoryService?.http?.apiKey || '';
+                const mcpPayload = JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: 'tools/call',
+                    params: {
+                        name: 'get_bootstrap_profile',
+                        arguments: { agent_ids: ['claude-code'], max_tokens: 1024 },
+                    },
+                    id: 1,
+                });
+                const isHttps = mcpUrl.protocol === 'https:';
+                const mod = isHttps ? https : http;
+                bootstrapProfile = await new Promise((resolve) => {
+                    const opts = {
+                        hostname: mcpUrl.hostname,
+                        port: mcpUrl.port || (isHttps ? 443 : 80),
+                        path: mcpUrl.pathname,
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Content-Length': Buffer.byteLength(mcpPayload),
+                            ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+                        },
+                        timeout: 8000,
+                        rejectUnauthorized: false,
+                    };
+                    const req = mod.request(opts, (res) => {
+                        let d = '';
+                        res.on('data', c => d += c);
+                        res.on('end', () => {
+                            try {
+                                const parsed = JSON.parse(d);
+                                const text = parsed?.result?.content?.[0]?.text;
+                                resolve(text || null);
+                            } catch { resolve(null); }
+                        });
+                    });
+                    req.on('error', () => resolve(null));
+                    req.on('timeout', () => { req.destroy(); resolve(null); });
+                    req.write(mcpPayload);
+                    req.end();
+                });
+            } catch {
+                // non-fatal
+            }
+
             // Inject context into session
             if (context.injectSystemMessage) {
+                // Inject bootstrap profile first if available
+                if (bootstrapProfile && !bootstrapProfile.includes('Bootstrap disabled') && !bootstrapProfile.includes('No data available')) {
+                    await context.injectSystemMessage(bootstrapProfile);
+                }
                 await context.injectSystemMessage(contextMessage);
                 // Note: Don't console.log here - injectSystemMessage handles display
                 // console.log would cause duplicate output in Claude Code
@@ -1370,6 +1505,19 @@ async function executeSessionStart(context) {
             }
         } else if (verbose && showMemoryDetails && !cleanMode) {
             console.log(`${CONSOLE_COLORS.YELLOW}📭 Memory Search${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.GRAY}No relevant memories found${CONSOLE_COLORS.RESET}`);
+        }
+
+        // MCP capability exploration check — flag servers not yet documented in memory
+        if (config.mcpCapabilityCheck?.enabled !== false && verbose && !cleanMode) {
+            try {
+                const unexplored = await checkMcpCapabilities(config, memoryClient);
+                if (unexplored.length > 0) {
+                    console.log(`\n${CONSOLE_COLORS.YELLOW}⚠️  Unexplored MCP Servers${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} ${unexplored.map(s => `${CONSOLE_COLORS.BRIGHT}${sanitizeForLog(s)}${CONSOLE_COLORS.RESET}`).join(', ')}`);
+                    console.log(`${CONSOLE_COLORS.YELLOW}   Action Required${CONSOLE_COLORS.RESET} ${CONSOLE_COLORS.DIM}→${CONSOLE_COLORS.RESET} Read each server's tool list, store capabilities to MCP memory with tag ${CONSOLE_COLORS.BRIGHT}mcp-explored${CONSOLE_COLORS.RESET}`);
+                }
+            } catch {
+                // Non-critical — skip silently
+            }
         }
 
     } catch (error) {

@@ -11,6 +11,17 @@ const { MCPClient } = require('./mcp-client');
 // storeMemoryHTTP, and queryMemoriesHTTP duplicate request construction. See Gemini
 // review on PR #735.
 
+// /api/search/by-time's parser only understands natural-language phrases
+// ("last week", "last 2 weeks", "this month") and rejects the hyphenated
+// identifiers ("last-week", "last-2-weeks", "last-month") used throughout the
+// hook configs/queries, returning an unparseable-query error that
+// _performApiPost silently turns into []. Convert hyphens to spaces so the
+// server can parse it.
+function normalizeTimeQuery(timeQuery) {
+    if (!timeQuery) return timeQuery;
+    return timeQuery.replace(/-/g, ' ');
+}
+
 class MemoryClient {
     constructor(config) {
         this.config = config;
@@ -416,6 +427,15 @@ class MemoryClient {
                                 });
                             resolve(memories);
                         } else {
+                            // Non-{results:[...]} shape usually means an API error response
+                            // (e.g. {"detail": "Could not parse time query: ..."}). Surface it
+                            // instead of silently returning [] — that silence is what hid the
+                            // hyphenated-time-query bug for an entire session.
+                            if (response && response.detail) {
+                                console.warn('[Memory Client] API error response:', response.detail);
+                            } else if (!response.results) {
+                                console.warn('[Memory Client] Unexpected response shape (no results array):', JSON.stringify(response).slice(0, 200));
+                            }
                             resolve([]);
                         }
                     } catch (parseError) {
@@ -471,7 +491,7 @@ class MemoryClient {
      */
     async queryMemoriesByTimeHTTP(timeQuery, limit = 10, semanticQuery = null) {
         const payload = {
-            query: timeQuery,
+            query: normalizeTimeQuery(timeQuery),
             n_results: limit
         };
 
@@ -493,6 +513,7 @@ class MemoryClient {
     async queryMemoriesByTagsAndTime(tags, timeQuery, limit = 10, semanticQuery = false) {
         if (this.activeProtocol === 'mcp' && this.mcpClient) {
             // For MCP, fall back to time-based query (tag filtering not yet supported)
+            if (!timeQuery) return this.mcpClient.queryMemoriesByTime('last-year', limit);
             return this.mcpClient.queryMemoriesByTime(timeQuery, limit);
         } else if (this.activeProtocol === 'http') {
             try {
@@ -511,13 +532,12 @@ class MemoryClient {
                 const tagResults = await this._performApiPost('/api/search/by-tag', tagPayload);
                 const memories = tagResults.results ? tagResults.results.map(r => r.memory) : tagResults;
 
-                // Filter by time window client-side
+                // Filter by time window client-side (skip filter when timeQuery is null/falsy)
                 const now = new Date();
-                const filtered = memories.filter(memory => {
+                const filtered = !timeQuery ? memories : memories.filter(memory => {
                     const createdAt = new Date(memory.created_at_iso || memory.created_at * 1000);
                     const daysDiff = (now - createdAt) / (1000 * 60 * 60 * 24);
 
-                    // Parse time query (simplified - supports common patterns)
                     if (timeQuery.includes('last week') || timeQuery.includes('last-week')) {
                         return daysDiff <= 7;
                     } else if (timeQuery.includes('last 2 weeks') || timeQuery.includes('last-2-weeks')) {
@@ -527,12 +547,11 @@ class MemoryClient {
                     } else if (timeQuery.includes('yesterday')) {
                         return daysDiff <= 1;
                     } else {
-                        // Default to last month if query not recognized
                         return daysDiff <= 30;
                     }
                 });
 
-                console.log(`[Memory Client] Tag-first filter: ${memories.length} tagged → ${filtered.length} within ${timeQuery}`);
+                console.log(`[Memory Client] Tag-first filter: ${memories.length} tagged → ${filtered.length} within ${timeQuery || 'no-time-filter'}`);
                 return filtered.slice(0, limit);
             } catch (error) {
                 // If tag search fails, fall back to time-only search

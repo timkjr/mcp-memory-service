@@ -1027,7 +1027,12 @@ class DreamInspiredConsolidator:
 
     async def health_check(self) -> Dict[str, Any]:
         """Perform health check on the consolidation system."""
-        return await self.health_monitor.check_overall_health()
+        health = await self.health_monitor.check_overall_health()
+        # check_overall_health() always returns an empty 'statistics' dict —
+        # it has no reference to this consolidator's run counters. Merge them
+        # in here so `memory_consolidate status` reports real totals.
+        health['statistics'] = dict(self.consolidation_stats)
+        return health
 
     async def get_health_summary(self) -> Dict[str, Any]:
         """Get a summary of consolidation system health."""

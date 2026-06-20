@@ -72,7 +72,8 @@ async def _requires_write(server, tool_name: Optional[str]) -> bool:
             return not (tool.annotations and getattr(tool.annotations, "readOnlyHint", False))
     return True
 
-router = APIRouter(prefix="/mcp", tags=["mcp"])
+# No prefix here; we will handle prefixes during mounting in app.py
+router = APIRouter(tags=["mcp"])
 
 
 class MCPRequest(BaseModel):
@@ -162,7 +163,6 @@ def _wrap_tool_result(text_contents) -> Dict[str, Any]:
 
 
 @router.post("/")
-@router.post("")
 async def mcp_endpoint(
     request: MCPRequest,
     user: AuthenticationResult = Depends(require_read_access)
@@ -259,6 +259,10 @@ async def mcp_endpoint(
                 id=request.id,
                 result=_wrap_tool_result(text_contents),
             )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
+        elif request.method == "ping":
+            response = MCPResponse(id=request.id, result={})
             return JSONResponse(content=response.model_dump(exclude_none=True))
 
         else:

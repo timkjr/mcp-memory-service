@@ -1801,8 +1801,8 @@ class MilvusMemoryStorage(MemoryStorage):
         if not self._ensure_initialized():
             return 0, "Milvus storage not initialized"
 
-        start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-        end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
+        start_ts = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+        end_ts = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp()
         time_filter = f"created_at >= {start_ts} and created_at <= {end_ts}"
 
         tag_filter = ""
@@ -1829,7 +1829,7 @@ class MilvusMemoryStorage(MemoryStorage):
         if not self._ensure_initialized():
             return 0, "Milvus storage not initialized"
 
-        before_ts = datetime.combine(before_date, datetime.min.time()).timestamp()
+        before_ts = datetime.combine(before_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
         time_filter = f"created_at < {before_ts}"
 
         tag_filter = ""

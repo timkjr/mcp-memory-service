@@ -141,8 +141,23 @@ MINOR release. Two-phase query API aggregation (#78, @filhocf) implementing RFC 
 
 - feat(graph): two-phase query API aggregation — `memory_explore` discovers related entities and builds a knowledge map; `memory_detail` hydrates chunks with graph context. New `src/mcp_memory_service/scoring/composite.py` implements composite scoring: semantic relevance + graph proximity + entity centrality. `storage/graph.py` gains `get_entities_for_memory()` resolving `has_entity` edges to entity names. Implements RFC #56/#61. Note: `related_entities` is populated only after entity extraction (`maintain`) seeds `has_entity` edges (PR #78, @filhocf).
 
+## [11.0.1] - 2026-06-13
+
+PATCH release: bootstrap profile wiring and harvest-aware session hooks for claude-hooks and the OpenCode memory plugin.
+
+### Added
+
+- feat(hooks): session-start.js now calls get_bootstrap_profile to inject a behavioral profile into session context before memories are loaded.
+- feat(hooks): session-end.js now calls commit_session_legacy after harvest, feeding decisions/errors/belief_updates into the bootstrap learning pipeline.
+- feat(hooks): mapCandidatesToLegacyArgs() derives the commit_session_legacy decisions/errors/belief_updates arrays from harvest candidates already returned by /api/harvest, mirroring the server-side auto_commit bridge in handle_memory_harvest (server_impl.py:1930-1955). Previously these arrays were hardcoded empty.
+- feat: Natural Memory Triggers, git-aware context, and a memory mode controller added to opencode/memory-plugin.js.
+- chore: new scripts/hooks/post-edit-tests.sh runs scoped pytest automatically on Python file edits.
+- docs: AGENTS.md updated for the new hook wiring.
+- docs: git remote policy documented — Forgejo is the only push target for this fork.
+
 ### Fixed
 
+- fix(hooks): session-end.js previously read stored_count/candidates fields that never matched the actual HarvestResponse shape returned by /api/harvest; this dead read is removed now that mapCandidatesToLegacyArgs() consumes the real response shape.
 - fix(maintenance): `improve_memory_ontology.py` and `find_duplicates.py --use-api` are now API-key aware. The ontology script sent no `Authorization` header and silently fetched 0 memories against an API-key-protected server; `find_duplicates.py --use-api` only read credentials from `~/.claude/hooks/config.json`. Both now fall back to the `MCP_API_KEY` environment variable (and `MCP_MEMORY_HTTP_ENDPOINT` / `MCP_HTTPS_ENABLED` / `MCP_HTTP_PORT` for the endpoint), so they work against a protected HTTP server without a hooks config (PR #76). These are developer maintenance scripts under `scripts/` — not part of the shipped package.
 - fix(maintenance): harden `find_duplicates.py` `load_config()` — type-guard a malformed, non-dict `memoryService` config value (avoids `AttributeError`), and derive the fallback endpoint scheme from `MCP_HTTPS_ENABLED` instead of hardcoding `https://`, so HTTP-only deployments resolve correctly (PR #82).
 
@@ -175,6 +190,12 @@ Clients must rename calls before upgrading to v11. Full mapping: docs/MIGRATION.
 - delete_by_tag -> memory_delete
 - search_by_tag -> memory_list
 - rate_memory -> memory_quality
+
+## [10.74.2] - 2026-06-11
+
+### Fixed
+
+- fix(storage): use UTC midnight for timeframe-delete date boundaries — `delete_by_timeframe()` and `delete_before_date()` built day boundaries with `datetime.combine(date, time()).timestamp()`, which interprets the naive datetime as local time. Since `Memory.created_at` is a UTC epoch, this caused silent misses near day boundaries on hosts west of UTC. Fixed across `storage/mixins/delete.py`, `storage/cloudflare.py`, and `storage/milvus.py` by passing `tzinfo=timezone.utc` explicitly. Also fixes the matching naive-local-time bug in the `test_delete_by_timeframe_boundaries` test fixture (`tests/test_sqlite_vec_storage.py`)
 
 ## [10.74.1] - 2026-06-06
 

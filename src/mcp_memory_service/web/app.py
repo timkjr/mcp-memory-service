@@ -117,6 +117,10 @@ async def lifespan(app: FastAPI):
         storage = await create_storage_backend()
         set_storage(storage)  # Set the global storage instance
 
+        # Auto-register preset OAuth client if credentials provided
+        from ..utils.startup_orchestrator import StartupCheckOrchestrator
+        await StartupCheckOrchestrator.auto_register_preset_client()
+
         # Initialize consolidation system if enabled
         if CONSOLIDATION_ENABLED:
             try:
@@ -346,7 +350,11 @@ def create_app() -> FastAPI:
     logger.info(f"✓ Included harvest router with {len(harvest_router.routes)} routes")
 
     # Include MCP protocol router
-    app.include_router(mcp_router, tags=["mcp-protocol"])
+    # Mount at /mcp (canonical path)
+    app.include_router(mcp_router, prefix="/mcp", tags=["mcp-protocol"])
+    # Add root POST handler ONLY for Claude.ai HTTP transport compatibility
+    # We include this without prefix but don't show it in the schema to avoid clutter
+    app.include_router(mcp_router, prefix="", include_in_schema=False, tags=["mcp-protocol"])
 
     # Include OAuth routers if enabled
     if OAUTH_ENABLED:
@@ -354,7 +362,10 @@ def create_app() -> FastAPI:
         from .oauth.registration import router as oauth_registration_router
         from .oauth.authorization import router as oauth_authorization_router
 
+        # Discovery metadata (always at root .well-known)
         app.include_router(oauth_discovery_router, tags=["oauth-discovery"])
+        
+        # Registration and Authorization at their standard /oauth prefix
         app.include_router(oauth_registration_router, prefix="/oauth", tags=["oauth"])
         app.include_router(oauth_authorization_router, prefix="/oauth", tags=["oauth"])
 

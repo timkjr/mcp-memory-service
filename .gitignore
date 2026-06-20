@@ -1,4 +1,7 @@
 
+# Video walkthrough files (large LFS binaries, not needed in fork)
+video/
+
 # TLS certificates
 *.pem
 certs/
@@ -223,9 +226,11 @@ social-media/
 # Python version compatibility marker
 venv/.python312_compat
 docs/.herenow/
-.herenow/
+
+# Chunkhound storage
+.chunkhound*
+
 certs/cert.pem
-.gitignore
 certs/key.pem
 
 # LoCoMo benchmark data (downloaded on demand)

@@ -4,7 +4,7 @@ import sqlite3
 import logging
 import time
 import traceback
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import List, Tuple, Optional
 
 from ...models.memory import Memory
@@ -75,16 +75,14 @@ class DeleteMixin:
             logger.error(error_msg)
             return False, error_msg
 
-    # ── Consolidation Protocol Proxy Methods ──────────────────────────
-    # These methods are required by the DreamInspiredConsolidator's
-    # StorageProtocol but were missing from this mixin, causing
-    # consolidation forgetting/archival to fail silently.
-    # See the project issue tracker for related consolidation bug details.
-
     async def delete_memory(self, content_hash: str) -> bool:
         """Delete a memory by content hash (consolidation protocol).
 
-        Delegates to delete() to avoid duplicating sync logic.
+        DreamInspiredConsolidator expects a ``delete_memory(hash) -> bool``
+        method during the Compression (replace-with-summary) and Controlled
+        Forgetting stages. SQLite-vec's native ``delete()`` returns
+        ``Tuple[bool, str]``; this thin proxy adapts the signature so
+        consolidation does not fail with ``AttributeError``.
         """
         success, _ = await self.delete(content_hash)
         return success
@@ -280,8 +278,8 @@ class DeleteMixin:
             if not self.conn:
                 return 0, "Database not initialized"
 
-            start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-            end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
+            start_ts = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+            end_ts = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp()
 
             def _select_timeframe():
                 if tag:
@@ -323,7 +321,7 @@ class DeleteMixin:
             if not self.conn:
                 return 0, "Database not initialized"
 
-            before_ts = datetime.combine(before_date, datetime.min.time()).timestamp()
+            before_ts = datetime.combine(before_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
 
             def _select_before_date():
                 if tag:

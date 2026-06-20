@@ -635,10 +635,13 @@ function analyzeMemoryAgeDistribution(memories, options = {}) {
         const recommendedAdjustments = {};
 
         if (isStale) {
-            // Memories are old - boost time decay weight, reduce tag relevance
-            recommendedAdjustments.timeDecay = 0.50;      // Increase from default 0.25
-            recommendedAdjustments.tagRelevance = 0.20;   // Decrease from default 0.35
-            recommendedAdjustments.recencyBonus = 0.25;   // Increase bonus for any recent memories
+            // Memories are old - timeDecay (exp(-0.1*days)) is already ~0 for anything
+            // past ~60 days, so it can no longer discriminate between candidates.
+            // Shift weight toward tagRelevance/topical match instead of doubling down
+            // on recency, otherwise old-but-on-topic memories (taxonomy, structure
+            // docs, preferences) lose their only remaining signal and never surface.
+            recommendedAdjustments.timeDecay = 0.10;      // Decrease from default 0.20 - non-discriminating when stale
+            recommendedAdjustments.tagRelevance = 0.45;   // Increase from default 0.30 - primary signal when age can't differentiate
             recommendedAdjustments.reason = `Stale memory set detected (median: ${Math.round(medianAge)}d old, ${Math.round(recentCount/ages.length*100)}% recent)`;
         } else if (avgAge < 14) {
             // Memories are very recent - balanced approach

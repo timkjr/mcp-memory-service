@@ -20,6 +20,12 @@ OAUTH_ENABLED = safe_get_bool_env('MCP_OAUTH_ENABLED', False)
 # Rotate via your secret manager; the service reads the env var on each request.
 DCR_REGISTRATION_KEY: str | None = os.getenv('MCP_DCR_REGISTRATION_KEY')
 
+# Preset OAuth client credentials (stable ID and Secret)
+# Used for pre-registering a known client on startup
+OAUTH_PRESET_CLIENT_ID = os.getenv("MCP_OAUTH_PRESET_CLIENT_ID")
+OAUTH_PRESET_CLIENT_SECRET = os.getenv("MCP_OAUTH_PRESET_CLIENT_SECRET")
+OAUTH_PRESET_REDIRECT_URIS = os.getenv("MCP_OAUTH_PRESET_REDIRECT_URIS", "https://claude.ai/api/mcp/auth_callback").split(",")
+
 # OAuth Storage Backend Configuration
 OAUTH_STORAGE_BACKEND = os.getenv("MCP_OAUTH_STORAGE_BACKEND", "memory").lower()
 """
@@ -141,6 +147,23 @@ def get_jwt_verification_key() -> str:
     else:
         raise ValueError("No JWT verification key available")
 
+def join_url(base: str, path: str) -> str:
+    """
+    Safely join a base URL and a path, avoiding double slashes.
+
+    Args:
+        base: The base URL (e.g., OAUTH_ISSUER)
+        path: The path to append (e.g., "/oauth/token")
+
+    Returns:
+        The combined URL string
+    """
+    if not base:
+        return path
+    base = base.rstrip("/")
+    path = path.lstrip("/")
+    return f"{base}/{path}"
+
 def validate_oauth_configuration() -> None:
     """
     Validate OAuth configuration at startup.
@@ -251,7 +274,7 @@ def get_oauth_issuer() -> str:
 # OAuth issuer URL - CRITICAL for reverse proxy deployments
 # Production: Set MCP_OAUTH_ISSUER to external URL (e.g., "https://api.example.com")
 # Development: Auto-detects from server configuration
-OAUTH_ISSUER = os.getenv('MCP_OAUTH_ISSUER') or get_oauth_issuer()
+OAUTH_ISSUER = (os.getenv('MCP_OAUTH_ISSUER') or get_oauth_issuer()).rstrip("/")
 
 # OAuth token configuration
 OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES = safe_get_int_env('MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES', 60, min_value=1, max_value=1440)  # 1 minute to 24 hours

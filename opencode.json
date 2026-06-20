@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "mcp": {
+    "chunkhound": {
+      "enabled":true,
+      "type": "local",
+      "command": ["chunkhound", "mcp"],
+      "environment": {
+        "CHUNKHOUND_CONFIG_FILE": "/home/timkjr/.config/chunkhound/config.json",
+        "ENABLE_TOOL_SEARCH": "true"
+      }
+    }
+  }
+}

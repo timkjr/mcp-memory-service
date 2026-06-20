@@ -5,9 +5,13 @@ This integration provides:
 
 - **Session Start**: load relevant memories when an OpenCode session starts
 - **Auto-Capture**: detect and store valuable conversation content (decisions, errors, learnings) in real-time via `message.part.updated`
+- **Natural Memory Triggers**: mid-conversation memory retrieval — detects when you ask about stored knowledge (e.g. "what did we decide about X?") and injects relevant memories into the next system prompt
+- **Git-Aware Context**: uses recent `git log` commits to generate additional memory search queries, surfacing memories related to active development work
+- **Memory Mode Controller**: switch between `speed_focused`, `balanced`, and `memory_aware` profiles via `/memory mode <profile>` or `OPENCODE_MEMORY_MODE` env var
 - **Session-End**: consolidate full-session outcomes via `session.idle` (incremental upsert that overwrites the previous summary so the latest state always wins)
 - **Harvest**: optional pattern-harvesting via `/api/harvest` at session end
 - **Compact Injection**: inject condensed memory context into `experimental.session.compacting`
+- **`/memory` Slash Command**: status, search, health, and mode control
 
 ## Prerequisites
 
@@ -63,12 +67,13 @@ Then it applies environment overrides:
 - `OPENCODE_MEMORY_API_KEY`
 - `OPENCODE_MEMORY_TIMEOUT_MS`
 - `OPENCODE_MEMORY_LOAD_TIMEOUT_MS`
+- `OPENCODE_MEMORY_MODE` — set to `speed_focused`, `balanced`, or `memory_aware`
 
 If you load the plugin with explicit plugin options, those win last.
 
 `MCP_API_KEY` is intentionally not consumed by the plugin. That avoids accidentally reusing the server-side secret from a shared shell environment.
 
-Example:
+### Full Config Reference
 
 ```json
 {
@@ -88,50 +93,81 @@ Example:
     "verbose": true,
     "includeTimestamps": true,
     "maxContentLength": 280
+  },
+  "autoCapture": {
+    "enabled": true,
+    "minMessageLength": 100,
+    "minSentenceLength": 40,
+    "patterns": ["decision", "error", "learning", "implementation", "important"]
+  },
+  "naturalTriggers": {
+    "enabled": true,
+    "triggerThreshold": 0.6,
+    "cooldownPeriod": 30000,
+    "maxMemoriesPerTrigger": 3
+  },
+  "gitAnalysis": {
+    "enabled": true,
+    "commitLookback": 14,
+    "maxCommits": 20,
+    "maxGitMemories": 3
+  },
+  "mode": {
+    "profile": "balanced",
+    "profiles": {
+      "speed_focused": {
+        "maxMemoriesPerSession": 4,
+        "loadTimeoutMs": 1000,
+        "naturalTriggersEnabled": false,
+        "gitAnalysisEnabled": false
+      },
+      "balanced": {
+        "maxMemoriesPerSession": 8,
+        "loadTimeoutMs": 2500,
+        "naturalTriggersEnabled": true,
+        "gitAnalysisEnabled": true
+      },
+      "memory_aware": {
+        "maxMemoriesPerSession": 12,
+        "loadTimeoutMs": 5000,
+        "naturalTriggersEnabled": true,
+        "gitAnalysisEnabled": true
+      }
+    }
   }
 }
 ```
 
-For a purely local setup, change `endpoint` back to `http://127.0.0.1:8000`.
-
-Environment-only example:
-
-```bash
-export OPENCODE_MEMORY_ENDPOINT="https://memory.example.com"
-export OPENCODE_MEMORY_API_KEY="your-api-key"
-```
-
 ## How It Works
 
+### Session Start
 On `session.created`, the plugin:
 - derives the project name from the working directory
-- runs a few semantic searches against the memory service
+- runs semantic searches for project-specific queries
+- if git analysis is enabled, extracts recent commit messages as additional queries
 - stores the best matches in per-session plugin state
-- `experimental.chat.system.transform` injects full memory context into the system prompt
-- `experimental.session.compacting` injects a smaller memory summary into compaction context
 
-On `message.part.updated` (every text part), the plugin:
-- buffers parts for session-end analysis (dedupes by part id)
-- detects valuable patterns (decisions, errors, learnings, etc.) via regex, ignoring fenced code blocks
-- requires `minSentenceLength` (default 40) before considering a sentence
-- stores matched content immediately as memories via `POST /api/memories`
-- respects `#skip` (skip auto-capture) and `#remember` (force capture) overrides
+### Natural Memory Triggers (Mid-Conversation)
+On `message.part.updated`, the plugin:
+- detects memory-seeking queries using pattern matching ("what did we", "remember when", "tell me about", etc.)
+- on match, performs an async semantic search for the user's query
+- merges new memories with existing session state (deduplicated)
+- new memories are injected into subsequent system prompts via `experimental.chat.system.transform`
 
-On `session.idle` (after each assistant turn), the plugin:
-- analyzes buffered messages for topics, decisions, insights, code changes, next steps
-- stores a fresh session summary memory; deletes the previous one for this session via `DELETE /api/memories/<hash>` to avoid DB pollution
-- optionally triggers pattern harvest via `POST /api/harvest` (opt-in, dry-run first-use safety)
+### Git-Aware Context
+Before session load:
+- runs `git log --oneline` for the configured lookback period
+- extracts meaningful commit messages (filters out merges, WIPs, changelogs)
+- uses these messages as additional semantic search queries
+- results are merged with project query results
 
-`session.deleted` is also handled when received but tends to fire after the plugin's event subscribers have already been torn down, so it cannot be relied on as the only end-of-session trigger.
+### Memory Mode Controller
+The plugin applies profile settings on config load:
+- `speed_focused`: 4 memories max, no natural triggers, no git analysis, 1s timeout
+- `balanced` (default): 8 memories, both enabled, 2.5s timeout
+- `memory_aware`: 12 memories, both enabled, 5s timeout
 
-## Verification
-
-1. Start `mcp-memory-service` in HTTP mode.
-2. Install the plugin under `~/.config/opencode/plugins/`.
-3. Start OpenCode inside a project you already have memories for.
-4. Ask a question about the project and confirm the assistant can use prior context.
-
-If `verbose` is enabled, the plugin writes structured logs through `client.app.log()` under the `opencode-memory` service name.
+Profile can be overridden at runtime with `/memory mode <profile>`.
 
 ## Slash Command: `/memory`
 
@@ -141,7 +177,7 @@ Register the command in `~/.config/opencode/opencode.json`:
 {
   "command": {
     "memory": {
-      "description": "Show MCP Memory Service status. Usage: /memory, /memory search <query>, /memory health",
+      "description": "Show MCP Memory Service status. Usage: /memory, /memory search <query>, /memory health, /memory mode <profile>",
       "template": ""
     }
   }
@@ -149,9 +185,10 @@ Register the command in `~/.config/opencode/opencode.json`:
 ```
 
 Then in OpenCode:
-- `/memory` — current session status (project, loaded count, captured count, last action, last summary)
+- `/memory` — current session status (mode, project, loaded count, captured count)
 - `/memory search <query>` — top 5 semantic matches for the query
 - `/memory health` — backend type, status, total memory count, endpoint
+- `/memory mode <profile>` — switch between speed_focused, balanced, memory_aware
 
 The plugin intercepts the command via `command.execute.before`, fetches data from the memory service, and replaces the user message with a formatted block plus a "reply verbatim" instruction. One small LLM round-trip per call. If your default model adds commentary anyway, set `command.memory.model` to a smaller/cheaper model.
 
@@ -223,4 +260,4 @@ After restart, the sidebar shows a new "Memory" section above Context, and `/mem
 - relevance is intentionally simple and project-name driven in the first cut
 - auto-capture uses regex-based pattern detection (no LLM-based classification)
 - session-end consolidation may overlap with auto-capture entries (both write to `/api/memories`)
-- mid-conversation memory injection (when a user asks "what did we do before?") is not yet implemented
+- natural triggers use pattern matching, not semantic understanding — may miss or false-trigger on complex queries

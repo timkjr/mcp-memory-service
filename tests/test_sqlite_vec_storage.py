@@ -11,7 +11,7 @@ import shutil
 import json
 from unittest.mock import Mock, patch
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 # Skip tests if sqlite-vec is not available
 try:
@@ -1107,25 +1107,25 @@ class TestSqliteVecTimeBasedDeletion:
             content="Before range",
             content_hash=generate_content_hash("Before range"),
             tags=["boundary-test"],
-            created_at=datetime.combine(two_days_ago, datetime.max.time()).timestamp()
+            created_at=datetime.combine(two_days_ago, datetime.max.time(), tzinfo=timezone.utc).timestamp()
         )
         memory_at_start = Memory(
             content="At start boundary",
             content_hash=generate_content_hash("At start boundary"),
             tags=["boundary-test"],
-            created_at=datetime.combine(yesterday, datetime.min.time()).timestamp()
+            created_at=datetime.combine(yesterday, datetime.min.time(), tzinfo=timezone.utc).timestamp()
         )
         memory_at_end = Memory(
             content="At end boundary",
             content_hash=generate_content_hash("At end boundary"),
             tags=["boundary-test"],
-            created_at=datetime.combine(today, datetime.max.time()).timestamp()
+            created_at=datetime.combine(today, datetime.max.time(), tzinfo=timezone.utc).timestamp()
         )
         memory_after = Memory(
             content="After range",
             content_hash=generate_content_hash("After range"),
             tags=["boundary-test"],
-            created_at=datetime.combine(tomorrow, datetime.min.time()).timestamp()
+            created_at=datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc).timestamp()
         )
 
         await storage.store(memory_before)

@@ -114,7 +114,7 @@ git clone https://github.com/doobidoo/mcp-memory-service.git
 cd mcp-memory-service
 mkdir -p ~/.config/opencode/plugins
 cp opencode/memory-plugin.js ~/.config/opencode/plugins/
-cp opencode/memory-plugin.config.example.json ~/.config/opencode/memory-plugin.json
+cp opencode/memory-plugin.config.json ~/.config/opencode/memory-plugin.json
 ```
 
 OpenCode loads local plugins automatically from `~/.config/opencode/plugins/` and `.opencode/plugins/`.
