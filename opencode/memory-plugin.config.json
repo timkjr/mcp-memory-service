@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "memoryService": {
-    "endpoint": "https://memory.timkjr.link",
+    "endpoint": "http://mcp-memory:8000",
     "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
     "timeoutMs": 5000,
     "loadTimeoutMs": 2500,

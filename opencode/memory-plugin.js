@@ -1311,6 +1311,26 @@ const createPlugin = async ({ directory, client }) => {
       }
     },
 
+    "experimental.chat.messages.transform": async (input, output) => {
+      if (!input.sessionID) return
+
+      let state = sessionState.get(input.sessionID)
+      if (!state) {
+        refreshSession(input.sessionID, directory)
+        state = sessionState.get(input.sessionID)
+      }
+      state = await waitForSession(input.sessionID, directory)
+      if (!state?.memories?.length) return
+
+      const formatted = formatMemories(state.projectName, state.memories, config)
+      if (formatted) {
+        output.messages.unshift({
+          info: { role: "system" },
+          parts: [{ type: "text", text: formatted }],
+        })
+      }
+    },
+
     "experimental.session.compacting": async (input, output) => {
       if (!input.sessionID) return
 
@@ -1330,4 +1350,4 @@ const createPlugin = async ({ directory, client }) => {
 }
 
 export const OpenCodeMemoryPlugin = createPlugin
-export default { id: "opencode-memory", server: createPlugin }
+export default createPlugin
