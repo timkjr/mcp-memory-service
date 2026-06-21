@@ -39,7 +39,7 @@ fi
 git checkout tlkMods
 
 echo "→ Pushing tlkMods to Forgejo as main..."
-git push forgejo tlkMods:main --tags
+git push forgejo tlkMods:main --force-with-lease --tags
 
 if $MIRROR; then
   echo "→ Mirroring to GitHub fork..."

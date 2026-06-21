@@ -1268,7 +1268,7 @@ const createPlugin = async ({ directory, client }) => {
         state = sessionState.get(input.sessionID)
       }
       state = await waitForSession(input.sessionID, directory)
-      if (!state?) return
+      if (!state) return
 
       // Load bootstrap profile (fire-and-forget, non-blocking)
       if (!state._bootstrapLoaded) {
