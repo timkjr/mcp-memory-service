@@ -32,7 +32,34 @@ if $SYNC; then
   echo "→ Fast-forwarding main to upstream/main..."
   git branch -f main upstream/main
   echo "→ Rebasing tlkMods on updated main..."
-  git rebase main
+  git stash push -m "deploy-sync-auto" 2>/dev/null || true
+  _rebased=false
+  _max_attempts=10
+  for _attempt in $(seq 1 $_max_attempts); do
+    if git rebase main; then
+      _rebased=true
+      break
+    fi
+    _conflicts=$(git diff --name-only --diff-filter=U)
+    if [ -z "$_conflicts" ]; then
+      echo "✗ Rebase failed (non-conflict error), aborting."
+      git stash pop 2>/dev/null || true
+      git rebase --abort
+      exit 1
+    fi
+    echo "→ Resolving conflicts in: $_conflicts"
+    echo "$_conflicts" | xargs git checkout --theirs
+    git add -u
+    GIT_EDITOR=true git rebase --continue
+  done
+  if ! $_rebased; then
+    echo "✗ Rebase did not complete after $_max_attempts attempts."
+    git stash pop 2>/dev/null || true
+    git rebase --abort
+    exit 1
+  fi
+  echo "✓ Rebase complete."
+  git stash pop 2>/dev/null || true
 fi
 
 # Ensure we're on tlkMods to push
