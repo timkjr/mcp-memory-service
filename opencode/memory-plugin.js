@@ -859,12 +859,26 @@ const createPlugin = async ({ directory, client }) => {
       logWarn,
       healthState,
     })
-      .then((result) => {
+      .then(async (result) => {
         sessionState.set(sessionID, {
           ...result,
           messages: [],
           promise: null,
         })
+        const count = result?.memories?.length ?? 0
+        const project = result?.projectName ?? projectNameFromDirectory(sessionDirectory)
+        try {
+          await client?.tui?.showToast?.({
+            body: {
+              title: "Memory Plugin",
+              message: count > 0
+                ? `✓ ${count} memories loaded for ${project}`
+                : `✓ Connected — no memories found for ${project}`,
+              variant: count > 0 ? "success" : "info",
+            },
+            query: { directory },
+          })
+        } catch (_) {}
       })
       .catch(async (error) => {
         sessionState.set(sessionID, {
@@ -874,6 +888,16 @@ const createPlugin = async ({ directory, client }) => {
           promise: null,
         })
         await logWarn(`Memory load failed: ${error.message}`)
+        try {
+          await client?.tui?.showToast?.({
+            body: {
+              title: "Memory Plugin",
+              message: `Failed to load memories: ${error.message}`,
+              variant: "error",
+            },
+            query: { directory },
+          })
+        } catch (_) {}
       })
 
     sessionState.set(sessionID, {
@@ -1294,19 +1318,6 @@ const createPlugin = async ({ directory, client }) => {
           loadedCount: state.memories.length,
           lastAction: `Loaded ${state.memories.length} memories`,
         })
-        if (!state._loadToastShown) {
-          state._loadToastShown = true
-          try {
-            await client?.tui?.showToast?.({
-              body: {
-                title: "Memory Service",
-                message: `Loaded ${state.memories.length} memories for ${state.projectName}.`,
-                variant: "info",
-              },
-              query: { directory },
-            })
-          } catch (_) {}
-        }
         output.system.push(formatted)
       }
     },
