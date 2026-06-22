@@ -28,11 +28,13 @@ done
 
 if $SYNC; then
   echo "→ Fetching upstream (doobidoo/mcp-memory-service)..."
+  # Skip LFS smudge during sync — upstream LFS objects may not be available on Codeberg (404)
+  export GIT_LFS_SKIP_SMUDGE=1
   git fetch upstream --tags --prune-tags
   echo "→ Fast-forwarding main to upstream/main..."
   git branch -f main upstream/main
   echo "→ Rebasing tlkMods on updated main..."
-  git stash push -m "deploy-sync-auto" 2>/dev/null || true
+  git stash push --include-untracked -m "deploy-sync-auto" 2>/dev/null || true
   _rebased=false
   _max_attempts=10
   for _attempt in $(seq 1 $_max_attempts); do
@@ -60,6 +62,7 @@ if $SYNC; then
   fi
   echo "✓ Rebase complete."
   git stash pop 2>/dev/null || true
+  unset GIT_LFS_SKIP_SMUDGE
 fi
 
 # Ensure we're on tlkMods to push
