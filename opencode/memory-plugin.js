@@ -1144,11 +1144,9 @@ const createPlugin = async ({ directory, client }) => {
 
   return {
     event: async ({ event }) => {
-      console.log(`[opencode-memory] event: ${event.type}`)
       if (event.type === "session.created") {
         const sid = event.properties.info.id
         const sdir = event.properties.info.directory || directory
-        console.log(`[opencode-memory] session.created sid=${sid} dir=${sdir}`)
         refreshSession(sid, sdir)
       }
 
@@ -1262,7 +1260,6 @@ const createPlugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.system.transform": async (input, output) => {
-      console.log(`[opencode-memory] system.transform sessionID=${input.sessionID} stateKeys=${[...sessionState.keys()].join(",")}`)
       if (!input.sessionID) return
 
       let state = sessionState.get(input.sessionID)
@@ -1315,7 +1312,6 @@ const createPlugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.messages.transform": async (input, output) => {
-      console.log(`[opencode-memory] messages.transform sessionID=${input.sessionID} stateKeys=${[...sessionState.keys()].join(",")}`)
       // opencode passes {} as input to this hook (no sessionID in 1.17.x).
       // If sessionID is present use it; otherwise pick the active session.
       let state
