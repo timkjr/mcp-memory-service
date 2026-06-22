@@ -50,7 +50,13 @@ if $SYNC; then
       exit 1
     fi
     echo "→ Resolving conflicts in: $_conflicts"
-    echo "$_conflicts" | xargs git checkout --theirs
+    # For modify/delete conflicts (upstream added, we deleted), --theirs fails;
+    # fall back to git rm so our deletion wins.
+    while IFS= read -r _f; do
+      if ! git checkout --theirs "$_f" 2>/dev/null; then
+        git rm -f "$_f" 2>/dev/null || true
+      fi
+    done <<< "$_conflicts"
     git add -u
     GIT_EDITOR=true git rebase --continue
   done
