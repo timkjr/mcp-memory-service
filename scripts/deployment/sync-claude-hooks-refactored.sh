@@ -189,10 +189,12 @@ else
         logger -t "$LOG_TAG" "OpenCode plugin already up to date"
     fi
 
-    # Always create config from example if it doesn't exist (handles new/reset nodes)
-    if [ ! -f "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" ] && [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" ]; then
-        logger -t "$LOG_TAG" "Creating memory-plugin.json from example config..."
-        cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
-        echo "SUCCESS: Created memory-plugin.json from example"
+    # Always sync memory-plugin.json from canonical config (propagates updates to all nodes)
+    if [ -f "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" ]; then
+        if ! diff -q "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json" &>/dev/null; then
+            logger -t "$LOG_TAG" "Updating memory-plugin.json from canonical config..."
+            cp "$OPENCODE_PLUGINS_LOCAL/memory-plugin.config.json" "$OPENCODE_CONFIG_LOCAL/memory-plugin.json"
+            echo "SUCCESS: Updated memory-plugin.json from canonical config"
+        fi
     fi
 fi

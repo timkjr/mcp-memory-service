@@ -1312,14 +1312,17 @@ const createPlugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.messages.transform": async (input, output) => {
-      if (!input.sessionID) return
-
-      let state = sessionState.get(input.sessionID)
-      if (!state) {
-        refreshSession(input.sessionID, directory)
-        state = sessionState.get(input.sessionID)
+      // opencode passes {} as input to this hook (no sessionID in 1.17.x).
+      // If sessionID is present use it; otherwise pick the active session.
+      let state
+      if (input.sessionID) {
+        if (!sessionState.get(input.sessionID)) refreshSession(input.sessionID, directory)
+        state = await waitForSession(input.sessionID, directory)
+      } else {
+        for (const s of sessionState.values()) {
+          if (s?.memories?.length && (!state || s.memories.length > state.memories.length)) state = s
+        }
       }
-      state = await waitForSession(input.sessionID, directory)
       if (!state?.memories?.length) return
 
       const formatted = formatMemories(state.projectName, state.memories, config)
