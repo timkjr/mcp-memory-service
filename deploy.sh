@@ -77,6 +77,9 @@ git checkout tlkMods
 echo "→ Pushing tlkMods to Forgejo as main..."
 git push forgejo tlkMods:main --force-with-lease --tags
 
+echo "→ Syncing tlkMods tracking branch..."
+git push forgejo tlkMods --force-with-lease
+
 if $MIRROR; then
   echo "→ Mirroring to GitHub fork..."
   git push github tlkMods:main --force-with-lease --tags
