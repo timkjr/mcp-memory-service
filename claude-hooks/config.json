@@ -14,7 +14,7 @@
       "endpoint": "https://memory.k-lab.lan",
       "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
       "healthCheckTimeout": 3000,
-      "useDetailedHealthCheck": true
+      "useDetailedHealthCheck": false
     },
     "mcp": {
       "serverCommand": [
