@@ -290,6 +290,64 @@ function triggerQualityEvaluation(endpoint, apiKey, contentHash) {
 }
 
 /**
+ * Trigger end-of-session harvest to extract learnings from transcript (async, non-blocking)
+ */
+function triggerHarvest(endpoint, apiKey, projectPath) {
+    return new Promise((resolve) => {
+        const url = new URL('/api/harvest', endpoint);
+        const isHttps = url.protocol === 'https:';
+        const requestModule = isHttps ? https : http;
+
+        const postData = JSON.stringify({
+            sessions: 1,
+            dry_run: false,
+            min_confidence: 0.6,
+            project_path: projectPath || null
+        });
+
+        const options = {
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : (isHttps ? 443 : 80),
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'Authorization': `Bearer ${apiKey}`
+            },
+            timeout: 15000
+        };
+
+        if (isHttps) options.rejectUnauthorized = false;
+
+        const req = requestModule.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    const response = JSON.parse(data);
+                    const stored = response.results?.reduce((n, r) => n + (r.stored_count || 0), 0) ?? 0;
+                    const candidates = response.results?.reduce((n, r) => n + (r.candidate_count || 0), 0) ?? 0;
+                    console.log(`[Memory Hook] Harvest complete: ${stored} stored, ${candidates} candidates found`);
+                    resolve(response);
+                } catch {
+                    resolve({ success: false });
+                }
+            });
+        });
+
+        req.on('error', (err) => {
+            console.warn('[Memory Hook] Harvest failed:', err.message);
+            resolve({ success: false });
+        });
+        req.on('timeout', () => { req.destroy(); resolve({ success: false }); });
+
+        req.write(postData);
+        req.end();
+    });
+}
+
+/**
  * Store session consolidation to memory service
  */
 async function storeSessionMemory(endpoint, apiKey, content, projectContext, analysis) {
@@ -453,7 +511,13 @@ async function onSessionEnd(context) {
         } else {
             console.warn('[Memory Hook] Failed to store session consolidation:', result.error || 'Unknown error');
         }
-        
+
+        // Harvest end-of-session gleanings from transcript (non-blocking)
+        triggerHarvest(endpoint, apiKey, context.workingDirectory)
+            .catch(err => {
+                console.warn('[Memory Hook] Harvest skipped:', err.message);
+            });
+
     } catch (error) {
         console.error('[Memory Hook] Error in session end:', error.message);
         // Fail gracefully - don't prevent session from ending
