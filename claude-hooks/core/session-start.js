@@ -36,7 +36,10 @@ const { detectUserOverrides, logOverride } = require('../utilities/user-override
  */
 async function loadConfig() {
     try {
-        const configPath = path.join(__dirname, '../config.json');
+        // Use absolute path: config.json is deployed to ~/.claude/hooks/ by sync script.
+        // __dirname resolves to the dotfiles source when session-start.js is Stow-symlinked,
+        // so a __dirname-relative path would miss the deployed config.
+        const configPath = path.join(require('os').homedir(), '.claude', 'hooks', 'config.json');
         const configData = await fs.readFile(configPath, 'utf8');
         return JSON.parse(configData);
     } catch (error) {
