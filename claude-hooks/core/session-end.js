@@ -512,12 +512,6 @@ async function onSessionEnd(context) {
             console.warn('[Memory Hook] Failed to store session consolidation:', result.error || 'Unknown error');
         }
 
-        // Harvest end-of-session gleanings from transcript (non-blocking)
-        triggerHarvest(endpoint, apiKey, context.workingDirectory)
-            .catch(err => {
-                console.warn('[Memory Hook] Harvest skipped:', err.message);
-            });
-
     } catch (error) {
         console.error('[Memory Hook] Error in session end:', error.message);
         // Fail gracefully - don't prevent session from ending
