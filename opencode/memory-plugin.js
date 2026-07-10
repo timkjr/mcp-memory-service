@@ -64,11 +64,13 @@ const DEFAULT_CONFIG = {
   },
   autoCapture: {
     enabled: true,
-    minMessageLength: 100,
-    minSentenceLength: 40,
+    minMessageLength: 300,
+    minSentenceLength: 80,
     maxContentLength: 4000,
     patterns: ["decision", "error", "learning", "implementation", "important"],
     tags: ["auto-capture"],
+    requireToolUse: true,
+    toolUseWindowMs: 120000,
   },
   sessionEnd: {
     enabled: true,
@@ -455,9 +457,9 @@ function detectValuableContent(text, config) {
 
   const matchers = {
     decision: /\b(decided to|decision|chose to|will use|going with|opting for|better to|should use)\b/i,
-    error: /\b(error|bug|crash|failed|broken|exception|stack trace|regression|fixing)\b/i,
+    error: /\b(fixed|resolved|solved|patched|workaround)\b.{0,120}\b(error|bug|issue|problem|crash|exception)\b|\b(error|bug|crash|exception|regression)\b.{0,120}\b(fixed|resolved|solved|patched)\b/i,
     learning: /\b(learned|discovered|realized|turns out|insight|understanding|key finding|important to note)\b/i,
-    implementation: /\b(implemented|built|created|added|refactored|extracted|migrated|deployed)\b/i,
+    implementation: /\b(implemented|refactored|extracted|migrated|deployed)\b/i,
     important: /\b(important|critical|notable|significant|worth noting|key takeaway)\b/i,
   }
 
@@ -978,7 +980,7 @@ const createPlugin = async ({ directory, client }) => {
         const text = state.messages.map((m) => m.content || "").join("\n")
         if (text.length >= (config.sessionEnd.minSessionLength || 100)) {
           const analysis = analyzeSessionMessages(state.messages)
-          if (analysis.confidence >= 0.1) {
+          if (analysis.confidence >= 0.4) {
             const tags = [
               ...config.sessionEnd.tags,
               state.projectName,
@@ -1085,6 +1087,17 @@ const createPlugin = async ({ directory, client }) => {
   }
 
   const handleMessagePart = async (sessionID, part) => {
+    // Track tool use so auto-capture only fires after actual tool execution
+    if (part.type === "tool_use" || part.type === "tool-call" || part.type === "tool_result") {
+      let state = sessionState.get(sessionID)
+      if (!state) {
+        state = { projectName: projectNameFromDirectory(directory), memories: [], messages: [] }
+        sessionState.set(sessionID, state)
+      }
+      state._lastToolUseAt = Date.now()
+      return
+    }
+
     if (part.type !== "text") return
     const text = part.text
     if (!text || text.length === 0) return
@@ -1117,7 +1130,10 @@ const createPlugin = async ({ directory, client }) => {
     // --- END NEW ---
 
     const detection = detectValuableContent(text, config)
-    const isValuable = overrides.forceRemember || detection.isValuable
+    const requireToolUse = config.autoCapture.requireToolUse !== false
+    const toolUseWindow = config.autoCapture.toolUseWindowMs || 120000
+    const recentToolUse = state._lastToolUseAt && (Date.now() - state._lastToolUseAt) < toolUseWindow
+    const isValuable = overrides.forceRemember || (detection.isValuable && (!requireToolUse || recentToolUse))
 
     if (isValuable) {
       const projectName = state.projectName
