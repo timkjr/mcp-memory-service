@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Quality system API endpoints."""
+import hashlib
 import logging
 import time
 from typing import Optional, Dict, Any, List
@@ -93,7 +94,75 @@ class EvaluateResponse(BaseModel):
     message: str
 
 
+class ScoreContentRequest(BaseModel):
+    """Request model for scoring raw content."""
+    content: str = Field(..., description="Content to score")
+    memory_type: Optional[str] = Field("note", description="Memory type for context (default: note)")
+
+
+class ScoreContentResponse(BaseModel):
+    """Response model for content scoring."""
+    quality_score: float = Field(..., description="Quality score (0.0-1.0)")
+    quality_provider: str = Field(..., description="Which tier scored it")
+    evaluation_time_ms: float = Field(..., description="Scoring latency in milliseconds")
+
+
 # Endpoints
+@router.post("/score", response_model=ScoreContentResponse)
+async def score_content(
+    request: ScoreContentRequest,
+    user: AuthenticationResult = Depends(require_read_access)
+):
+    """
+    Score raw content without storing it.
+
+    Used by hooks for pre-store quality gating — rapidly evaluate whether
+    captured content meets quality threshold before writing to storage.
+
+    Args:
+        request: Content and optional memory_type to score
+        user: Injected auth dependency (requires read access)
+
+    Returns:
+        Quality score and provider info
+    """
+    start_time = time.time()
+
+    try:
+        # Create a temporary Memory object for scoring
+        content_hash = hashlib.sha256(request.content.encode()).hexdigest()
+        memory = Memory(
+            content=request.content,
+            content_hash=content_hash,
+            memory_type=request.memory_type or "note",
+            tags=[]
+        )
+
+        # Score using the multi-tier quality system
+        scorer = QualityScorer()
+        quality_score = await scorer.calculate_quality_score(memory, query="")
+
+        # Extract provider info from memory metadata (updated by scorer)
+        quality_provider = memory.metadata.get('quality_provider', 'implicit')
+        evaluation_time_ms = (time.time() - start_time) * 1000
+
+        logger.info(
+            f"Scored content: score={quality_score:.3f} ({quality_provider}) "
+            f"type={_sanitize_log_value(request.memory_type or 'note')} "
+            f"in {evaluation_time_ms:.1f}ms"
+        )
+
+        return ScoreContentResponse(
+            quality_score=quality_score,
+            quality_provider=quality_provider,
+            evaluation_time_ms=round(evaluation_time_ms, 2)
+        )
+
+    except Exception as e:
+        logger.error(f"Error scoring content: {e}")
+        raise HTTPException(status_code=500, detail=f"Error scoring content: {str(e)}")
+
+
 @router.post("/memories/{content_hash}/rate", response_model=RateMemoryResponse)
 async def rate_memory(
     content_hash: str,
