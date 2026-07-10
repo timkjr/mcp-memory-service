@@ -68,7 +68,7 @@ function extractTextContent(content) {
  */
 function isNoisySentence(sentence) {
     const s = sentence.trim();
-    if (s.length < 60) return true;
+    if (s.length < 100) return true;                                 // Raised from 60 — too permissive
     if (/^\s*[{[\]`]/.test(s)) return true;                          // JSON / code block
     if (/"[a-z_]+"\s*:/.test(s)) return true;                        // JSON key-value
     if (/https?:\/\/\S{30,}/.test(s) && s.length < 150) return true; // bare URL line
@@ -76,6 +76,9 @@ function isNoisySentence(sentence) {
     if (/Permanently added|remote:\s|\.git\/|stderr|stdout/.test(s)) return true; // git/shell
     if (/\bat_medium=|at_campaign=|feed":|"published":/.test(s)) return true;    // RSS
     if (/^[-*]\s+`/.test(s)) return true;                            // skill doc bullet
+    if (/\btoo common\b|\bare too\b|\bis too\b/i.test(s)) return true; // meta-discussion about patterns
+    if ((s.match(/"/g) || []).length > 2 && s.length < 150) return true; // mostly quoted text
+    if (/^(That's|Also\s)/i.test(s)) return true;                    // deployment narration
     return false;
 }
 
@@ -147,7 +150,7 @@ function analyzeConversation(conversationData) {
             /\b(learned that|turns out|the reason is|the issue was|the fix is|discovered that|realized that)\b/i,
         ];
         const codeChangePatterns = [
-            /\b(added|implemented|refactored|updated|fixed|removed|renamed|migrated)\b.{10,}\b(in|to|from|the)\b/i,
+            /\b(added|implemented|refactored|updated|fixed|removed|renamed|migrated)\b.{5,}\b(file|function|class|component|test|config|endpoint|method|module|hook|script|service|handler|route|middleware|schema|migration|interface|type|enum)\b/i,
         ];
         const nextStepPatterns = [
             /\b(next step|still need to|todo|follow.?up|will need to|remaining)\b/i,
@@ -206,7 +209,7 @@ function isSessionMeaningful(analysis, { forceRemember = false } = {}) {
     const substantive = (analysis.decisions?.length || 0)
         + (analysis.insights?.length || 0)
         + (analysis.codeChanges?.length || 0);
-    return substantive > 0;
+    return substantive >= 2;
 }
 
 /**
@@ -329,13 +332,23 @@ function triggerHarvest(endpoint, apiKey, projectPath) {
  * Store session consolidation to memory service
  */
 async function storeSessionMemory(endpoint, apiKey, content, projectContext, analysis) {
+    // Filter out generic topics that pollute tags
+    const genericTopics = new Set([
+        'implementation', 'debugging', 'architecture', 'performance',
+        'deployment', 'configuration', 'api', 'testing', 'documentation'
+    ]);
+
+    const filteredTopics = analysis.topics
+        .filter(t => !genericTopics.has(t))
+        .slice(0, 3);
+
     // Generate and normalize tags
     const tags = [
         'claude-code-session',
         'session-consolidation',
         projectContext.name,
         projectContext.language ? `language:${projectContext.language}` : null,
-        ...analysis.topics.slice(0, 3),
+        ...filteredTopics,
         ...projectContext.frameworks.slice(0, 2),
         `confidence:${Math.round(analysis.confidence * 100)}`,
     ]
@@ -358,6 +371,14 @@ async function storeSessionMemory(endpoint, apiKey, content, projectContext, ana
 
     let result;
     try {
+        // Pre-store quality gate: score the content before storing
+        const qualityScore = await client.scoreContent(content, 'session-summary');
+        const QUALITY_THRESHOLD = 0.25;
+        if (qualityScore < QUALITY_THRESHOLD) {
+            console.log(`[Memory Hook] Skipping low-quality memory (score: ${qualityScore.toFixed(2)})`);
+            return { success: false, error: 'Quality score below threshold' };
+        }
+
         result = await client.storeMemory(content, {
             tags: uniqueTags,
             memoryType: 'session-summary',

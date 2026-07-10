@@ -577,6 +577,27 @@ class MemoryClient {
     }
 
     /**
+     * Score content quality without storing it.
+     * Used by hooks for pre-store quality gating.
+     * @param {string} content - Content to score
+     * @param {string} memoryType - Memory type (default: 'note')
+     * @returns {Promise<number>} - Quality score [0.0-1.0], defaults to 0.5 on error
+     */
+    async scoreContent(content, memoryType = 'note') {
+        try {
+            const response = await this._performApiPost('/api/quality/score', {
+                content,
+                memory_type: memoryType
+            });
+            return response.quality_score ?? 0.5;
+        } catch (err) {
+            // On error, allow the store to proceed (fail open)
+            console.warn('[Memory Client] Quality scoring failed:', err.message);
+            return 0.5;
+        }
+    }
+
+    /**
      * Disconnect from active protocol
      */
     async disconnect() {
