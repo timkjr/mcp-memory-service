@@ -309,6 +309,36 @@ async function main() {
         const projectName = extractProjectName(cwd);
         const tags = generateTags(detection, projectName);
 
+        // Pre-store quality gate: score the content before storing
+        const qualityClient = new MemoryClient({
+            protocol: 'auto',
+            preferredProtocol: 'http',
+            http: {
+                endpoint: config.memoryService.http.endpoint,
+                apiKey: config.memoryService.http.apiKey,
+            },
+        });
+
+        let qualityScore;
+        try {
+            await qualityClient.connect();
+            qualityScore = await qualityClient.scoreContent(truncatedContent, detection.memoryType);
+            await qualityClient.disconnect();
+        } catch (err) {
+            if (config.autoCapture.debugMode) {
+                console.log(`[auto-capture] Quality scoring failed, proceeding with default: ${err.message}`);
+            }
+            qualityScore = 0.5; // Fail open
+        }
+
+        const QUALITY_THRESHOLD = 0.25;
+        if (qualityScore < QUALITY_THRESHOLD) {
+            if (config.autoCapture.debugMode) {
+                console.log(`[auto-capture] Skipping low-quality capture (score: ${qualityScore.toFixed(2)})`);
+            }
+            process.exit(0);
+        }
+
         // Store memory
         if (config.autoCapture.debugMode) {
             console.log(`[auto-capture] Storing ${detection.memoryType} memory...`);
