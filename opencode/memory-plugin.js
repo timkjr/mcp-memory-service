@@ -452,7 +452,7 @@ function splitTextSentences(text) {
 function detectValuableContent(text, config) {
   const patterns = config.autoCapture.patterns || DEFAULT_CONFIG.autoCapture.patterns
   const minLength = config.autoCapture.minMessageLength || DEFAULT_CONFIG.autoCapture.minMessageLength
-  const minSentence = config.autoCapture.minSentenceLength || 40
+  const minSentence = config.autoCapture.minSentenceLength || DEFAULT_CONFIG.autoCapture.minSentenceLength
   if (!text || text.length < minLength) return { isValuable: false, reason: "too short", memoryType: null, matchedPattern: null }
 
   const matchers = {

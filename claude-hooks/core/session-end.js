@@ -19,12 +19,12 @@ const { MemoryClient } = require('../utilities/memory-client');
  * Load hook configuration
  */
 async function loadConfig() {
+    const configPath = resolveConfigPath(__dirname);
     try {
-        const configPath = resolveConfigPath(__dirname);
         const configData = await fs.readFile(configPath, 'utf8');
         return JSON.parse(configData);
     } catch (error) {
-        console.warn('[Memory Hook] Using default configuration:', error.message);
+        console.warn(`[Memory Hook] Config not found at ${configPath}, using defaults:`, error.message);
         return {
             memoryService: {
                 http: {

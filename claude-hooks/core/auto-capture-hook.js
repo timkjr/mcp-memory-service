@@ -34,8 +34,8 @@ const {
  * Load hook configuration
  */
 async function loadConfig() {
+    const configPath = resolveConfigPath(__dirname);
     try {
-        const configPath = resolveConfigPath(__dirname);
         const configData = await fs.readFile(configPath, 'utf8');
         const config = JSON.parse(configData);
 
@@ -55,7 +55,7 @@ async function loadConfig() {
             }
         };
     } catch (error) {
-        console.warn('[auto-capture] Using default configuration:', error.message);
+        console.warn(`[auto-capture] Config not found at ${configPath}, using defaults:`, error.message);
         return {
             memoryService: {
                 http: {
