@@ -47,7 +47,52 @@ async function loadConfig() {
 }
 
 /**
- * Analyze conversation to extract key information
+ * Extract plain text from a message content field.
+ * Handles both string content and content-block arrays (Claude API format).
+ * Only returns text blocks — skips tool_use, tool_result, images, etc.
+ */
+function extractTextContent(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content
+            .filter(block => block && block.type === 'text')
+            .map(block => block.text || '')
+            .join('\n');
+    }
+    return '';
+}
+
+/**
+ * Return true for sentences that are tool output, JSON fragments, URLs,
+ * stderr lines, or other noise that shouldn't be stored as a memory.
+ */
+function isNoisySentence(sentence) {
+    const s = sentence.trim();
+    if (s.length < 60) return true;
+    if (/^\s*[{[\]`]/.test(s)) return true;                          // JSON / code block
+    if (/"[a-z_]+"\s*:/.test(s)) return true;                        // JSON key-value
+    if (/https?:\/\/\S{30,}/.test(s) && s.length < 150) return true; // bare URL line
+    if (/^\s*(Warning|Error|WARN|INFO|DEBUG|FAIL)[\s:]/i.test(s)) return true; // log lines
+    if (/Permanently added|remote:\s|\.git\/|stderr|stdout/.test(s)) return true; // git/shell
+    if (/\bat_medium=|at_campaign=|feed":|"published":/.test(s)) return true;    // RSS
+    if (/^[-*]\s+`/.test(s)) return true;                            // skill doc bullet
+    return false;
+}
+
+/**
+ * Split prose text into sentences, stripping content inside code blocks first.
+ */
+function extractProseSentences(text) {
+    // Remove fenced code blocks entirely
+    const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]+`/g, ' ');
+    return prose.split(/[.!?]+/).map(s => s.trim()).filter(s => !isNoisySentence(s));
+}
+
+/**
+ * Analyze conversation to extract key information.
+ * Only examines assistant text turns — user messages, tool results, and
+ * system content are excluded to prevent RSS feeds, skill docs, stderr,
+ * and other tool output from being stored as decisions or insights.
  */
 function analyzeConversation(conversationData) {
     try {
@@ -60,151 +105,84 @@ function analyzeConversation(conversationData) {
             sessionLength: 0,
             confidence: 0
         };
-        
+
         if (!conversationData || !conversationData.messages) {
             return analysis;
         }
-        
+
         const messages = conversationData.messages;
-        const conversationText = messages.map(msg => msg.content || '').join('\n').toLowerCase();
-        analysis.sessionLength = conversationText.length;
-        
-        // Extract topics (simple keyword matching)
+
+        // Pull assistant text only for content extraction
+        const assistantTexts = messages
+            .filter(msg => msg.role === 'assistant')
+            .map(msg => extractTextContent(msg.content))
+            .filter(text => text.length > 0);
+
+        // Topics: keyword scan over all assistant text (broad, OK for classification)
+        const allAssistantText = assistantTexts.join('\n').toLowerCase();
+        analysis.sessionLength = allAssistantText.length;
+
         const topicKeywords = {
-            'implementation': /implement|implementing|implementation|build|building|create|creating/g,
-            'debugging': /debug|debugging|bug|error|fix|fixing|issue|problem/g,
-            'architecture': /architecture|design|structure|pattern|framework|system/g,
-            'performance': /performance|optimization|speed|memory|efficient|faster/g,
-            'testing': /test|testing|unit test|integration|coverage|spec/g,
-            'deployment': /deploy|deployment|production|staging|release/g,
-            'configuration': /config|configuration|setup|environment|settings/g,
-            'database': /database|db|sql|query|schema|migration/g,
-            'api': /api|endpoint|rest|graphql|service|interface/g,
-            'ui': /ui|interface|frontend|component|styling|css|html/g
+            'implementation': /implement|building|creating/g,
+            'debugging': /debug|bug fix|fixing|troubleshoot/g,
+            'architecture': /architecture|design decision|structure|pattern/g,
+            'performance': /performance|optimization|faster|latency/g,
+            'testing': /unit test|integration test|coverage/g,
+            'deployment': /deploy|production|release/g,
+            'configuration': /configuration|environment variable|settings/g,
+            'database': /database|migration|schema|query/g,
+            'api': /api endpoint|rest api|graphql/g,
+            'ui': /frontend|component|css|html/g
         };
-        
+
         Object.entries(topicKeywords).forEach(([topic, regex]) => {
-            if (conversationText.match(regex)) {
-                analysis.topics.push(topic);
-            }
+            if (allAssistantText.match(regex)) analysis.topics.push(topic);
         });
 
-        // Extract decisions (look for decision language)
+        // Decisions, insights, code changes, next steps: prose sentences only
         const decisionPatterns = [
-            /decided to|decision to|chose to|choosing|will use|going with/g,
-            /better to|prefer|recommend|should use|opt for/g,
-            /concluded that|determined that|agreed to/g
+            /\b(decided to|chose to|going with|will use|opted for|concluded that)\b/i,
         ];
-        
-        messages.forEach(msg => {
-            const content = (msg.content || '').toLowerCase();
-            decisionPatterns.forEach(pattern => {
-                const matches = content.match(pattern);
-                if (matches) {
-                    // Extract sentences containing decisions
-                    const sentences = msg.content.split(/[.!?]+/);
-                    sentences.forEach(sentence => {
-                        if (pattern.test(sentence.toLowerCase()) && sentence.length > 20) {
-                            analysis.decisions.push(sentence.trim());
-                        }
-                    });
-                }
-            });
-        });
-        
-        // Extract insights (look for learning language)
         const insightPatterns = [
-            /learned that|discovered|realized|found out|turns out/g,
-            /insight|understanding|conclusion|takeaway|lesson/g,
-            /important to note|key finding|observation/g
+            /\b(learned that|turns out|the reason is|the issue was|the fix is|discovered that|realized that)\b/i,
         ];
-        
-        messages.forEach(msg => {
-            const content = (msg.content || '').toLowerCase();
-            insightPatterns.forEach(pattern => {
-                if (pattern.test(content)) {
-                    const sentences = msg.content.split(/[.!?]+/);
-                    sentences.forEach(sentence => {
-                        if (pattern.test(sentence.toLowerCase()) && sentence.length > 20) {
-                            analysis.insights.push(sentence.trim());
-                        }
-                    });
-                }
-            });
-        });
-        
-        // Extract code changes (look for technical implementations)
-        const codePatterns = [
-            /added|created|implemented|built|wrote/g,
-            /modified|updated|changed|refactored|improved/g,
-            /fixed|resolved|corrected|patched/g
+        const codeChangePatterns = [
+            /\b(added|implemented|refactored|updated|fixed|removed|renamed|migrated)\b.{10,}\b(in|to|from|the)\b/i,
         ];
-        
-        messages.forEach(msg => {
-            const content = msg.content || '';
-            if (content.includes('```') || /\.(js|py|rs|go|java|cpp|c|ts|jsx|tsx)/.test(content)) {
-                // This message contains code
-                const lowerContent = content.toLowerCase();
-                codePatterns.forEach(pattern => {
-                    if (pattern.test(lowerContent)) {
-                        const sentences = content.split(/[.!?]+/);
-                        sentences.forEach(sentence => {
-                            if (pattern.test(sentence.toLowerCase()) && sentence.length > 15) {
-                                analysis.codeChanges.push(sentence.trim());
-                            }
-                        });
-                    }
-                });
+        const nextStepPatterns = [
+            /\b(next step|still need to|todo|follow.?up|will need to|remaining)\b/i,
+        ];
+
+        for (const text of assistantTexts) {
+            const sentences = extractProseSentences(text);
+            for (const sentence of sentences) {
+                const lower = sentence.toLowerCase();
+                if (decisionPatterns.some(p => p.test(lower)))   analysis.decisions.push(sentence);
+                if (insightPatterns.some(p => p.test(lower)))    analysis.insights.push(sentence);
+                if (codeChangePatterns.some(p => p.test(lower))) analysis.codeChanges.push(sentence);
+                if (nextStepPatterns.some(p => p.test(lower)))   analysis.nextSteps.push(sentence);
             }
-        });
-        
-        // Extract next steps (look for future language)
-        const nextStepsPatterns = [
-            /next|todo|need to|should|will|plan to|going to/g,
-            /follow up|continue|proceed|implement next|work on/g,
-            /remaining|still need|outstanding|future/g
-        ];
-        
-        messages.forEach(msg => {
-            const content = (msg.content || '').toLowerCase();
-            nextStepsPatterns.forEach(pattern => {
-                if (pattern.test(content)) {
-                    const sentences = msg.content.split(/[.!?]+/);
-                    sentences.forEach(sentence => {
-                        if (pattern.test(sentence.toLowerCase()) && sentence.length > 15) {
-                            analysis.nextSteps.push(sentence.trim());
-                        }
-                    });
-                }
-            });
-        });
-        
-        // Calculate confidence based on extracted information
-        const totalExtracted = analysis.topics.length + analysis.decisions.length + 
-                              analysis.insights.length + analysis.codeChanges.length + 
-                              analysis.nextSteps.length;
-        
-        analysis.confidence = Math.min(1.0, totalExtracted / 10); // Max confidence at 10+ items
-        
-        // Limit arrays to prevent overwhelming output
-        // Topics: no limit needed (max 10 possible keywords)
-        analysis.decisions = analysis.decisions.slice(0, 3);
-        analysis.insights = analysis.insights.slice(0, 3);
-        analysis.codeChanges = analysis.codeChanges.slice(0, 4);
-        analysis.nextSteps = analysis.nextSteps.slice(0, 4);
-        
+        }
+
+        // Deduplicate (same sentence can match multiple patterns)
+        const dedup = arr => [...new Map(arr.map(s => [s.slice(0, 80), s])).values()];
+        analysis.decisions  = dedup(analysis.decisions).slice(0, 3);
+        analysis.insights   = dedup(analysis.insights).slice(0, 3);
+        analysis.codeChanges = dedup(analysis.codeChanges).slice(0, 4);
+        analysis.nextSteps  = dedup(analysis.nextSteps).slice(0, 3);
+
+        const totalExtracted = analysis.decisions.length + analysis.insights.length +
+                               analysis.codeChanges.length + analysis.nextSteps.length;
+        analysis.confidence = Math.min(1.0, totalExtracted / 6);
+
         return analysis;
-        
+
     } catch (error) {
         console.error('[Memory Hook] Error analyzing conversation:', error.message);
         return {
-            topics: [],
-            decisions: [],
-            insights: [],
-            codeChanges: [],
-            nextSteps: [],
-            sessionLength: 0,
-            confidence: 0,
+            topics: [], decisions: [], insights: [],
+            codeChanges: [], nextSteps: [],
+            sessionLength: 0, confidence: 0,
             error: error.message
         };
     }
