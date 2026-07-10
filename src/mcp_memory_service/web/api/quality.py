@@ -242,7 +242,7 @@ async def rate_memory(
 @router.post("/memories/{content_hash}/evaluate", response_model=EvaluateResponse)
 async def evaluate_memory_quality(
     content_hash: str,
-    request: EvaluateRequest = None,
+    request: Optional[EvaluateRequest] = None,
     storage=Depends(get_storage),
     user: AuthenticationResult = Depends(require_write_access)
 ):
