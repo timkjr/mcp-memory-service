@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Quality system API endpoints."""
+import asyncio
 import hashlib
 import logging
 import time
@@ -138,9 +139,13 @@ async def score_content(
             tags=[]
         )
 
-        # Score using the multi-tier quality system
+        # Score using the multi-tier quality system.
+        # Run in a thread pool — ONNX/torch compilation is CPU-bound and would
+        # block uvicorn's event loop if awaited directly in this handler.
         scorer = QualityScorer()
-        quality_score = await scorer.calculate_quality_score(memory, query="")
+        quality_score = await asyncio.to_thread(
+            lambda: asyncio.run(scorer.calculate_quality_score(memory, query=""))
+        )
 
         # Extract provider info from memory metadata (updated by scorer)
         quality_provider = memory.metadata.get('quality_provider', 'implicit')
