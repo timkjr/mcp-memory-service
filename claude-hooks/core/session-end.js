@@ -373,7 +373,7 @@ async function storeSessionMemory(endpoint, apiKey, content, projectContext, ana
     try {
         // Pre-store quality gate: score the content before storing
         const qualityScore = await client.scoreContent(content, 'session-summary');
-        const QUALITY_THRESHOLD = 0.0; // ms-marco cross-encoder requires a query; revisit with absolute quality scorer
+        const QUALITY_THRESHOLD = 0.25; // heuristic scorer: blocks tool dumps/fragments; 0=garbage, 1=prose
         if (qualityScore < QUALITY_THRESHOLD) {
             console.log(`[Memory Hook] Skipping low-quality memory (score: ${qualityScore.toFixed(2)})`);
             return { success: false, error: 'Quality score below threshold' };
