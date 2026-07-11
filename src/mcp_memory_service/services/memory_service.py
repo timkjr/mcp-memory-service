@@ -37,6 +37,7 @@ from ..plugins import PluginContext, PluginRegistry
 from ..utils.content_splitter import split_content
 from ..utils.hashing import generate_content_hash
 from ..quality.async_scorer import async_scorer
+from ..quality.heuristic_scorer import score_content as heuristic_score
 
 logger = logging.getLogger(__name__)
 
@@ -419,6 +420,11 @@ class MemoryService:
 
             # Generate content hash for deduplication
             content_hash = generate_content_hash(content)
+
+            # Heuristic quality score — written at store time so consolidation has real signal
+            if 'quality_score' not in final_metadata:
+                final_metadata['quality_score'] = heuristic_score(content)
+                final_metadata['quality_provider'] = 'heuristic'
 
             # Process content if auto-splitting is enabled and content exceeds max length
             max_length = self.storage.max_content_length
