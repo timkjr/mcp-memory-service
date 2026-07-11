@@ -22,8 +22,8 @@ _GARBAGE_PATTERNS = [
     re.compile(r'"role"\s*:\s*"(user|assistant)"'), # raw conversation JSON
     re.compile(r'<\?xml|<!DOCTYPE|<html', re.IGNORECASE),
     re.compile(r'(item>\s*<title|<rss|<feed)', re.IGNORECASE),  # RSS/XML feeds
-    re.compile(r'^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}'),   # log timestamps
-    re.compile(r'\b(WARNING|ERROR|INFO|DEBUG|CRITICAL)\s*:', re.IGNORECASE),  # log levels
+    re.compile(r'^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}'),   # log timestamps (with time component)
+    re.compile(r'^\s*(WARNING|ERROR|INFO|DEBUG|CRITICAL)\s*:', re.IGNORECASE | re.MULTILINE),  # log levels at line start only
 ]
 
 # Words that appear in boilerplate/noise but not real memories
