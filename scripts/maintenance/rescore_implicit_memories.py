@@ -31,7 +31,7 @@ from mcp_memory_service.config.storage import SQLITE_VEC_PATH
 from mcp_memory_service.storage.factory import create_storage_instance
 from mcp_memory_service.quality.heuristic_scorer import score_content
 
-IMPLICIT_PROVIDERS = {"implicit", "implicit_signals"}
+IMPLICIT_PROVIDERS = {"implicit", "implicit_signals", "onnx_local"}
 
 
 async def rescore(dry_run: bool) -> None:
