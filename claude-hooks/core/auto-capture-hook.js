@@ -331,7 +331,7 @@ async function main() {
             qualityScore = 0.5; // Fail open
         }
 
-        const QUALITY_THRESHOLD = 0.0; // ms-marco cross-encoder requires a query; revisit with absolute quality scorer
+        const QUALITY_THRESHOLD = 0.25; // heuristic scorer: blocks tool dumps/fragments; 0=garbage, 1=prose
         if (qualityScore < QUALITY_THRESHOLD) {
             if (config.autoCapture.debugMode) {
                 console.log(`[auto-capture] Skipping low-quality capture (score: ${qualityScore.toFixed(2)})`);

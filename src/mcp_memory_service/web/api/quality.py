@@ -13,8 +13,6 @@
 # limitations under the License.
 
 """Quality system API endpoints."""
-import asyncio
-import hashlib
 import logging
 import time
 from typing import Optional, Dict, Any, List
@@ -24,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from ...models.memory import Memory
 from ...quality.scorer import QualityScorer
+from ...quality.heuristic_scorer import score_content as heuristic_score
 from ..dependencies import get_storage
 from ..oauth.middleware import require_read_access, require_write_access, AuthenticationResult
 
@@ -130,36 +129,18 @@ async def score_content(
     start_time = time.time()
 
     try:
-        # Create a temporary Memory object for scoring
-        content_hash = hashlib.sha256(request.content.encode()).hexdigest()
-        memory = Memory(
-            content=request.content,
-            content_hash=content_hash,
-            memory_type=request.memory_type or "note",
-            tags=[]
-        )
-
-        # Score using the multi-tier quality system.
-        # Run in a thread pool — ONNX/torch compilation is CPU-bound and would
-        # block uvicorn's event loop if awaited directly in this handler.
-        scorer = QualityScorer()
-        quality_score = await asyncio.to_thread(
-            lambda: asyncio.run(scorer.calculate_quality_score(memory, query=""))
-        )
-
-        # Extract provider info from memory metadata (updated by scorer)
-        quality_provider = memory.metadata.get('quality_provider', 'implicit')
+        quality_score = heuristic_score(request.content)
         evaluation_time_ms = (time.time() - start_time) * 1000
 
         logger.info(
-            f"Scored content: score={quality_score:.3f} ({quality_provider}) "
+            f"Scored content: score={quality_score:.3f} (heuristic) "
             f"type={_sanitize_log_value(request.memory_type or 'note')} "
             f"in {evaluation_time_ms:.1f}ms"
         )
 
         return ScoreContentResponse(
             quality_score=quality_score,
-            quality_provider=quality_provider,
+            quality_provider="heuristic",
             evaluation_time_ms=round(evaluation_time_ms, 2)
         )
 
