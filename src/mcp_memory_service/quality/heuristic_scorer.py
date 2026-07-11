@@ -22,6 +22,8 @@ _GARBAGE_PATTERNS = [
     re.compile(r'"role"\s*:\s*"(user|assistant)"'), # raw conversation JSON
     re.compile(r'<\?xml|<!DOCTYPE|<html', re.IGNORECASE),
     re.compile(r'(item>\s*<title|<rss|<feed)', re.IGNORECASE),  # RSS/XML feeds
+    re.compile(r'^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}'),   # log timestamps
+    re.compile(r'\b(WARNING|ERROR|INFO|DEBUG|CRITICAL)\s*:', re.IGNORECASE),  # log levels
 ]
 
 # Words that appear in boilerplate/noise but not real memories
@@ -95,6 +97,10 @@ def score_content(content: str) -> float:
     # Low unique-word ratio → repetitive content
     lower_words = [w.lower().strip(".,!?;:\"'") for w in words]
     unique_ratio = len(set(lower_words)) / word_count
+    if unique_ratio < 0.2 and word_count >= 5:
+        # Hard reject: highly repetitive regardless of other signals
+        logger.debug(f"Heuristic: unique_ratio={unique_ratio:.2f} below 0.2 → 0.05")
+        return 0.05
     # Short texts naturally have higher unique ratios — dampen slightly
     diversity_score = min(1.0, unique_ratio + 0.1 * math.log(word_count + 1, 10))
 
