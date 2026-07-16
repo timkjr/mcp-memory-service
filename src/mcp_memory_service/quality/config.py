@@ -28,6 +28,7 @@ class QualityConfig:
     openai_compat_base_url: Optional[str] = None   # e.g. http://localhost:11434/v1
     openai_compat_model: Optional[str] = None      # e.g. qwen2.5:7b-instruct
     openai_compat_api_key: Optional[str] = None    # optional; use "ollama" for Ollama
+    openai_compat_timeout: float = 5.0             # seconds; keep short so a down host doesn't stall retrieval
 
     # Quality boost (AI + implicit signals combination)
     boost_enabled: bool = False
@@ -52,6 +53,7 @@ class QualityConfig:
             openai_compat_base_url=os.getenv('MCP_QUALITY_AI_BASE_URL'),
             openai_compat_model=os.getenv('MCP_QUALITY_AI_MODEL'),
             openai_compat_api_key=os.getenv('MCP_QUALITY_AI_API_KEY'),
+            openai_compat_timeout=float(os.getenv('MCP_QUALITY_AI_TIMEOUT', '5.0')),
             boost_enabled=os.getenv('MCP_QUALITY_BOOST_ENABLED', 'false').lower() == 'true',
             boost_weight=float(os.getenv('MCP_QUALITY_BOOST_WEIGHT', '0.3')),
             fallback_enabled=os.getenv('MCP_QUALITY_FALLBACK_ENABLED', 'false').lower() == 'true',
