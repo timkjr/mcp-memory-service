@@ -330,10 +330,10 @@ async def test_retrieve_memories_basic(memory_service, mock_storage, sample_memo
     assert result["count"] == 3
     assert len(result["memories"]) == 3
 
-    # After fix: storage.retrieve() only accepts query and n_results
     mock_storage.retrieve.assert_called_once_with(
         query="test query",
-        n_results=3
+        n_results=3,
+        tags=None,
     )
 
 
@@ -364,11 +364,13 @@ async def test_retrieve_memories_with_filters(memory_service, mock_storage, samp
         memory_type="note"
     )
 
-    # After fix: storage.retrieve() only accepts query and n_results
-    # Filtering is done by MemoryService after retrieval
+    # Tags are now passed to storage.retrieve() directly; memory_type is still post-filtered.
+    # n_results is multiplied by 5 when only memory_type is given (to compensate for post-filter),
+    # but both tags AND memory_type are given here so n_results is used as-is.
     mock_storage.retrieve.assert_called_once_with(
         query="test",
-        n_results=5
+        n_results=5,
+        tags=["tag1"],
     )
 
 
