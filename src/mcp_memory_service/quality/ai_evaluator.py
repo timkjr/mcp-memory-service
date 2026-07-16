@@ -308,7 +308,7 @@ class QualityEvaluator:
         per request. Closed via `aclose()`.
         """
         if self._httpx_client is None:
-            self._httpx_client = httpx.AsyncClient(timeout=30.0)
+            self._httpx_client = httpx.AsyncClient(timeout=self.config.openai_compat_timeout)
         return self._httpx_client
 
     async def aclose(self) -> None:
