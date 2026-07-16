@@ -562,32 +562,25 @@ class MemoryService:
             Dictionary with search results
         """
         try:
-            # Retrieve memories using semantic search
-            # Note: storage.retrieve() only supports query and n_results
-            # We'll filter by tags/type after retrieval if needed
+            # When filtering by memory_type only (no tags), storage can't pre-filter by type,
+            # so overfetch and post-filter. Tags are passed to storage directly — the mixin
+            # widens the KNN candidate pool to 4096 and filters in SQL, so the full tagged
+            # pool is searched rather than only the top n_results semantic matches.
+            fetch_n = n_results * 5 if memory_type and not tags else n_results
             memories = await self.storage.retrieve(
                 query=query,
-                n_results=n_results
+                n_results=fetch_n,
+                tags=tags if tags else None,
             )
 
-            # Apply optional post-filtering
+            # Post-filter by memory_type only (tags already handled by storage)
             filtered_memories = memories
-            if tags or memory_type:
-                filtered_memories = []
-                for query_result in memories:
-                    # Filter by tags if specified
-                    if tags:
-                        memory_tags = query_result.memory.tags or []
-                        if not any(tag in memory_tags for tag in tags):
-                            continue
-
-                    # Filter by memory_type if specified
-                    if memory_type:
-                        mem_type = query_result.memory.memory_type or ''
-                        if mem_type != memory_type:
-                            continue
-
-                    filtered_memories.append(query_result)
+            if memory_type:
+                filtered_memories = [
+                    qr for qr in memories
+                    if (qr.memory.memory_type or '') == memory_type
+                ]
+            filtered_memories = filtered_memories[:n_results]
 
             results = []
             for result in filtered_memories:
