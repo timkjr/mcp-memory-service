@@ -292,6 +292,62 @@ function triggerQualityEvaluation(endpoint, apiKey, contentHash) {
 }
 
 /**
+ * Trigger daily consolidation to build graph edges for recent memories (fire-and-forget).
+ * "daily" phase now includes associations, so this wires up same-session relationships
+ * without waiting for the 2AM cron.
+ */
+function triggerConsolidation(endpoint, apiKey) {
+    return new Promise((resolve) => {
+        const url = new URL('/api/consolidation/trigger', endpoint);
+        const isHttps = url.protocol === 'https:';
+        const requestModule = isHttps ? https : http;
+
+        const postData = JSON.stringify({ time_horizon: 'daily' });
+
+        const options = {
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : (isHttps ? 443 : 80),
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'Authorization': `Bearer ${apiKey}`
+            },
+            timeout: 120000 // 2 min — consolidation can take a while; we don't block on it
+        };
+
+        if (isHttps) {
+            options.rejectUnauthorized = false;
+        }
+
+        const req = requestModule.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(data));
+                } catch (_) {
+                    resolve({ status: 'unknown', raw: data });
+                }
+            });
+        });
+
+        req.on('error', (error) => {
+            resolve({ status: 'error', error: error.message });
+        });
+
+        req.on('timeout', () => {
+            req.destroy();
+            resolve({ status: 'timeout' });
+        });
+
+        req.write(postData);
+        req.end();
+    });
+}
+
+/**
  * Trigger end-of-session harvest to extract learnings from transcript (async, non-blocking)
  */
 function triggerHarvest(endpoint, apiKey, projectPath) {
@@ -524,10 +580,22 @@ async function onSessionEnd(context) {
                         }
                     })
                     .catch(err => {
-                        // Don't fail the hook if quality evaluation fails
                         console.warn('[Memory Hook] Quality evaluation skipped:', err.message);
                     });
             }
+
+            // Trigger daily consolidation to build graph edges for recently stored
+            // memories (fire-and-forget). Daily associations phase was previously
+            // disabled; this wires up same-session relationships without waiting
+            // for the 2AM cron.
+            triggerConsolidation(endpoint, apiKey)
+                .then(r => {
+                    console.log(`[Memory Hook] Consolidation triggered: status=${r.status || 'ok'}, processed=${r.processed ?? '?'}`);
+                })
+                .catch(err => {
+                    console.warn('[Memory Hook] Consolidation trigger skipped:', err.message);
+                });
+
         } else {
             console.warn('[Memory Hook] Failed to store session consolidation:', result.error || 'Unknown error');
         }
