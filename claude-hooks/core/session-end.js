@@ -406,6 +406,74 @@ function triggerHarvest(endpoint, apiKey, projectPath) {
 }
 
 /**
+ * Read DECISIONS.md from the project directory and store today's (and
+ * yesterday's, for late-night sessions) entries as individual decision
+ * memories. Idempotent via content-hash dedup in the memory service.
+ * Returns the number of entries stored (0 = nothing to do or file absent).
+ */
+async function captureDecisionsLog(endpoint, apiKey, workingDirectory, projectName) {
+    const decisionsPath = path.join(workingDirectory, 'DECISIONS.md');
+    let content;
+    try {
+        content = await fs.readFile(decisionsPath, 'utf8');
+    } catch (_) {
+        return 0; // No DECISIONS.md — normal for most projects
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+    // Parse multi-line entries: [YYYY-MM-DD] first line\ncontinuation...
+    const entries = [];
+    let currentDate = null;
+    let currentLines = [];
+    for (const line of content.split('\n')) {
+        const header = line.match(/^\[(\d{4}-\d{2}-\d{2})\]\s+(.*)/);
+        if (header) {
+            if (currentDate && (currentDate === today || currentDate === yesterday) && currentLines.length) {
+                entries.push(currentLines.join(' ').replace(/\s+/g, ' ').trim());
+            }
+            currentDate = header[1];
+            currentLines = header[2] ? [header[2].trim()] : [];
+        } else if (currentDate && line.trim()) {
+            currentLines.push(line.trim());
+        }
+    }
+    // Flush last entry
+    if (currentDate && (currentDate === today || currentDate === yesterday) && currentLines.length) {
+        entries.push(currentLines.join(' ').replace(/\s+/g, ' ').trim());
+    }
+
+    if (entries.length === 0) return 0;
+
+    const client = new MemoryClient({
+        protocol: 'auto',
+        preferredProtocol: 'http',
+        http: { endpoint, apiKey },
+    });
+    try {
+        await client.connect();
+    } catch (_) {
+        return 0;
+    }
+
+    let stored = 0;
+    for (const entry of entries) {
+        try {
+            await client.storeMemory(entry, {
+                tags: ['decisions-log', projectName, 'agent:claude-code'],
+                memoryType: 'decision',
+                metadata: { source: 'DECISIONS.md', project: projectName },
+            });
+            stored++;
+        } catch (_) {
+            // Best-effort — one failed entry shouldn't abort the rest
+        }
+    }
+    return stored;
+}
+
+/**
  * Store session consolidation to memory service
  */
 async function storeSessionMemory(endpoint, apiKey, content, projectContext, analysis) {
@@ -599,6 +667,16 @@ async function onSessionEnd(context) {
         } else {
             console.warn('[Memory Hook] Failed to store session consolidation:', result.error || 'Unknown error');
         }
+
+        // Capture DECISIONS.md entries unconditionally — valuable even when the
+        // session summary is too short or low-quality to store on its own.
+        captureDecisionsLog(endpoint, apiKey, context.workingDirectory || process.cwd(), projectContext.name)
+            .then(count => {
+                if (count > 0) console.log(`[Memory Hook] Captured ${count} DECISIONS.md entr${count === 1 ? 'y' : 'ies'}`);
+            })
+            .catch(err => {
+                console.warn('[Memory Hook] DECISIONS.md capture skipped:', err.message);
+            });
 
     } catch (error) {
         console.error('[Memory Hook] Error in session end:', error.message);
