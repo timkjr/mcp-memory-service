@@ -655,7 +655,7 @@ async function storeMemoryHttp(config, content, tags, memoryType, metadata = {})
   }
   return requestJson(config, "/api/memories", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Agent-ID": "opencode" },
     body: JSON.stringify(payload),
   })
 }

@@ -298,6 +298,7 @@ class MemoryClient {
                     'Content-Type': 'application/json',
                     'Content-Length': Buffer.byteLength(payload),
                     'X-API-Key': this.httpConfig.apiKey,
+                    'X-Agent-ID': 'claude-code',
                     'Connection': 'close',
                 },
                 timeout: 5000,

@@ -259,3 +259,4 @@ update-check/
 
 # Local-only Claude Code agent definitions (not published)
 .claude/agents/
+DECISIONS.md
