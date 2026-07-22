@@ -79,16 +79,37 @@ function isNoisySentence(sentence) {
     if (/\btoo common\b|\bare too\b|\bis too\b/i.test(s)) return true; // meta-discussion about patterns
     if ((s.match(/"/g) || []).length > 2 && s.length < 150) return true; // mostly quoted text
     if (/^(That's|Also\s)/i.test(s)) return true;                    // deployment narration
+    // Defensive fallbacks for markdown structure that survived stripping
+    if (/^#{1,6}\s/.test(s)) return true;                            // markdown heading
+    if (/^\|/.test(s)) return true;                                  // table row
+    if (/^[-*+]\s/.test(s)) return true;                             // list item
+    if (/^>\s/.test(s)) return true;                                 // blockquote
+    if (/\|.*\|/.test(s)) return true;                               // inline table fragment
     return false;
 }
 
 /**
- * Split prose text into sentences, stripping content inside code blocks first.
+ * Strip markdown structural elements and split text into candidate sentences.
+ *
+ * Key insight: don't split on \n (breaks wrapped prose) — instead, convert
+ * markdown list items and structural lines into sentence terminators (.) so
+ * they produce short fragments that the 100-char filter in isNoisySentence
+ * catches. Wrapped prose stays joined and can still pass as a long sentence.
  */
 function extractProseSentences(text) {
-    // Remove fenced code blocks entirely
-    const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]+`/g, ' ');
-    return prose.split(/[.!?]+/).map(s => s.trim()).filter(s => !isNoisySentence(s));
+    const prose = text
+        .replace(/```[\s\S]*?```/g, '.')            // fenced code blocks → boundary
+        .replace(/^#{1,6}\s+.*$/gm, '.')            // heading lines → boundary
+        .replace(/^\|.*$/gm, '.')                   // table rows → boundary
+        .replace(/^\s*[-*+]\s+(.*)/gm, '$1.')       // list items → sentence + end with .
+        .replace(/^\s*\d+\.\s+(.*)/gm, '$1.')       // ordered list items → sentence
+        .replace(/`[^`\n]+`/g, ' ')                 // inline code (single-line)
+        .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1'); // bold/italic markers
+        // Note: underscore bold/italic (_text_) intentionally omitted — the regex
+        // is too greedy and mangles variable names like MCP_DECAY_ENABLED.
+    return prose.split(/[.!?]+/)
+        .map(s => s.trim())
+        .filter(s => !isNoisySentence(s));
 }
 
 /**
