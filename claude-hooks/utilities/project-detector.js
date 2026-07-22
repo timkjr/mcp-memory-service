@@ -96,7 +96,7 @@ async function detectFramework(directory) {
                 if (deps.svelte || deps['svelte']) frameworks.push('Svelte');
                 
                 tools.push('npm');
-                return pkg.name || 'node-project';
+                return pkg.name || 'node-project'; // generic fallback — filtered in detectProjectContext
             },
             'pyproject.toml': async () => {
                 tools.push('Python');
@@ -256,8 +256,17 @@ async function detectProjectContext(directory = process.cwd()) {
         // Get Git information
         const git = getGitInfo(directory);
         
-        // Determine project name (priority: git repo > config file > directory name)
-        const projectName = framework.projectName || git.repoName || directoryName;
+        // Determine project name: prefer config-file name, but not generic fallbacks.
+        // Generic fallbacks (returned when package.json has no name, etc.) are less
+        // reliable than the git repo name, which is derived from the remote URL.
+        const GENERIC_FALLBACK_NAMES = new Set([
+            'node-project', 'python-project', 'rust-project',
+            'java-maven-project', 'java-gradle-project', 'go-project',
+        ]);
+        const configName = framework.projectName && !GENERIC_FALLBACK_NAMES.has(framework.projectName)
+            ? framework.projectName
+            : null;
+        const projectName = configName || git.repoName || directoryName;
         
         // Calculate confidence score
         let confidence = 0.5; // Base confidence
