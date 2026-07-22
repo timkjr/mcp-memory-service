@@ -981,6 +981,58 @@ const createPlugin = async ({ directory, client }) => {
   }
   // --- END NEW ---
 
+  // Read DECISIONS.md from the session directory and store today's/yesterday's
+  // entries as individual decision memories. Idempotent via content-hash dedup.
+  const captureDecisionsLog = async (sessionDirectory, projectName) => {
+    const decisionsPath = path.join(sessionDirectory, "DECISIONS.md")
+    let content
+    try {
+      content = await readFile(decisionsPath, "utf8")
+    } catch (_) {
+      return 0 // No DECISIONS.md — normal for most projects
+    }
+
+    const today = new Date().toISOString().slice(0, 10)
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+
+    // Parse multi-line entries: [YYYY-MM-DD] first line\ncontinuation...
+    const entries = []
+    let currentDate = null
+    let currentLines = []
+    for (const line of content.split("\n")) {
+      const header = line.match(/^\[(\d{4}-\d{2}-\d{2})\]\s+(.*)/)
+      if (header) {
+        if (currentDate && (currentDate === today || currentDate === yesterday) && currentLines.length) {
+          entries.push(currentLines.join(" ").replace(/\s+/g, " ").trim())
+        }
+        currentDate = header[1]
+        currentLines = header[2] ? [header[2].trim()] : []
+      } else if (currentDate && line.trim()) {
+        currentLines.push(line.trim())
+      }
+    }
+    // Flush last entry
+    if (currentDate && (currentDate === today || currentDate === yesterday) && currentLines.length) {
+      entries.push(currentLines.join(" ").replace(/\s+/g, " ").trim())
+    }
+
+    if (entries.length === 0) return 0
+
+    let stored = 0
+    for (const entry of entries) {
+      try {
+        await storeMemoryHttp(config, entry, ["decisions-log", projectName, "agent:opencode"], "decision", {
+          source: "DECISIONS.md",
+          project: projectName,
+        })
+        stored++
+      } catch (_) {
+        // Best-effort — one failed entry shouldn't abort the rest
+      }
+    }
+    return stored
+  }
+
   const handleSessionEnd = async (sessionID, sessionDirectory) => {
     try {
       let state = sessionState.get(sessionID)
@@ -1095,6 +1147,18 @@ const createPlugin = async ({ directory, client }) => {
           }
         }
       }
+
+      // Capture DECISIONS.md entries unconditionally — runs even when session
+      // summary confidence is too low to store.
+      try {
+        const decisionsCount = await captureDecisionsLog(sessionDirectory, state.projectName)
+        if (decisionsCount > 0) {
+          await logInfo(`Captured ${decisionsCount} DECISIONS.md entr${decisionsCount === 1 ? "y" : "ies"}`)
+        }
+      } catch (error) {
+        await logWarn(`DECISIONS.md capture skipped: ${error.message}`)
+      }
+
     } catch (error) {
       await logWarn(`Session end handler error: ${error.message}`)
     }
