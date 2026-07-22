@@ -617,13 +617,27 @@ function analyzeSessionMessages(messages) {
     if (re.test(text)) analysis.topics.push(topic)
   }
 
+  // Extract the first prose sentence from a text chunk, stripping markdown
+  // so decisions/insights don't start with headings or code blocks.
+  function extractFirstProse(text) {
+    const stripped = text
+      .replace(/```[\s\S]*?```/g, ' ')       // fenced code blocks
+      .replace(/^#{1,6}\s+.*$/gm, ' ')       // headings
+      .replace(/^\s*[-*+]\s+(.*)/gm, '$1 ')  // list items → content
+      .replace(/`[^`\n]+`/g, ' ')            // inline code
+      .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1'); // bold/italic
+    // Return first sentence > 30 chars, otherwise fall back to raw slice
+    const sentences = stripped.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 30);
+    return sentences[0] || text.trim().slice(0, 300);
+  }
+
   const decisionRe = /\b(decided to|decision to|chose to|will use|going with|better to|we should)\b/i
   for (const msg of messages) {
     const c = msg.content || ""
-    if (decisionRe.test(c) && c.length > 20) analysis.decisions.push(c.trim().slice(0, 300))
-    if (/\b(learned|discovered|realized|turns out|insight)\b/i.test(c) && c.length > 20) analysis.insights.push(c.trim().slice(0, 300))
+    if (decisionRe.test(c) && c.length > 20) analysis.decisions.push(extractFirstProse(c).slice(0, 300))
+    if (/\b(learned|discovered|realized|turns out|insight)\b/i.test(c) && c.length > 20) analysis.insights.push(extractFirstProse(c).slice(0, 300))
     if (/\b(implemented|added|created|refactored|fixed|built)\b/i.test(c) && /```/.test(c)) analysis.codeChanges.push(c.trim().slice(0, 300))
-    if (/\b(next|todo|need to|should|plan to|continue|follow up)\b/i.test(c) && c.length > 15) analysis.nextSteps.push(c.trim().slice(0, 200))
+    if (/\b(next|todo|need to|should|plan to|continue|follow up)\b/i.test(c) && c.length > 15) analysis.nextSteps.push(extractFirstProse(c).slice(0, 200))
   }
 
   analysis.decisions = analysis.decisions.slice(0, 3)
