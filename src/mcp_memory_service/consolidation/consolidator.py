@@ -154,7 +154,10 @@ class DreamInspiredConsolidator:
     # Phase enablement configuration
     ENABLED_PHASES = {
         "clustering": ["weekly", "monthly", "quarterly", "incremental"],
-        "associations": ["weekly", "monthly", "incremental"],
+        # "daily" added so session-end triggers and the nightly cron both build
+        # graph edges for recent memories (last 2 days). Clustering/compression
+        # remain weekly-only to keep daily runs lightweight.
+        "associations": ["daily", "weekly", "monthly", "incremental"],
         "compression": ["weekly", "monthly", "quarterly", "incremental"],
         "forgetting": ["monthly", "quarterly", "yearly"],
     }
