@@ -231,7 +231,8 @@ async function sessionEndHarvest(context) {
             types: Array.isArray(cfg.types) && cfg.types.length > 0
                 ? cfg.types
                 : ['decision', 'bug', 'convention', 'learning', 'context'],
-            project_path: projectName
+            project_path: projectName,
+            ...(context?.transcriptContent ? { transcript_content: context.transcriptContent } : {})
         };
 
         const timeoutMs = Number.isFinite(cfg.timeoutMs) ? cfg.timeoutMs : DEFAULT_TIMEOUT_MS;
@@ -314,9 +315,14 @@ function readStdinContext() {
  * Errors are non-fatal — returns 0 so the hook gracefully degrades.
  */
 async function countTranscriptMessages(transcriptPath) {
+    const { count } = await readTranscript(transcriptPath);
+    return count;
+}
+
+async function readTranscript(transcriptPath) {
     try {
         const content = await fsp.readFile(transcriptPath, 'utf8');
-        return content.split('\n').filter((line) => {
+        const count = content.split('\n').filter((line) => {
             if (!line.trim()) return false;
             try {
                 const parsed = JSON.parse(line);
@@ -325,9 +331,10 @@ async function countTranscriptMessages(transcriptPath) {
                 return false;
             }
         }).length;
+        return { count, content };
     } catch (error) {
         console.warn('[Memory Hook] Harvest: could not read transcript (non-fatal):', error.message);
-        return 0;
+        return { count: 0, content: null };
     }
 }
 
@@ -357,12 +364,13 @@ if (require.main === module) {
             const stdinContext = await readStdinContext();
             let context;
             if (stdinContext && stdinContext.transcript_path) {
-                const messageCount = await countTranscriptMessages(stdinContext.transcript_path);
+                const { count: messageCount, content: transcriptContent } = await readTranscript(stdinContext.transcript_path);
                 console.log(`[Memory Hook] Harvest: read ${messageCount} messages from ${stdinContext.transcript_path}`);
                 context = {
                     workingDirectory: stdinContext.cwd || process.cwd(),
                     sessionId: stdinContext.session_id || 'unknown',
                     reason: stdinContext.reason,
+                    transcriptContent,
                     conversation: {
                         messages: Array.from({ length: messageCount }, () => ({}))
                     }

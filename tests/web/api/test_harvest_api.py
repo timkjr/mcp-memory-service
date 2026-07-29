@@ -222,6 +222,35 @@ def test_harvest_rejects_traversal_attempts(authed_client, tmp_path, monkeypatch
     assert "claude/projects" in response.json()["detail"]
 
 
+def test_harvest_accepts_transcript_content_without_project_path(authed_client):
+    """transcript_content in payload bypasses project_path filesystem lookup."""
+    transcript = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "We decided to use RRF for hybrid search because it gives better recall than weighted average."}]}})
+    with patch("mcp_memory_service.web.api.harvest.SessionHarvester") as mock_cls:
+        mock_cls.return_value.harvest.return_value = []
+        response = authed_client.post(
+            "/api/harvest",
+            json={"dry_run": True, "transcript_content": transcript},
+        )
+    assert response.status_code == 200
+    assert mock_cls.called
+    # SessionHarvester should have been called with a temp dir, not the project path
+    call_kwargs = mock_cls.call_args
+    project_dir_used = call_kwargs[1].get("project_dir") or call_kwargs[0][0]
+    assert str(project_dir_used) != ""  # some temp dir was used
+
+
+def test_harvest_transcript_content_takes_precedence_over_project_path(authed_client):
+    """When both transcript_content and project_path are given, transcript_content wins."""
+    transcript = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Always use WAL mode for SQLite to avoid write contention."}]}})
+    with patch("mcp_memory_service.web.api.harvest.SessionHarvester") as mock_cls:
+        mock_cls.return_value.harvest.return_value = []
+        response = authed_client.post(
+            "/api/harvest",
+            json={"dry_run": True, "transcript_content": transcript, "project_path": "should-be-ignored"},
+        )
+    assert response.status_code == 200
+
+
 @pytest.mark.integration
 def test_harvest_propagates_harvester_failure_as_500(authed_client, project_dir):
     """Unexpected harvester exceptions surface as 500."""

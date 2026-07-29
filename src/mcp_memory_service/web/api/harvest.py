@@ -23,6 +23,8 @@ the ``memory_harvest`` MCP tool over HTTP.
 import asyncio
 import logging
 import os
+import tempfile
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +52,10 @@ class HarvestRequest(BaseModel):
         description="Candidate memory types to include",
     )
     project_path: Optional[str] = Field(default=None, description="Override project directory")
+    transcript_content: Optional[str] = Field(
+        default=None,
+        description="Raw JSONL transcript content (bypasses project_path filesystem lookup — required for remote deployments)",
+    )
 
 
 class HarvestCandidateModel(BaseModel):
@@ -134,12 +140,21 @@ async def harvest_sessions(
             detail=f"Invalid types: {invalid_types}. Must be subset of {HARVEST_TYPES}",
         )
 
-    project_path = _resolve_project_path(request.project_path)
-    if not project_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Project directory not found: {project_path}",
-        )
+    # transcript_content bypasses the project filesystem lookup — required for remote deployments
+    # where transcripts live on the client machine, not the service host.
+    _tempdir_ctx = None
+    if request.transcript_content is not None:
+        _tempdir_ctx = tempfile.TemporaryDirectory()
+        project_path = Path(_tempdir_ctx.name)
+        session_file = project_path / f"{uuid.uuid4().hex}.jsonl"
+        session_file.write_text(request.transcript_content, encoding="utf-8")
+    else:
+        project_path = _resolve_project_path(request.project_path)
+        if not project_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Project directory not found: {project_path}",
+            )
 
     config = HarvestConfig(
         sessions=request.sessions,
@@ -160,6 +175,8 @@ async def harvest_sessions(
             memory_service = MemoryService(storage)
         except Exception:
             logger.error("Failed to initialize memory service for harvest", exc_info=True)
+            if _tempdir_ctx:
+                _tempdir_ctx.cleanup()
             raise HTTPException(status_code=500, detail="Failed to initialize storage for harvest")
 
     harvester = SessionHarvester(project_dir=project_path, memory_service=memory_service)
@@ -173,6 +190,9 @@ async def harvest_sessions(
     except Exception:
         logger.error("Session harvest failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Harvest failed")
+    finally:
+        if _tempdir_ctx:
+            _tempdir_ctx.cleanup()
 
     return {
         "dry_run": config.dry_run,
