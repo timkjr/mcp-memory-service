@@ -103,7 +103,7 @@ function extractProseSentences(text) {
         .replace(/^\|.*$/gm, '.')                   // table rows → boundary
         .replace(/^\s*[-*+]\s+(.*)/gm, '$1.')       // list items → sentence + end with .
         .replace(/^\s*\d+\.\s+(.*)/gm, '$1.')       // ordered list items → sentence
-        .replace(/`[^`\n]+`/g, ' ')                 // inline code (single-line)
+        .replace(/`([^`\n]+)`/g, '$1')              // inline code — keep text, drop backticks
         .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1'); // bold/italic markers
         // Note: underscore bold/italic (_text_) intentionally omitted — the regex
         // is too greedy and mangles variable names like MCP_DECAY_ENABLED.
@@ -477,15 +477,8 @@ async function captureDecisionsLog(endpoint, apiKey, workingDirectory, projectNa
  * Store session consolidation to memory service
  */
 async function storeSessionMemory(endpoint, apiKey, content, projectContext, analysis) {
-    // Filter out generic topics that pollute tags
-    const genericTopics = new Set([
-        'implementation', 'debugging', 'architecture', 'performance',
-        'deployment', 'configuration', 'api', 'testing', 'documentation'
-    ]);
-
-    const filteredTopics = analysis.topics
-        .filter(t => !genericTopics.has(t))
-        .slice(0, 3);
+    // analysis.topics is already pre-filtered at the call site
+    const filteredTopics = (analysis.topics || []).slice(0, 3);
 
     // Generate and normalize tags
     const tags = [
@@ -618,8 +611,18 @@ async function onSessionEnd(context) {
         
         console.log(`[Memory Hook] Session analysis: ${analysis.topics.length} topics, ${analysis.decisions.length} decisions, confidence: ${(analysis.confidence * 100).toFixed(1)}%`);
         
+        // Filter generic topics from both the stored content and the tags
+        const genericTopics = new Set([
+            'implementation', 'debugging', 'architecture', 'performance',
+            'deployment', 'configuration', 'api', 'testing', 'documentation'
+        ]);
+        const analysisForStorage = {
+            ...analysis,
+            topics: analysis.topics.filter(t => !genericTopics.has(t)),
+        };
+
         // Format session consolidation
-        const consolidation = formatSessionConsolidation(analysis, projectContext);
+        const consolidation = formatSessionConsolidation(analysisForStorage, projectContext);
 
         // Get endpoint and apiKey from new config structure
         const endpoint = config.memoryService?.http?.endpoint || config.memoryService?.endpoint || 'http://127.0.0.1:8000';
@@ -631,7 +634,7 @@ async function onSessionEnd(context) {
             apiKey,
             consolidation,
             projectContext,
-            analysis
+            analysisForStorage
         );
         
         const hash = result.content_hash || result.contentHash;
