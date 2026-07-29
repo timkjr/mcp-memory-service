@@ -114,6 +114,10 @@ class HarvestRewriter:
         self._api_key = os.environ.get("GROQ_API_KEY", "")
         self._locale = os.environ.get("HARVEST_LOCALE", "en")
         self._locale_instruction = self._build_locale_instruction()
+        try:
+            self._llm_timeout = float(os.environ.get("HARVEST_LLM_TIMEOUT", "10"))
+        except ValueError:
+            self._llm_timeout = 10.0
 
     def _load_providers(self) -> list:
         """Load provider chain from env vars."""
@@ -314,7 +318,7 @@ class HarvestRewriter:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
             resp = await client.post(
                 f"{base_url}/chat/completions",
                 headers=headers,

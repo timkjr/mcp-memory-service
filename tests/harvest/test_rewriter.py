@@ -133,3 +133,23 @@ class TestRewriterParsing:
         """Empty LLM response returns None."""
         result = rewriter._parse_response("", "bug")
         assert result is None
+
+
+class TestRewriterTimeout:
+    """HARVEST_LLM_TIMEOUT env var controls the httpx timeout."""
+
+    def test_default_timeout_is_10s(self):
+        import os
+        os.environ.pop("HARVEST_LLM_TIMEOUT", None)
+        r = HarvestRewriter()
+        assert r._llm_timeout == 10.0
+
+    def test_env_var_overrides_timeout(self, monkeypatch):
+        monkeypatch.setenv("HARVEST_LLM_TIMEOUT", "5")
+        r = HarvestRewriter()
+        assert r._llm_timeout == 5.0
+
+    def test_invalid_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HARVEST_LLM_TIMEOUT", "notanumber")
+        r = HarvestRewriter()
+        assert r._llm_timeout == 10.0
