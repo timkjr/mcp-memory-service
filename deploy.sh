@@ -92,6 +92,10 @@ echo "→ Log file: $LOG_FILE"
   echo "=== Deployment started at $(date) ==="
   echo ""
 
+  echo "→ Syncing hooks to local ~/.claude/hooks/..."
+  cp -r claude-hooks/. ~/.claude/hooks/ 2>/dev/null || true
+  echo ""
+
   echo "→ Updating service..."
   ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-mcp-memory.sh" || true
   echo ""
