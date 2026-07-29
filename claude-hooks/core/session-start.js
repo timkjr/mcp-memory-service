@@ -18,6 +18,11 @@ const { MemoryClient } = require('../utilities/memory-client');
 const { getVersionInfo, formatVersionDisplay } = require('../utilities/version-checker');
 const { detectUserOverrides, logOverride } = require('../utilities/user-override-detector');
 
+// Strip graph association blobs from search results — they are graph edges stored as
+// text memories for legacy compatibility and carry no useful recall content.
+const filterAssociations = (memories) =>
+    memories.filter(m => !Array.isArray(m.tags) || !m.tags.includes('association'));
+
 /**
  * Memory Service Configuration
  *
@@ -406,7 +411,7 @@ except Exception as e:
                 };
             }
 
-            return parsed.memories || [];
+            return filterAssociations(parsed.memories || []);
         } else {
             throw new Error(parsed.error || 'Code execution failed');
         }
@@ -471,7 +476,7 @@ async function queryMemoryService(memoryClient, query, config) {
 
             memories = await Promise.race([queryPromise, queryTimeout]);
 
-            return memories || [];
+            return filterAssociations(memories || []);
         }
 
         return [];
