@@ -321,16 +321,63 @@ async function countTranscriptMessages(transcriptPath) {
 
 async function readTranscript(transcriptPath) {
     try {
-        const content = await fsp.readFile(transcriptPath, 'utf8');
-        const count = content.split('\n').filter((line) => {
-            if (!line.trim()) return false;
-            try {
-                const parsed = JSON.parse(line);
-                return parsed && parsed.type && parsed.message;
-            } catch (_) {
-                return false;
+        const raw = await fsp.readFile(transcriptPath, 'utf8');
+        const filteredLines = [];
+        let count = 0;
+
+        for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            let parsed;
+            try { parsed = JSON.parse(line); } catch (_) { continue; }
+            if (!parsed || !parsed.type || !parsed.message) continue;
+            count++;
+
+            // Keep user messages as-is (they're always small).
+            if (parsed.type === 'user') {
+                filteredLines.push(line);
+                continue;
             }
-        }).length;
+
+            // For assistant messages, keep only text content blocks — strip tool_use,
+            // tool_result, and image blocks which are bulk and useless for harvest.
+            if (parsed.type === 'assistant') {
+                const msgContent = parsed.message && parsed.message.content;
+                if (!Array.isArray(msgContent)) { filteredLines.push(line); continue; }
+                const textOnly = msgContent.filter(b => b.type === 'text' && b.text && b.text.trim());
+                if (textOnly.length === 0) continue; // pure tool-call turn, skip entirely
+                const slim = { ...parsed, message: { ...parsed.message, content: textOnly } };
+                filteredLines.push(JSON.stringify(slim));
+            }
+            // All other types (tool_result entries at top level, etc.) are dropped.
+        }
+
+        const MAX_BYTES = 768 * 1024; // 768KB — leaves headroom under the 1MB body limit
+        const lineSizes = filteredLines.map(l => Buffer.byteLength(l + '\n', 'utf8'));
+        const totalBytes = lineSizes.reduce((a, b) => a + b, 0);
+
+        let sendLines;
+        if (totalBytes <= MAX_BYTES) {
+            sendLines = filteredLines;
+        } else {
+            // Always keep the first turn (session context), then fill remaining budget
+            // from the most recent turns. Middle turns are dropped.
+            const firstLine = filteredLines[0];
+            const firstBytes = lineSizes[0];
+            let budget = MAX_BYTES - firstBytes;
+            let tailBytes = 0;
+            let tailStart = filteredLines.length;
+            for (let i = filteredLines.length - 1; i >= 1; i--) {
+                if (tailBytes + lineSizes[i] > budget) break;
+                tailBytes += lineSizes[i];
+                tailStart = i;
+            }
+            sendLines = [firstLine, ...filteredLines.slice(tailStart)];
+        }
+
+        const content = sendLines.join('\n');
+        const bytes = Buffer.byteLength(content, 'utf8');
+        const trimmed = sendLines.length < filteredLines.length;
+        console.log(`[Memory Hook] Harvest: ${count} total → ${filteredLines.length} text turns${trimmed ? `, trimmed to ${sendLines.length} (first + recent)` : ''} (${Math.round(bytes / 1024)}KB)`);
         return { count, content };
     } catch (error) {
         console.warn('[Memory Hook] Harvest: could not read transcript (non-fatal):', error.message);
