@@ -33,7 +33,7 @@
       "auto-generated"
     ],
     "maxMemoriesPerSession": 8,
-    "enableSessionConsolidation": true,
+    "enableSessionConsolidation": false,
     "injectAfterCompacting": false,
     "recentFirstMode": true,
     "recentMemoryRatio": 0.6,
@@ -113,7 +113,7 @@
     "minSessionLength": 100
   },
   "autoCapture": {
-    "enabled": false
+    "enabled": true
   },
   "gitAnalysis": {
     "enabled": true,
@@ -122,6 +122,18 @@
     "includeChangelog": true,
     "maxGitMemories": 3,
     "gitContextWeight": 1.2
+  },
+  "sessionHarvest": {
+    "enabled": true,
+    "dryRun": false,
+    "dryRunOnFirstUse": false,
+    "minSessionMessages": 5,
+    "sessions": 1,
+    "useLlm": true,
+    "minConfidence": 0.6,
+    "timeoutMs": 15000,
+    "endpoint": "https://memory.k-lab.lan",
+    "apiKey": null
   },
   "mcpCapabilityCheck": {
     "enabled": true,
