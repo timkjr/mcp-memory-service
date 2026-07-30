@@ -111,6 +111,15 @@ test('cleanTurnText: preserves short clean text unchanged', () => {
     assert.ok(result.includes('The fix was restarting the service'));
 });
 
+test('cleanTurnText: does not cut a sentence in half', () => {
+    // maxLen (60) lands mid-way through the second sentence — result must
+    // stop at the end of the first sentence instead of chopping mid-word.
+    const input = 'The fix was restarting the service. Also updated the config for good measure.';
+    const result = cleanTurnText(input, 60);
+    assert.ok(result.endsWith('.'), `Expected to end on a sentence boundary, got: "${result}"`);
+    assert.strictEqual(result, 'The fix was restarting the service.');
+});
+
 // --- extractContextWindow content filtering ---
 test('extractContextWindow: long assistant response is truncated per-turn', async () => {
     const tmpFile = path.join(os.tmpdir(), `tier2-test-${Date.now()}.jsonl`);
