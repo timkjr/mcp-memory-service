@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { readFileSync, writeFileSync } from "node:fs"
+import { mkdir, readFile as readFileP, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import http from "node:http"
 import https from "node:https"
@@ -237,7 +238,7 @@ async function loadConfig(directory) {
 
   for (const configPath of pluginConfigPaths(directory)) {
     try {
-      const raw = await readFile(configPath, "utf8")
+      const raw = await readFileP(configPath, "utf8")
       const parsed = JSON.parse(raw)
       config = mergeConfig(config, parsed)
       break
@@ -413,8 +414,8 @@ function detectOverrides(content) {
   if (!content) return { forceSkip: false, forceRemember: false }
   const text = typeof content === "string" ? content : JSON.stringify(content)
   return {
-    forceSkip: /\b#skip\b/i.test(text),
-    forceRemember: /\b#remember\b/i.test(text),
+    forceSkip: /(?:^|\s)#skip\b/i.test(text),
+    forceRemember: /(?:^|\s)#remember\b/i.test(text),
   }
 }
 
@@ -447,6 +448,41 @@ function splitTextSentences(text) {
   const remainder = text.replace(re, "").trim()
   if (remainder) result.push(remainder)
   return result.length ? result : [text.trim()].filter(Boolean)
+}
+
+// --- Ported from claude-hooks session-end.js ---
+function isNoisySentence(sentence) {
+  const s = sentence.trim()
+  if (s.length < 100) return true
+  if (/^\s*[{[\]`]/.test(s)) return true
+  if (/"[a-z_]+"\s*:/.test(s)) return true
+  if (/https?:\/\/\S{30,}/.test(s) && s.length < 150) return true
+  if (/^\s*(Warning|Error|WARN|INFO|DEBUG|FAIL)[\s:]/.test(s)) return true
+  if (/Permanently added|remote:\s|\.git\/|stderr|stdout/.test(s)) return true
+  if (/\bat_medium=|at_campaign=|feed":|"published":/.test(s)) return true
+  if (/^[-*]\s+`/.test(s)) return true
+  if ((s.match(/"/g) || []).length > 2 && s.length < 150) return true
+  if (/^(That's|Also\s)/i.test(s)) return true
+  if (/^#{1,6}\s/.test(s)) return true
+  if (/^\|/.test(s)) return true
+  if (/^[-*+]\s/.test(s)) return true
+  if (/^>\s/.test(s)) return true
+  if (/\|.*\|/.test(s)) return true
+  return false
+}
+
+function extractProseSentences(text) {
+  const prose = text
+    .replace(/```[\s\S]*?```/g, '.')
+    .replace(/^#{1,6}\s+.*$/gm, '.')
+    .replace(/^\|.*$/gm, '.')
+    .replace(/^\s*[-*+]\s+(.*)/gm, '$1.')
+    .replace(/^\s*\d+\.\s+(.*)/gm, '$1.')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1')
+  return prose.split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => !isNoisySentence(s))
 }
 
 function detectValuableContent(text, config) {
@@ -598,8 +634,17 @@ function analyzeSessionMessages(messages) {
 
   if (!messages?.length) return analysis
 
-  const text = messages.map((m) => m.content || "").join("\n")
-  analysis.sessionLength = text.length
+  // Filter to assistant-only text — user messages and tool output are noise
+  const assistantTexts = messages
+    .filter(m => m.role === "assistant" || m.role === "model")
+    .map(m => m.content || "")
+    .filter(Boolean)
+
+  // Fallback: if no assistant messages found, use all (existing behavior)
+  const texts = assistantTexts.length > 0 ? assistantTexts : messages.map(m => m.content || "").filter(Boolean)
+
+  const allText = texts.join("\n")
+  analysis.sessionLength = allText.length
 
   const topicMatchers = {
     implementation: /implement|building|create|adding/i,
@@ -614,39 +659,34 @@ function analyzeSessionMessages(messages) {
     ui: /ui|interface|component|styling/i,
   }
   for (const [topic, re] of Object.entries(topicMatchers)) {
-    if (re.test(text)) analysis.topics.push(topic)
+    if (re.test(allText)) analysis.topics.push(topic)
   }
 
-  // Extract the first prose sentence from a text chunk, stripping markdown
-  // so decisions/insights don't start with headings or code blocks.
-  function extractFirstProse(text) {
-    const stripped = text
-      .replace(/```[\s\S]*?```/g, ' ')       // fenced code blocks
-      .replace(/^#{1,6}\s+.*$/gm, ' ')       // headings
-      .replace(/^\s*[-*+]\s+(.*)/gm, '$1 ')  // list items → content
-      .replace(/`[^`\n]+`/g, ' ')            // inline code
-      .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1'); // bold/italic
-    // Return first sentence > 30 chars, otherwise fall back to raw slice
-    const sentences = stripped.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 30);
-    return sentences[0] || text.trim().slice(0, 300);
+  const decisionPatterns = [/decided to|chose to|going with|will use|opted for|concluded that/i]
+  const insightPatterns = [/learned that|turns out|the reason is|the issue was|the fix is|discovered that|realized that/i]
+  const codeChangePatterns = [/(added|implemented|refactored|updated|fixed|removed|renamed|migrated)\b.{5,}(file|function|class|component|test|config|endpoint|method|module|hook|script|service|handler|route|middleware|schema|migration|interface|type|enum)/i]
+  const nextStepPatterns = [/next step|still need to|todo|follow.?up|will need to|remaining/i]
+
+  for (const text of texts) {
+    const sentences = extractProseSentences(text)
+    for (const sentence of sentences) {
+      const lower = sentence.toLowerCase()
+      if (decisionPatterns.some(p => p.test(lower))) analysis.decisions.push(sentence)
+      if (insightPatterns.some(p => p.test(lower))) analysis.insights.push(sentence)
+      if (codeChangePatterns.some(p => p.test(lower))) analysis.codeChanges.push(sentence)
+      if (nextStepPatterns.some(p => p.test(lower))) analysis.nextSteps.push(sentence)
+    }
   }
 
-  const decisionRe = /\b(decided to|decision to|chose to|will use|going with|better to|we should)\b/i
-  for (const msg of messages) {
-    const c = msg.content || ""
-    if (decisionRe.test(c) && c.length > 20) analysis.decisions.push(extractFirstProse(c).slice(0, 300))
-    if (/\b(learned|discovered|realized|turns out|insight)\b/i.test(c) && c.length > 20) analysis.insights.push(extractFirstProse(c).slice(0, 300))
-    if (/\b(implemented|added|created|refactored|fixed|built)\b/i.test(c) && /```/.test(c)) analysis.codeChanges.push(c.trim().slice(0, 300))
-    if (/\b(next|todo|need to|should|plan to|continue|follow up)\b/i.test(c) && c.length > 15) analysis.nextSteps.push(extractFirstProse(c).slice(0, 200))
-  }
+  const dedup = arr => [...new Map(arr.map(s => [s.slice(0, 80), s])).values()]
+  analysis.decisions = dedup(analysis.decisions).slice(0, 3)
+  analysis.insights = dedup(analysis.insights).slice(0, 3)
+  analysis.codeChanges = dedup(analysis.codeChanges).slice(0, 4)
+  analysis.nextSteps = dedup(analysis.nextSteps).slice(0, 3)
 
-  analysis.decisions = analysis.decisions.slice(0, 3)
-  analysis.insights = analysis.insights.slice(0, 3)
-  analysis.codeChanges = analysis.codeChanges.slice(0, 4)
-  analysis.nextSteps = analysis.nextSteps.slice(0, 4)
-
-  const total = analysis.topics.length + analysis.decisions.length + analysis.insights.length + analysis.codeChanges.length + analysis.nextSteps.length
-  analysis.confidence = Math.min(1, total / 10)
+  // Only count substantive items (decisions + insights + code changes) for confidence
+  const substantive = analysis.decisions.length + analysis.insights.length + analysis.codeChanges.length
+  analysis.confidence = Math.min(1, substantive / 4)
 
   return analysis
 }
@@ -656,7 +696,48 @@ function deriveProjectPath(directory) {
   return directory.split(path.sep).join("-")
 }
 
-async function storeMemoryHttp(config, content, tags, memoryType, metadata = {}) {
+// Ported from claude-hooks project-detector.js — reads package config for enriched context
+async function detectProjectContext(directory) {
+  const context = {
+    name: projectNameFromDirectory(directory),
+    language: "Unknown",
+    frameworks: [],
+    git: { branch: null, remote: null, lastCommit: null },
+  }
+  if (!directory) return context
+
+  // Read project config files
+  const tryReadSync = (filePath) => {
+    try { return readFileSync(filePath, "utf8") } catch { return null }
+  }
+  const configFiles = [
+    { file: "package.json", read: (d) => { const raw = tryReadSync(d); if (!raw) throw new Error("no file"); return JSON.parse(raw) }, map: (j) => { context.language = "JavaScript"; context.frameworks = [...new Set([...Object.keys(j.dependencies || {}), ...Object.keys(j.devDependencies || {})])].filter(k => !k.startsWith("@types/")) } },
+    { file: "pyproject.toml", read: (d) => tryReadSync(d), map: (c) => { if (!c) return; if (c.includes("[tool.poetry]") || c.includes("[project]")) context.language = "Python"; if (c.includes("django")) context.frameworks.push("django"); if (c.includes("fastapi")) context.frameworks.push("fastapi"); if (c.includes("flask")) context.frameworks.push("flask") } },
+    { file: "Cargo.toml", read: (d) => tryReadSync(d), map: (c) => { if (!c) return; context.language = "Rust" } },
+    { file: "go.mod", read: (d) => tryReadSync(d), map: (c) => { if (!c) return; context.language = "Go" } },
+    { file: "Gemfile", read: (d) => tryReadSync(d), map: (c) => { if (!c) return; context.language = "Ruby" } },
+  ]
+
+  for (const { file, read, map } of configFiles) {
+    try {
+      const data = read(path.join(directory, file))
+      map(data)
+      break
+    } catch { /* file not found */ }
+  }
+
+  // Git info
+  try {
+    context.git.branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { cwd: directory, encoding: "utf8", timeout: 2000 }).toString().trim()
+    context.git.remote = execSync("git remote get-url origin 2>/dev/null", { cwd: directory, encoding: "utf8", timeout: 2000 }).toString().trim()
+    context.git.lastCommit = execSync("git log -1 --oneline 2>/dev/null", { cwd: directory, encoding: "utf8", timeout: 2000 }).toString().trim()
+  } catch { /* not a git repo */ }
+
+  return context
+}
+
+async function storeMemoryHttp(config, content, tags, memoryType, extra = {}) {
+  const metadata = extra.metadata || {}
   const payload = {
     content,
     tags: [...new Set(tags.filter(Boolean).map((t) => String(t).toLowerCase()))],
@@ -666,6 +747,10 @@ async function storeMemoryHttp(config, content, tags, memoryType, metadata = {})
       ...metadata,
       captured_at: new Date().toISOString(),
     },
+  }
+  // Pass conversation_id for same-session dedup bypass, if provided
+  if (extra.conversation_id) {
+    payload.conversation_id = extra.conversation_id
   }
   return requestJson(config, "/api/memories", {
     method: "POST",
@@ -769,6 +854,61 @@ async function getHealth(config) {
   }
 }
 
+// Quality scoring: scores content before storage to prevent garbage memories
+const QUALITY_THRESHOLD = 0.25
+
+async function scoreContent(config, content, memoryType) {
+  try {
+    const result = await requestJson(config, "/api/quality/score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, memory_type: memoryType || "session-summary" }),
+    })
+    return result?.score ?? result?.quality_score ?? 0.5
+  } catch {
+    return null
+  }
+}
+
+function triggerQualityEvaluation(endpoint, contentHash) {
+  const url = `${endpoint.replace(/\/+$/, "")}/api/quality/memories/${contentHash}/evaluate`
+  httpsFetch(url, { method: "POST", body: "{}" }).catch(() => {})
+}
+
+function triggerConsolidation(endpoint) {
+  const url = `${endpoint.replace(/\/+$/, "")}/api/consolidation/trigger`
+  httpsFetch(url, { method: "POST", body: JSON.stringify({ time_horizon: "daily" }) }).catch(() => {})
+}
+
+// --- Cross-session tracking (ported from claude-hooks session-tracker.js) ---
+const SESSION_TRACKER_PATH = path.join(homedir(), ".local", "state", "opencode", "session-tracker.json")
+
+async function loadSessionTracker() {
+  try {
+    const data = await readFileP(SESSION_TRACKER_PATH, "utf8")
+    return JSON.parse(data)
+  } catch {
+    return { sessions: [], threads: {}, lastCleanup: null }
+  }
+}
+
+async function saveSessionTracker(tracker) {
+  try {
+    await mkdir(path.dirname(SESSION_TRACKER_PATH), { recursive: true })
+    await writeFile(SESSION_TRACKER_PATH, JSON.stringify(tracker, null, 2))
+  } catch { /* best-effort */ }
+}
+
+function cleanupExpiredSessions(tracker) {
+  const cutoff = Date.now() - 30 * 86400000
+  const before = tracker.sessions.length
+  tracker.sessions = tracker.sessions.filter(s => new Date(s.startTime).getTime() > cutoff)
+  if (tracker.sessions.length < before) {
+    tracker.lastCleanup = new Date().toISOString()
+  }
+  return tracker
+}
+
 function tagsForProject(projectName, config) {
   const tags = [...config.memoryService.searchTags]
   if (config.memoryService.includeProjectTag) {
@@ -782,7 +922,18 @@ async function loadSessionMemories({ config, directory, logInfo, logWarn, health
   const tags = tagsForProject(projectName, config)
   const queries = buildQueries(projectName, config)
 
-  // --- NEW: Add git-aware queries ---
+  // Enrich queries with project context (language, frameworks, git)
+  const projectContext = await detectProjectContext(directory)
+  if (projectContext.language !== "Unknown") {
+    queries.unshift(`${projectName} ${projectContext.language} development`)
+  }
+  for (const framework of projectContext.frameworks.slice(0, 2)) {
+    queries.unshift(`${projectName} ${framework}`)
+  }
+  if (projectContext.git.branch) {
+    queries.unshift(`${projectName} ${projectContext.git.branch} branch`)
+  }
+
   if (config.gitAnalysis?.enabled) {
     const commits = getRecentCommits(directory, config)
     if (commits.length > 0) {
@@ -790,7 +941,6 @@ async function loadSessionMemories({ config, directory, logInfo, logWarn, health
       queries.push(...gitQueries)
     }
   }
-  // --- END NEW ---
 
   const perQueryLimit = Math.max(2, Math.ceil(config.memoryService.maxMemoriesPerSession / Math.max(queries.length, 1)))
 
@@ -952,34 +1102,48 @@ const createPlugin = async ({ directory, client }) => {
     return sessionState.get(sessionID)
   }
 
-  // --- NEW: Mid-conversation memory retrieval ---
+  // --- Mid-conversation memory retrieval + debounce ---
+  const _naturalTriggerTimers = new Map()
+
   const doNaturalTriggerSearch = async (sessionID, query) => {
-    const state = sessionState.get(sessionID)
-    if (!state) return
+    // Debounce: cancel any pending trigger for this session
+    const existingTimer = _naturalTriggerTimers.get(sessionID)
+    if (existingTimer) clearTimeout(existingTimer)
 
-    const tags = tagsForProject(state.projectName, config)
-    const maxResults = config.naturalTriggers?.maxMemoriesPerTrigger || 3
+    return new Promise((resolve) => {
+      const timer = setTimeout(async () => {
+        _naturalTriggerTimers.delete(sessionID)
+        const state = sessionState.get(sessionID)
+        if (!state) { resolve(); return }
 
-    try {
-      const results = await searchMemories(config, query, tags, maxResults)
-      if (results.length === 0) return
+        const tags = tagsForProject(state.projectName, config)
+        const maxResults = config.naturalTriggers?.maxMemoriesPerTrigger || 3
 
-      const existingIds = new Set((state.memories || []).map((m) => m.id))
-      const newOnes = results.filter((m) => !existingIds.has(m.id))
-      if (newOnes.length === 0) return
+        try {
+          const results = await searchMemories(config, query, tags, maxResults)
+          if (results.length === 0) { resolve(); return }
 
-      state.memories = sortMemories(dedupeMemories([...state.memories, ...newOnes]))
-      state._pendingNaturalMemories = newOnes
+          const existingIds = new Set((state.memories || []).map((m) => m.id))
+          const newOnes = results.filter((m) => !existingIds.has(m.id))
+          if (newOnes.length === 0) { resolve(); return }
 
-      await logInfo(`Natural trigger: found ${newOnes.length} additional memories`)
-      await writeStatus({
-        lastAction: `Natural trigger: ${newOnes.length} memories (${query.slice(0, 40)}...)`,
-      })
-    } catch (error) {
-      await logWarn(`Natural trigger search failed: ${error.message}`)
-    }
+          state.memories = sortMemories(dedupeMemories([...state.memories, ...newOnes]))
+          state._pendingNaturalMemories = newOnes
+
+          await logInfo(`Natural trigger: found ${newOnes.length} additional memories`)
+          await writeStatus({
+            lastAction: `Natural trigger: ${newOnes.length} memories (${query.slice(0, 40)}...)`,
+          })
+        } catch (error) {
+          await logWarn(`Natural trigger search failed: ${error.message}`)
+        }
+        resolve()
+      }, 2000) // 2s debounce window
+
+      _naturalTriggerTimers.set(sessionID, timer)
+    })
   }
-  // --- END NEW ---
+  // --- END ---
 
   // Read DECISIONS.md from the session directory and store today's/yesterday's
   // entries as individual decision memories. Idempotent via content-hash dedup.
@@ -987,7 +1151,7 @@ const createPlugin = async ({ directory, client }) => {
     const decisionsPath = path.join(sessionDirectory, "DECISIONS.md")
     let content
     try {
-      content = await readFile(decisionsPath, "utf8")
+      content = await readFileP(decisionsPath, "utf8")
     } catch (_) {
       return 0 // No DECISIONS.md — normal for most projects
     }
@@ -1063,6 +1227,11 @@ const createPlugin = async ({ directory, client }) => {
               analysis.nextSteps.length ? `\n**Next Steps:**\n${analysis.nextSteps.map((d) => `- ${d}`).join("\n")}` : "",
             ].filter(Boolean).join("\n")
 
+            // Quality gate: score before storing; fail-open if scoring unavailable
+            const qualityScore = await scoreContent(config, consolidation, "session-summary")
+            if (qualityScore !== null && qualityScore < QUALITY_THRESHOLD) {
+              await logInfo(`Session summary skipped (quality: ${qualityScore.toFixed(2)})`)
+            } else {
             // Overwrite the previous summary of the same active session to avoid DB pollution
             if (state.lastSummaryHash) {
               try {
@@ -1111,8 +1280,15 @@ const createPlugin = async ({ directory, client }) => {
             } catch (error) {
               await logWarn(`Session summary store failed: ${error.message}`)
             }
+            } // closes quality gate else
           }
         }
+      }
+
+      // Trigger post-session quality eval + consolidation (fire-and-forget)
+      if (state.lastSummaryHash && config.memoryService.endpoint) {
+        triggerQualityEvaluation(config.memoryService.endpoint, state.lastSummaryHash)
+        triggerConsolidation(config.memoryService.endpoint)
       }
 
       // --- Commit session to bootstrap learning pipeline ---
@@ -1166,13 +1342,44 @@ const createPlugin = async ({ directory, client }) => {
 
   const handleMessagePart = async (sessionID, part) => {
     // Track tool use so auto-capture only fires after actual tool execution
-    if (part.type === "tool_use" || part.type === "tool-call" || part.type === "tool_result") {
+    if (part.type === "tool_use" || part.type === "tool-call") {
       let state = sessionState.get(sessionID)
       if (!state) {
         state = { projectName: projectNameFromDirectory(directory), memories: [], messages: [] }
         sessionState.set(sessionID, state)
       }
       state._lastToolUseAt = Date.now()
+      state._lastToolName = part.name || part.toolName || ""
+      state._lastToolInput = part.input || part.arguments || {}
+      return
+    }
+
+    if (part.type === "tool_result") {
+      let state = sessionState.get(sessionID)
+      if (!state) {
+        state = { projectName: projectNameFromDirectory(directory), memories: [], messages: [] }
+        sessionState.set(sessionID, state)
+      }
+      state._lastToolUseAt = Date.now()
+
+      // Tier 1: git commit detection
+      if (!state._tier1Fired?.gitCommit && state._lastToolName === "bash" || state._lastToolName === "Bash") {
+        const command = state._lastToolInput?.command || ""
+        const commitMatch = command.match(/git\s+commit\s+(-m\s+['"]([^'"]+)['"]|.*)/)
+        if (commitMatch) {
+          state._pendingTier1Event = { type: "gitCommit", message: commitMatch[2] || command.slice(0, 200) }
+        }
+        state._tier1Fired = state._tier1Fired || {}
+        state._tier1Fired.gitCommit = true
+      }
+
+      // Tier 1: deploy/restart detection
+      if (state._lastToolName === "bash" || state._lastToolName === "Bash") {
+        const command = state._lastToolInput?.command || ""
+        if (/\b(docker compose (up|restart)|systemctl restart|service .* restart|kubectl (apply|rollout)|helm upgrade)\b/.test(command)) {
+          state._pendingTier1Event = { type: "deployRestart", message: command.slice(0, 300) }
+        }
+      }
       return
     }
 
@@ -1194,7 +1401,25 @@ const createPlugin = async ({ directory, client }) => {
     if (state._capturedParts.has(part.id)) return
     state._capturedParts.add(part.id)
 
-    state.messages.push({ role: "unknown", content: text })
+    // Mark as assistant text (message.part.updated delivers assistant parts)
+    state.messages.push({ role: "assistant", content: text })
+
+    // Process pending Tier 1 event captured from prior tool result
+    if (state._pendingTier1Event) {
+      const event = state._pendingTier1Event
+      state._pendingTier1Event = null
+      const tags = ["tier1-event", event.type, state.projectName.toLowerCase(), "auto-capture"]
+      const memType = event.type === "gitCommit" ? "decision" : "note"
+      const content = event.type === "gitCommit"
+        ? `[Tier 1] Git commit: ${event.message}`
+        : `[Tier 1] Deploy/restart: ${event.message}`
+      try {
+        await storeMemoryHttp(config, content, tags, memType)
+        await logInfo(`Tier 1 captured: ${event.type}`)
+      } catch (error) {
+        await logWarn(`Tier 1 store failed: ${error.message}`)
+      }
+    }
 
     // --- NEW: Natural Memory Triggers — detect memory-seeking queries ---
     const triggerResult = detectMemorySeekingQuery(text, config)
@@ -1236,7 +1461,7 @@ const createPlugin = async ({ directory, client }) => {
       const content = captureText.length > maxLen ? captureText.slice(0, maxLen - 3) + "..." : captureText
 
       try {
-        await storeMemoryHttp(config, content, tags, memoryType)
+        await storeMemoryHttp(config, content, tags, memoryType, { conversation_id: sessionID })
         await logInfo(`Auto-captured ${memoryType}`)
         state._captureCount = (state._captureCount || 0) + 1
         await writeStatus({
@@ -1260,12 +1485,30 @@ const createPlugin = async ({ directory, client }) => {
     }
   }
 
+  // Initialize session tracker
+  let sessionTracker = null
+  loadSessionTracker().then(t => { sessionTracker = t })
+
   return {
     event: async ({ event }) => {
       if (event.type === "session.created") {
         const sid = event.properties.info.id
         const sdir = event.properties.info.directory || directory
         refreshSession(sid, sdir)
+
+        // Track session for cross-session linking
+        if (sessionTracker) {
+          cleanupExpiredSessions(sessionTracker)
+          sessionTracker.sessions.push({
+            id: sid,
+            project: projectNameFromDirectory(sdir),
+            directory: sdir,
+            startTime: new Date().toISOString(),
+            endTime: null,
+            summaryHash: null,
+          })
+          saveSessionTracker(sessionTracker)
+        }
       }
 
       // session.idle fires DURING the session (bus subscription is alive).
@@ -1286,6 +1529,18 @@ const createPlugin = async ({ directory, client }) => {
         if (sid) {
           const sdir = event.properties.info?.directory || directory
           await handleSessionEnd(sid, sdir)
+
+          // Update tracker with end time + summary hash
+          if (sessionTracker) {
+            const entry = sessionTracker.sessions.find(s => s.id === sid)
+            if (entry) {
+              entry.endTime = new Date().toISOString()
+              const state = sessionState.get(sid)
+              if (state?.lastSummaryHash) entry.summaryHash = state.lastSummaryHash
+            }
+            saveSessionTracker(sessionTracker)
+          }
+
           sessionState.delete(sid)
         }
       }
@@ -1345,6 +1600,8 @@ const createPlugin = async ({ directory, client }) => {
             const available = Object.keys(config.mode?.profiles || {}).join(", ")
             block = `# Unknown mode: "${newMode}"\n\nAvailable modes: ${available}`
           }
+        } else if (sub === "export") {
+          block = `# Memory Export\n\nUse \`/memory search <query>\` to find specific memories.`
         } else {
           // Read from this plugin instance's in-memory snapshot — not from
           // STATUS_FILE — so the displayed status is always the current
@@ -1359,6 +1616,9 @@ const createPlugin = async ({ directory, client }) => {
           lines.push(`- Project: ${status.projectName || projectName}`)
           lines.push(`- Loaded this session: ${sessionMemories ?? status.loadedCount ?? 0}`)
           lines.push(`- Auto-captured: ${status.capturedCount ?? 0}`)
+          // Show recent session count from tracker
+          const projectSessions = sessionTracker?.sessions?.filter(s => s.project === projectName && s.endTime)?.length ?? 0
+          if (projectSessions > 0) lines.push(`- Recent sessions: ${projectSessions}`)
           if (status.lastAction) lines.push(`- Last action: ${status.lastAction}`)
           if (status.lastSummaryAt) lines.push(`- Last summary: ${status.lastSummaryAt}`)
           if (status.updatedAt) lines.push(`- Updated: ${status.updatedAt}`)
@@ -1459,3 +1719,20 @@ const createPlugin = async ({ directory, client }) => {
 
 export const OpenCodeMemoryPlugin = createPlugin
 export default createPlugin
+
+// Internal exports for testing (mirrors claude-hooks _internal pattern)
+export const _internal = {
+  isNoisySentence,
+  extractProseSentences,
+  analyzeSessionMessages,
+  detectProjectContext,
+  detectMemorySeekingQuery,
+  detectValuableContent,
+  detectOverrides,
+  loadSessionTracker,
+  saveSessionTracker,
+  cleanupExpiredSessions,
+  scoreContent,
+  MEMORY_SEEKING_PATTERNS,
+  QUALITY_THRESHOLD,
+}
