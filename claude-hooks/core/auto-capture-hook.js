@@ -27,7 +27,11 @@ const {
     truncateContent,
     computeContentHash,
     extractProjectName,
-    DEFAULT_CONFIG
+    DEFAULT_CONFIG,
+    detectTier1Event,
+    extractContextWindow,
+    buildTier1Memory,
+    getLastCommitInfo,
 } = require('../utilities/auto-capture-patterns');
 
 /**
@@ -46,12 +50,17 @@ async function loadConfig() {
                     apiKey: ''
                 }
             },
-            autoCapture: config.autoCapture || {
-                enabled: true,
-                minLength: 300,
-                maxLength: 4000,
-                patterns: ['decision', 'error', 'learning', 'implementation', 'important', 'code'],
-                debugMode: false
+            autoCapture: {
+                ...(config.autoCapture || {}),
+                enabled: config.autoCapture?.enabled !== false,
+                tier1: {
+                    enabled: config.autoCapture?.tier1?.enabled !== false,
+                    contextWindowSize: config.autoCapture?.tier1?.contextWindowSize || 8,
+                },
+                minLength: config.autoCapture?.minLength || 300,
+                maxLength: config.autoCapture?.maxLength || 4000,
+                patterns: config.autoCapture?.patterns || ['decision', 'error', 'learning', 'implementation', 'important', 'code'],
+                debugMode: config.autoCapture?.debugMode || false,
             }
         };
     } catch (error) {
@@ -65,6 +74,10 @@ async function loadConfig() {
             },
             autoCapture: {
                 enabled: true,
+                tier1: {
+                    enabled: true,
+                    contextWindowSize: 8,
+                },
                 minLength: 300,
                 maxLength: 4000,
                 patterns: ['decision', 'error', 'learning', 'implementation', 'important', 'code'],
@@ -264,6 +277,70 @@ async function main() {
         if (!transcript) {
             process.exit(0);
         }
+
+        // --- Tier 1: completion event capture ---
+        if (config.autoCapture.tier1.enabled) {
+            const toolName = input.tool_name || '';
+            const toolInput = input.tool_input || {};
+            const tier1Event = detectTier1Event(toolName, toolInput);
+
+            if (tier1Event) {
+                let eventData = { input: toolInput };
+
+                // For git commits, fetch actual commit info from git log
+                if (tier1Event.type === 'gitCommit') {
+                    const commitInfo = getLastCommitInfo(cwd);
+                    if (commitInfo) {
+                        eventData = commitInfo;
+                    } else {
+                        // Fallback: extract message from command if git log unavailable
+                        const cmdMatch = (toolInput.command || '').match(/-m\s+['"]([^'"]+)['"]/);
+                        eventData = { subject: cmdMatch ? cmdMatch[1] : 'commit', body: '', files: '' };
+                    }
+                }
+
+                let contextWindow = '';
+                try {
+                    contextWindow = await extractContextWindow(
+                        transcriptPath,
+                        config.autoCapture.tier1.contextWindowSize
+                    );
+                } catch (err) {
+                    if (config.autoCapture.debugMode) {
+                        console.log(`[auto-capture] Context window extraction failed: ${err.message}`);
+                    }
+                }
+
+                const projectName = extractProjectName(cwd);
+                const { content, memoryType, tags } = buildTier1Memory(
+                    tier1Event.type, eventData, contextWindow, projectName
+                );
+
+                if (content) {
+                    if (config.autoCapture.debugMode) {
+                        console.log(`[auto-capture] Tier 1 event: ${tier1Event.type}, storing as ${memoryType}`);
+                    }
+                    try {
+                        await storeMemory(config, content, memoryType, tags);
+                        if (config.autoCapture.debugMode) {
+                            console.log(`[auto-capture] Tier 1 stored successfully`);
+                        }
+                    } catch (err) {
+                        console.error(`[auto-capture] Tier 1 store failed: ${err.message}`);
+                    }
+                }
+                // Don't exit — fall through to existing keyword detection as well,
+                // which will likely not match (commit output rarely has keyword patterns),
+                // and will exit normally.
+            } else if (input.tool_name) {
+                // PostToolUse call with no Tier 1 event — exit early to avoid processing full transcript
+                if (config.autoCapture.debugMode) {
+                    console.log(`[auto-capture] PostToolUse (${toolName}) - no Tier 1 event, exiting`);
+                }
+                process.exit(0);
+            }
+        }
+        // --- end Tier 1 ---
 
         // Check user overrides
         const overrides = hasUserOverride(transcript.userMessage);
