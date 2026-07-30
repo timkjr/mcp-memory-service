@@ -2,10 +2,11 @@
 /**
  * Claude Code Auto-Capture Hook
  *
- * Automatically captures valuable conversation content after tool operations.
- * Uses pattern detection to identify decisions, errors, learnings, and implementations.
+ * Tier 1 completion-event capture: detects git commits, deploy/restart
+ * commands, and DECISIONS.md writes, and stores them with surrounding
+ * conversation context.
  *
- * Trigger: PostToolUse (Edit, Write, Bash)
+ * Trigger: PostToolUse (Edit, Write, Bash) — requires input.tool_name
  * Input: JSON via stdin with transcript_path and tool info
  *
  * @module auto-capture-hook
@@ -21,13 +22,7 @@ const { MemoryClient } = require('../utilities/memory-client');
 
 // Import pattern detection
 const {
-    detectPatterns,
-    hasUserOverride,
-    generateTags,
-    truncateContent,
-    computeContentHash,
     extractProjectName,
-    DEFAULT_CONFIG,
     detectTier1Event,
     extractContextWindow,
     buildTier1Memory,
@@ -57,9 +52,6 @@ async function loadConfig() {
                     enabled: config.autoCapture?.tier1?.enabled !== false,
                     contextWindowSize: config.autoCapture?.tier1?.contextWindowSize || 8,
                 },
-                minLength: config.autoCapture?.minLength || 300,
-                maxLength: config.autoCapture?.maxLength || 4000,
-                patterns: config.autoCapture?.patterns || ['decision', 'error', 'learning', 'implementation', 'important', 'code'],
                 debugMode: config.autoCapture?.debugMode || false,
             }
         };
@@ -78,9 +70,6 @@ async function loadConfig() {
                     enabled: true,
                     contextWindowSize: 8,
                 },
-                minLength: 300,
-                maxLength: 4000,
-                patterns: ['decision', 'error', 'learning', 'implementation', 'important', 'code'],
                 debugMode: false
             }
         };
@@ -342,101 +331,11 @@ async function main() {
         }
         // --- end Tier 1 ---
 
-        // Check user overrides
-        const overrides = hasUserOverride(transcript.userMessage);
-
-        if (overrides.forceSkip) {
-            if (config.autoCapture.debugMode) {
-                console.log('[auto-capture] Skipped by user override (#skip)');
-            }
-            process.exit(0);
-        }
-
-        const content = transcript.combined;
-
-        // Detect patterns (unless force remember)
-        let detection;
-        if (overrides.forceRemember) {
-            detection = {
-                isValuable: true,
-                memoryType: 'note',
-                matchedPattern: 'user-override',
-                confidence: 1.0
-            };
-            if (config.autoCapture.debugMode) {
-                console.log('[auto-capture] Force remember by user override (#remember)');
-            }
-        } else {
-            detection = detectPatterns(content, {
-                minLength: config.autoCapture.minLength,
-                enabledPatterns: config.autoCapture.patterns,
-                debugMode: config.autoCapture.debugMode
-            });
-        }
-
-        if (!detection.isValuable) {
-            if (config.autoCapture.debugMode) {
-                console.log(`[auto-capture] Not valuable: ${detection.reason}`);
-            }
-            process.exit(0);
-        }
-
-        // Prepare content for storage
-        const truncatedContent = truncateContent(content, config.autoCapture.maxLength);
-        const projectName = extractProjectName(cwd);
-        const tags = generateTags(detection, projectName);
-
-        // Pre-store quality gate: score the content before storing
-        const qualityClient = new MemoryClient({
-            protocol: 'auto',
-            preferredProtocol: 'http',
-            http: {
-                endpoint: config.memoryService.http.endpoint,
-                apiKey: config.memoryService.http.apiKey,
-            },
-        });
-
-        let qualityScore;
-        try {
-            await qualityClient.connect();
-            qualityScore = await qualityClient.scoreContent(truncatedContent, detection.memoryType);
-            await qualityClient.disconnect();
-        } catch (err) {
-            if (config.autoCapture.debugMode) {
-                console.log(`[auto-capture] Quality scoring failed, proceeding with default: ${err.message}`);
-            }
-            qualityScore = 0.5; // Fail open
-        }
-
-        const QUALITY_THRESHOLD = 0.25; // heuristic scorer: blocks tool dumps/fragments; 0=garbage, 1=prose
-        if (qualityScore < QUALITY_THRESHOLD) {
-            if (config.autoCapture.debugMode) {
-                console.log(`[auto-capture] Skipping low-quality capture (score: ${qualityScore.toFixed(2)})`);
-            }
-            process.exit(0);
-        }
-
-        // Store memory
-        if (config.autoCapture.debugMode) {
-            console.log(`[auto-capture] Storing ${detection.memoryType} memory...`);
-            console.log(`[auto-capture] Pattern: ${detection.matchedPattern}`);
-            console.log(`[auto-capture] Tags: ${tags.join(', ')}`);
-        }
-
-        const result = await storeMemory(
-            config,
-            truncatedContent,
-            detection.memoryType,
-            tags
-        );
-
-        const elapsed = Date.now() - startTime;
-
-        if (config.autoCapture.debugMode) {
-            console.log(`[auto-capture] Stored successfully in ${elapsed}ms`);
-            console.log(`[auto-capture] Hash: ${result.content_hash || result.contentHash || 'unknown'}`);
-        }
-
+        // No further capture path — Tier 1 above is the only source this hook stores.
+        // (The legacy keyword-pattern "smart-ingest" capture was retired 2026-07-30:
+        // its broad regexes matched almost any technical turn and stored raw
+        // verbatim transcript with no prose filtering, dwarfing and duplicating
+        // the deliberate Tier 1/Tier 2 capture system by volume.)
         process.exit(0);
 
     } catch (error) {

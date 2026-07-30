@@ -104,6 +104,8 @@ echo "→ Log file: $LOG_FILE"
     git stash pop 2>/dev/null || true
     git add \
       claude/.claude/hooks/core/mid-conversation.js \
+      claude/.claude/hooks/core/auto-capture-hook.js \
+      claude/.claude/hooks/core/session-end.js \
       claude/.claude/hooks/utilities/auto-capture-patterns.js
     git diff --cached --quiet || git commit -m "chore(hooks): sync from mcp-memory deploy"
     git push
