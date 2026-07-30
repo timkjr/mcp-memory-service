@@ -106,7 +106,8 @@ echo "→ Log file: $LOG_FILE"
       claude/.claude/hooks/core/mid-conversation.js \
       claude/.claude/hooks/utilities/auto-capture-patterns.js \
       opencode/.config/opencode/opencode.jsonc
-    git diff --cached --quiet || (git commit -m "chore(hooks): sync from mcp-memory deploy" && git push)
+    git diff --cached --quiet || git commit -m "chore(hooks): sync from mcp-memory deploy"
+    git push
   )
   echo ""
 
