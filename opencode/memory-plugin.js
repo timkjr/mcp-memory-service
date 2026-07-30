@@ -453,7 +453,7 @@ function splitTextSentences(text) {
 // --- Ported from claude-hooks session-end.js ---
 function isNoisySentence(sentence) {
   const s = sentence.trim()
-  if (s.length < 100) return true
+  if (s.length < 60) return true
   if (/^\s*[{[\]`]/.test(s)) return true
   if (/"[a-z_]+"\s*:/.test(s)) return true
   if (/https?:\/\/\S{30,}/.test(s) && s.length < 150) return true
@@ -469,6 +469,21 @@ function isNoisySentence(sentence) {
   if (/^>\s/.test(s)) return true
   if (/\|.*\|/.test(s)) return true
   return false
+}
+
+function cleanTurnText(text, maxLen) {
+  const len = maxLen || 1500
+  return text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/^#{1,6}\s+.*$/gm, "")
+    .replace(/^\|.*$/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, "$1")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, len)
 }
 
 function extractProseSentences(text) {
@@ -668,7 +683,7 @@ function analyzeSessionMessages(messages) {
   const nextStepPatterns = [/next step|still need to|todo|follow.?up|will need to|remaining/i]
 
   for (const text of texts) {
-    const sentences = extractProseSentences(text)
+    const sentences = extractProseSentences(cleanTurnText(text))
     for (const sentence of sentences) {
       const lower = sentence.toLowerCase()
       if (decisionPatterns.some(p => p.test(lower))) analysis.decisions.push(sentence)
@@ -1724,6 +1739,7 @@ export default createPlugin
 export const _internal = {
   isNoisySentence,
   extractProseSentences,
+  cleanTurnText,
   analyzeSessionMessages,
   detectProjectContext,
   detectMemorySeekingQuery,

@@ -17,6 +17,7 @@ const {
   saveSessionTracker,
   cleanupExpiredSessions,
   scoreContent,
+  cleanTurnText,
   MEMORY_SEEKING_PATTERNS,
   QUALITY_THRESHOLD,
 } = _internal
@@ -310,6 +311,81 @@ describe("session tracker persistence", () => {
     cleanupExpiredSessions(tracker)
     assert.strictEqual(tracker.sessions.length, 1)
     assert.strictEqual(tracker.sessions[0].id, "new")
+  })
+})
+
+// ─── cleanTurnText ───────────────────────────────────────────────────
+
+describe("cleanTurnText", () => {
+  test("is exported from _internal", () => {
+    assert.strictEqual(typeof cleanTurnText, "function")
+  })
+
+  test("strips code blocks", () => {
+    const input = "Before\n```js\nconst x = 1;\n```\nAfter the code."
+    const result = cleanTurnText(input, 500)
+    assert.ok(!result.includes("const x"), "code block content should be removed")
+    assert.ok(result.includes("Before") && result.includes("After"))
+  })
+
+  test("strips markdown headers", () => {
+    const input = "## Repository Report\n\nSome prose here about the findings."
+    const result = cleanTurnText(input, 500)
+    assert.ok(!result.includes("##"), "headers should be stripped")
+    assert.ok(result.includes("Some prose here"))
+  })
+
+  test("truncates to maxLen", () => {
+    const result = cleanTurnText("a".repeat(1000), 200)
+    assert.ok(result.length <= 200)
+  })
+})
+
+// ─── analyzeSessionMessages — echoed output guard ───────────────────
+
+describe("analyzeSessionMessages echoed-output guard", () => {
+  test("markdown-structured report does not produce high confidence", () => {
+    // Simulate Claude echoing back file/tool output as a structured report.
+    // Before fix: patterns like "fixed", "implemented", "added" inside the
+    // report body would match and push confidence to 1.0.
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          "## Repository Hook Infrastructure Report",
+          "",
+          "### HOOKS DIRECTORIES FOUND",
+          "",
+          "Three distinct hooks locations were found:",
+          "",
+          "**A. `/home/timkjr/dev/mcp-memory/claude-hooks/`**",
+          "This is the primary directory. All hooks were added and implemented here.",
+          "The service was configured and deployed. Bugs were fixed and the module was refactored.",
+          "",
+          "**B. `/home/timkjr/.claude/hooks/`**",
+          "Installed copy. Updated and synced from source. The handler was migrated.",
+          "",
+          "**C. `/mnt/nas/claude/hooks-canonical/`**",
+          "NFS distribution copy. Files were implemented and configured for distribution.",
+        ].join("\n"),
+      },
+    ]
+    const result = analyzeSessionMessages(messages)
+    assert.ok(
+      result.confidence < 0.5,
+      `Echoed tool-output report should have confidence < 0.5, got ${result.confidence}`,
+    )
+  })
+
+  test("genuine insight text still produces high confidence", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: "We discovered that the root cause was the connection pool being exhausted under concurrent load. The fix was increasing the pool size from 5 to 20 connections. We decided to also add a circuit breaker so the service degrades gracefully when the database is unavailable. The implementation uses a simple token-bucket algorithm in the connection manager module.",
+      },
+    ]
+    const result = analyzeSessionMessages(messages)
+    assert.ok(result.confidence >= 0.5, `Genuine insight should have confidence >= 0.5, got ${result.confidence}`)
   })
 })
 
