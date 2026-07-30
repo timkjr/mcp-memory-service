@@ -99,6 +99,7 @@ echo "→ Log file: $LOG_FILE"
   echo "→ Committing changed hook files to dotfiles..."
   (
     cd ~/dotfiles
+    git pull --rebase
     git add \
       claude/.claude/hooks/core/mid-conversation.js \
       claude/.claude/hooks/utilities/auto-capture-patterns.js \
