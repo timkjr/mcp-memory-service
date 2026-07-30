@@ -384,6 +384,12 @@ class QualityEvaluator:
         else:
             payload["max_tokens"] = 50
             payload["temperature"] = 0.1
+            # Reasoning-capable models (behind proxies like llm-proxy, whose
+            # failover target can change without this config knowing) can burn
+            # the whole 50-token budget on chain-of-thought before emitting a
+            # score, leaving nothing to parse. Harmless no-op on backends that
+            # don't recognize the field (unrecognized JSON keys are ignored).
+            payload["reasoning_effort"] = "none"
 
         client = self._get_httpx_client()
         try:
