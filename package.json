@@ -1,1 +1,6 @@
-{}
+{
+  "type": "module",
+  "scripts": {
+    "test": "node --test opencode/tests/plugin.test.mjs"
+  }
+}
