@@ -327,8 +327,30 @@ function extractProseFromContent(content) {
 }
 
 /**
+ * Strip markdown structure, code blocks, and URLs from a turn's text,
+ * then truncate to maxLen. Produces a signal-dense summary, not a verbatim dump.
+ * @param {string} text
+ * @param {number} maxLen
+ * @returns {string}
+ */
+function cleanTurnText(text, maxLen) {
+    const len = maxLen || 300;
+    return text
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/^#{1,6}\s+.*$/gm, '')
+        .replace(/^\|.*$/gm, '')
+        .replace(/^\s*[-*+]\s+/gm, '')
+        .replace(/`[^`\n]+`/g, '')
+        .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1')
+        .replace(/https?:\/\/\S+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, len);
+}
+
+/**
  * Read the last `windowSize` user/assistant turns from a JSONL transcript,
- * stripping tool output. Returns a formatted string.
+ * stripping tool output and truncating per-turn to avoid verbatim dumps.
  * @param {string} transcriptPath
  * @param {number} windowSize
  * @returns {Promise<string>}
@@ -348,15 +370,18 @@ async function extractContextWindow(transcriptPath, windowSize = 8) {
                 const role = item.message?.role || item.role;
                 if (role !== 'user' && role !== 'assistant') continue;
                 const rawContent = item.message?.content ?? item.content;
-                const text = extractProseFromContent(rawContent).trim();
-                if (text) turns.push({ role, text });
+                // User turns get more room; assistant turns are heavily truncated
+                // to avoid storing full analyses verbatim.
+                const maxLen = role === 'user' ? 400 : 200;
+                const text = cleanTurnText(extractProseFromContent(rawContent), maxLen);
+                if (text.length >= 10) turns.push({ role, text });
             }
         } catch { /* skip malformed lines */ }
     }
 
     return turns
         .slice(-windowSize)
-        .map(t => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
+        .map(t => `${t.role === 'user' ? 'User' : 'A'}: ${t.text}`)
         .join('\n\n');
 }
 
@@ -472,6 +497,7 @@ module.exports = {
     detectTier1Event,
     detectTier2Signal,
     extractProseFromContent,
+    cleanTurnText,
     extractContextWindow,
     countProseWords,
     getLastCommitInfo,

@@ -1,6 +1,7 @@
 {
   "type": "module",
   "scripts": {
-    "test": "node --test opencode/tests/plugin.test.mjs"
+    "test": "node --test opencode/tests/plugin.test.mjs",
+    "test:hooks": "node --test claude-hooks/tests/tier-detection.test.js claude-hooks/tests/tier2-checkpoint.test.js"
   }
 }
