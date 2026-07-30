@@ -1,507 +1,189 @@
+#!/usr/bin/env node
 /**
- * Mid-Conversation Memory Hook
- * Intelligently triggers memory awareness during conversations based on natural language patterns
+ * Tier 2 Checkpoint Hook — UserPromptSubmit
+ *
+ * Fires on two conditions:
+ *   A) User message contains a conclusion/summary language signal
+ *   B) Every 20 turns in sessions with no Tier 1 events
+ *
+ * Captures the last 10 conversation turns (prose only) as an insight or note.
+ * Session state (turn counter) persists in /tmp/mcp-hooks-<session_id>.json.
  */
 
-const { TieredConversationMonitor } = require('../utilities/tiered-conversation-monitor');
-const { AdaptivePatternDetector } = require('../utilities/adaptive-pattern-detector');
-const { PerformanceManager } = require('../utilities/performance-manager');
+'use strict';
+
+const fs = require('fs').promises;
+const path = require('path');
+const { resolveConfigPath } = require('../utilities/config-loader');
 const { MemoryClient } = require('../utilities/memory-client');
-const { scoreMemoryRelevance } = require('../utilities/memory-scorer');
-const { formatMemoriesForContext } = require('../utilities/context-formatter');
-const { detectUserOverrides, logOverride } = require('../utilities/user-override-detector');
-
-class MidConversationHook {
-    constructor(config = {}) {
-        this.config = config;
-
-        // Decision weighting constants
-        this.TRIGGER_WEIGHTS = {
-            PATTERN_CONFIDENCE: 0.6,
-            CONVERSATION_CONTEXT: 0.4,
-            SEMANTIC_SHIFT_BOOST: 0.2,
-            QUESTION_PATTERN_BOOST: 0.1,
-            PAST_WORK_BOOST: 0.15
-        };
-
-        this.THRESHOLD_VALUES = {
-            CONVERSATION_PROBABILITY_MIN: 0.3,
-            SEMANTIC_SHIFT_MIN: 0.6,
-            SPEED_MODE_CONFIDENCE_MIN: 0.8,
-            SPEED_MODE_REDUCTION: 0.8
-        };
-
-        // Initialize performance management
-        this.performanceManager = new PerformanceManager(config.performance);
-
-        // Initialize components with performance awareness
-        this.conversationMonitor = new TieredConversationMonitor(
-            config.conversationMonitor,
-            this.performanceManager
-        );
-
-        this.patternDetector = new AdaptivePatternDetector(
-            config.patternDetector,
-            this.performanceManager
-        );
-
-        // Memory client for queries
-        this.memoryClient = null;
-
-        // Hook state - read from correct nested config paths
-        const midConversationConfig = config.hooks?.midConversation || {};
-        const naturalTriggersConfig = config.naturalTriggers || {};
-
-        this.isEnabled = naturalTriggersConfig.enabled !== false;
-        this.lastTriggerTime = 0;
-        this.cooldownPeriod = naturalTriggersConfig.cooldownPeriod || 30000; // 30 seconds between triggers
-
-        // Analytics
-        this.analytics = {
-            totalAnalyses: 0,
-            triggersExecuted: 0,
-            userAcceptanceRate: 0,
-            averageLatency: 0,
-            totalFeedback: 0
-        };
-    }
-
-    /**
-     * Analyze user message for memory trigger needs
-     */
-    async analyzeMessage(userMessage, context = {}) {
-        if (!this.isEnabled) return null;
-
-        // Check for user overrides (#skip / #remember)
-        const overrides = detectUserOverrides(userMessage);
-        if (overrides.forceSkip) {
-            logOverride('skip');
-            return this.createResult('skipped', 'User override #skip', 0);
-        }
-        if (overrides.forceRemember) {
-            logOverride('remember');
-            // Bypass cooldown and force high confidence trigger
-            this.lastTriggerTime = 0; // Reset cooldown
-            return {
-                shouldTrigger: true,
-                confidence: 1.0,
-                reasoning: 'User requested #remember override',
-                forceRemember: true,
-                timestamp: Date.now()
-            };
-        }
-
-        const timing = this.performanceManager.startTiming('mid_conversation_analysis', 'fast');
-
-        try {
-            this.analytics.totalAnalyses++;
-
-            // Check cooldown period
-            if (Date.now() - this.lastTriggerTime < this.cooldownPeriod) {
-                return this.createResult('cooldown', 'Cooldown period active', 0);
-            }
-
-            // Phase 1: Conversation monitoring
-            const conversationAnalysis = await this.conversationMonitor.analyzeMessage(userMessage, context);
-
-            // Phase 2: Pattern detection
-            const patternResults = await this.patternDetector.detectPatterns(userMessage, {
-                ...context,
-                conversationAnalysis
-            });
-
-            // Phase 3: Combined decision making
-            const triggerDecision = this.makeTriggerDecision(conversationAnalysis, patternResults, context);
-
-            // Update last trigger time if we're recommending a trigger
-            if (triggerDecision.shouldTrigger) {
-                this.lastTriggerTime = Date.now();
-            }
-
-            // Record performance
-            const performanceResult = this.performanceManager.endTiming(timing);
-            this.analytics.averageLatency = this.updateAverageLatency(performanceResult.latency);
-
-            return {
-                shouldTrigger: triggerDecision.shouldTrigger,
-                confidence: triggerDecision.confidence,
-                reasoning: triggerDecision.reasoning,
-                conversationAnalysis,
-                patternResults,
-                performance: performanceResult,
-                timestamp: Date.now()
-            };
-
-        } catch (error) {
-            console.error('[Mid-Conversation Hook] Analysis failed:', error.message);
-            this.performanceManager.endTiming(timing);
-            return this.createResult('error', `Analysis failed: ${error.message}`, 0);
-        }
-    }
-
-    /**
-     * Execute memory retrieval and context injection
-     */
-    async executeMemoryTrigger(analysisResult, context = {}) {
-        if (!analysisResult.shouldTrigger) return null;
-
-        const timing = this.performanceManager.startTiming('memory_trigger_execution', 'intensive');
-
-        try {
-            // Initialize memory client if needed
-            if (!this.memoryClient) {
-                this.memoryClient = new MemoryClient(this.config.memoryService || {});
-                await this.memoryClient.connect();
-            }
-
-            // Build enhanced query based on analysis
-            const memoryQuery = this.buildMemoryQuery(analysisResult, context);
-
-            // Retrieve relevant memories
-            const memories = await this.queryMemories(memoryQuery);
-
-            if (memories.length === 0) {
-                return this.createResult('no_memories', 'No relevant memories found', analysisResult.confidence);
-            }
-
-            // Score and format memories
-            const scoredMemories = scoreMemoryRelevance(memories, context.projectContext, {
-                verbose: false,
-                enhanceRecency: true
-            });
-
-            const contextMessage = formatMemoriesForContext(
-                scoredMemories.slice(0, this.config.maxMemoriesPerTrigger || 5),
-                context.projectContext,
-                {
-                    includeScore: false,
-                    groupByCategory: scoredMemories.length > 3,
-                    maxContentLength: 400,
-                    includeTimestamp: true
-                }
-            );
-
-            // Record successful trigger
-            this.analytics.triggersExecuted++;
-
-            const performanceResult = this.performanceManager.endTiming(timing);
-
-            return {
-                success: true,
-                contextMessage,
-                memoriesFound: memories.length,
-                memoriesUsed: Math.min(scoredMemories.length, this.config.maxMemoriesPerTrigger || 5),
-                confidence: analysisResult.confidence,
-                performance: performanceResult,
-                triggerType: 'mid_conversation'
-            };
-
-        } catch (error) {
-            console.error('[Mid-Conversation Hook] Memory trigger failed:', error.message);
-            this.performanceManager.endTiming(timing);
-            return this.createResult('execution_error', `Memory trigger failed: ${error.message}`, analysisResult.confidence);
-        }
-    }
-
-    /**
-     * Make intelligent trigger decision based on all analyses
-     */
-    makeTriggerDecision(conversationAnalysis, patternResults, context) {
-        let confidence = 0;
-        const reasons = [];
-
-        // Weight pattern detection heavily for explicit requests
-        if (patternResults.triggerRecommendation) {
-            confidence += patternResults.confidence * this.TRIGGER_WEIGHTS.PATTERN_CONFIDENCE;
-            reasons.push(`Pattern detection: ${patternResults.confidence.toFixed(2)} confidence`);
-        }
-
-        // Add conversation context weighting
-        if (conversationAnalysis.triggerProbability > this.THRESHOLD_VALUES.CONVERSATION_PROBABILITY_MIN) {
-            confidence += conversationAnalysis.triggerProbability * this.TRIGGER_WEIGHTS.CONVERSATION_CONTEXT;
-            reasons.push(`Conversation analysis: ${conversationAnalysis.triggerProbability.toFixed(2)} probability`);
-        }
-
-        // Boost for semantic shift (topic change)
-        if (conversationAnalysis.semanticShift > this.THRESHOLD_VALUES.SEMANTIC_SHIFT_MIN) {
-            confidence += this.TRIGGER_WEIGHTS.SEMANTIC_SHIFT_BOOST;
-            reasons.push(`Semantic shift detected: ${conversationAnalysis.semanticShift.toFixed(2)}`);
-        }
-
-        // Context-specific adjustments
-        if (context.isQuestionPattern) {
-            confidence += this.TRIGGER_WEIGHTS.QUESTION_PATTERN_BOOST;
-            reasons.push('Question pattern detected');
-        }
-
-        if (context.mentionsPastWork) {
-            confidence += this.TRIGGER_WEIGHTS.PAST_WORK_BOOST;
-            reasons.push('References past work');
-        }
-
-        // Apply performance profile considerations
-        const profile = this.performanceManager.performanceBudget;
-        if (profile.maxLatency < 200 && confidence < this.THRESHOLD_VALUES.SPEED_MODE_CONFIDENCE_MIN) {
-            // In speed-focused mode, require higher confidence
-            confidence *= this.THRESHOLD_VALUES.SPEED_MODE_REDUCTION;
-            reasons.push('Speed mode: increased confidence threshold');
-        }
-
-        // Final decision threshold
-        const threshold = this.config.naturalTriggers?.triggerThreshold || 0.6;
-        const shouldTrigger = confidence >= threshold;
-
-        return {
-            shouldTrigger,
-            confidence: Math.min(confidence, 1.0),
-            reasoning: reasons.join('; '),
-            threshold,
-            details: {
-                conversationWeight: conversationAnalysis.triggerProbability * 0.4,
-                patternWeight: patternResults.confidence * 0.6,
-                contextAdjustments: confidence - (conversationAnalysis.triggerProbability * 0.4 + patternResults.confidence * 0.6)
-            }
-        };
-    }
-
-    /**
-     * Build optimized memory query based on analysis
-     */
-    buildMemoryQuery(analysisResult, context) {
-        const query = {
-            semanticQuery: '',
-            tags: [],
-            limit: this.config.maxMemoriesPerTrigger || 5,
-            timeFilter: 'last-month'
-        };
-
-        // Extract key topics from conversation analysis
-        if (analysisResult.conversationAnalysis.topics.length > 0) {
-            query.semanticQuery += analysisResult.conversationAnalysis.topics.join(' ');
-        }
-
-        // Add project context
-        if (context.projectContext) {
-            query.semanticQuery += ` ${context.projectContext.name}`;
-            query.tags.push(context.projectContext.name);
-
-            if (context.projectContext.language) {
-                query.tags.push(`language:${context.projectContext.language}`);
-            }
-        }
-
-        // Add pattern-based context
-        for (const match of analysisResult.patternResults.matches) {
-            if (match.category === 'explicitMemoryRequests') {
-                query.timeFilter = 'last-week'; // Recent memories for explicit requests
-            } else if (match.category === 'technicalDiscussions') {
-                query.tags.push('architecture', 'decisions');
-            }
-        }
-
-        // Ensure we have a meaningful query
-        if (!query.semanticQuery.trim()) {
-            query.semanticQuery = 'project context decisions';
-        }
-
-        return query;
-    }
-
-    /**
-     * Query memories using unified memory client
-     */
-    async queryMemories(query) {
-        try {
-            let memories = [];
-
-            if (query.timeFilter) {
-                // Pass the time window and semantic text as separate fields —
-                // /api/search/by-time can't parse a combined string like
-                // "<topic words> last-month", it only accepts a time phrase
-                // in `query` plus an optional `semantic_query`.
-                memories = await this.memoryClient.queryMemoriesByTime(query.timeFilter, query.limit, query.semanticQuery);
-            } else {
-                memories = await this.memoryClient.queryMemories(query.semanticQuery, query.limit);
-            }
-
-            return memories || [];
-        } catch (error) {
-            console.warn('[Mid-Conversation Hook] Memory query failed:', error.message);
-            return [];
-        }
-    }
-
-    /**
-     * Handle user feedback on trigger quality
-     */
-    recordUserFeedback(analysisResult, wasHelpful, context = {}) {
-        // Update analytics
-        this.updateAcceptanceRate(wasHelpful);
-
-        // Pass feedback to components for learning
-        this.patternDetector.recordUserFeedback(wasHelpful, analysisResult.patternResults, context);
-        this.performanceManager.recordUserFeedback(wasHelpful, {
-            latency: analysisResult.performance?.latency || 0
-        });
-
-        // Log feedback for analysis
-        console.log(`[Mid-Conversation Hook] User feedback: ${wasHelpful ? 'helpful' : 'not helpful'} (confidence: ${analysisResult.confidence?.toFixed(2)})`);
-    }
-
-    /**
-     * Update performance profile
-     */
-    updatePerformanceProfile(profileName) {
-        this.performanceManager.switchProfile(profileName);
-        this.conversationMonitor.updatePerformanceProfile(profileName);
-
-        console.log(`[Mid-Conversation Hook] Switched to performance profile: ${profileName}`);
-    }
-
-    /**
-     * Get hook status and analytics
-     */
-    getStatus() {
-        return {
-            enabled: this.isEnabled,
-            lastTriggerTime: this.lastTriggerTime,
-            cooldownRemaining: Math.max(0, this.cooldownPeriod - (Date.now() - this.lastTriggerTime)),
-            analytics: this.analytics,
-            performance: this.performanceManager.getPerformanceReport(),
-            conversationMonitor: this.conversationMonitor.getPerformanceStatus(),
-            patternDetector: this.patternDetector.getStatistics()
-        };
-    }
-
-    /**
-     * Enable or disable the hook
-     */
-    setEnabled(enabled) {
-        this.isEnabled = enabled;
-        console.log(`[Mid-Conversation Hook] ${enabled ? 'Enabled' : 'Disabled'}`);
-    }
-
-    /**
-     * Helper methods
-     */
-
-    createResult(type, message, confidence) {
-        return {
-            shouldTrigger: false,
-            confidence,
-            reasoning: message,
-            type,
-            timestamp: Date.now()
-        };
-    }
-
-    updateAverageLatency(newLatency) {
-        const alpha = 0.1; // Exponential moving average factor
-        return this.analytics.averageLatency * (1 - alpha) + newLatency * alpha;
-    }
-
-    updateAcceptanceRate(wasPositive) {
-        // Increment feedback counter
-        this.analytics.totalFeedback++;
-
-        const totalFeedback = this.analytics.totalFeedback;
-        if (totalFeedback === 1) {
-            // First feedback sets the initial rate
-            this.analytics.userAcceptanceRate = wasPositive ? 1.0 : 0.0;
-        } else {
-            // Update running average
-            const currentRate = this.analytics.userAcceptanceRate;
-            this.analytics.userAcceptanceRate = (currentRate * (totalFeedback - 1) + (wasPositive ? 1 : 0)) / totalFeedback;
-        }
-    }
-
-    /**
-     * Cleanup resources
-     */
-    async cleanup() {
-        if (this.memoryClient) {
-            try {
-                await this.memoryClient.disconnect();
-            } catch (error) {
-                // Ignore cleanup errors
-            }
-            this.memoryClient = null;
-        }
-    }
-}
-
-/**
- * Global hook instance for state management
- */
-let globalHookInstance = null;
-
-/**
- * Get or create the hook instance (singleton pattern)
- */
-function getHookInstance(config) {
-    if (!globalHookInstance) {
-        globalHookInstance = new MidConversationHook(config || {});
-        console.log('[Mid-Conversation Hook] Created new hook instance');
-    }
-    return globalHookInstance;
-}
-
-/**
- * Reset hook instance (for testing or config changes)
- */
-function resetHookInstance() {
-    if (globalHookInstance) {
-        globalHookInstance.cleanup().catch((error) => {
-            // Log cleanup errors during reset but don't throw
-            console.debug('[Mid-Conversation Hook] Cleanup error during reset:', error.message);
-        });
-        globalHookInstance = null;
-        console.log('[Mid-Conversation Hook] Reset hook instance');
-    }
-}
-
-/**
- * Hook function for Claude Code integration
- */
-async function onMidConversation(context) {
-    // This would be called by Claude Code during conversation flow
-    // Implementation depends on how Claude Code exposes mid-conversation hooks
-
-    const hook = getHookInstance(context.config);
-
+const {
+    detectTier2Signal,
+    extractContextWindow,
+    countProseWords,
+    extractProjectName,
+    hasUserOverride,
+} = require('../utilities/auto-capture-patterns');
+
+const STATE_DIR = '/tmp';
+
+async function loadSessionState(sessionId) {
+    const stateFile = path.join(STATE_DIR, `mcp-hooks-${sessionId}.json`);
     try {
-        // Analyze the current message
-        const analysis = await hook.analyzeMessage(context.userMessage, context);
-
-        if (analysis && analysis.shouldTrigger) {
-            // Execute memory trigger
-            const result = await hook.executeMemoryTrigger(analysis, context);
-
-            if (result && result.success && context.injectSystemMessage) {
-                await context.injectSystemMessage(result.contextMessage);
-                console.log(`[Mid-Conversation Hook] Injected ${result.memoriesUsed} memories (confidence: ${result.confidence.toFixed(2)})`);
-            }
-        }
-
-    } catch (error) {
-        console.error('[Mid-Conversation Hook] Hook execution failed:', error.message);
-        // Don't cleanup on error - preserve state for next call
+        const data = await fs.readFile(stateFile, 'utf8');
+        return JSON.parse(data);
+    } catch {
+        return { turnCount: 0, lastTier2Turn: -99, tier1FiredCount: 0 };
     }
 }
 
-module.exports = {
-    MidConversationHook,
-    onMidConversation,
-    getHookInstance,
-    resetHookInstance,
-    name: 'mid-conversation-memory',
-    version: '1.0.0',
-    description: 'Intelligent mid-conversation memory awareness with performance optimization',
-    trigger: 'mid-conversation',
-    handler: onMidConversation,
-    config: {
-        async: true,
-        timeout: 10000,
-        priority: 'high'
+async function saveSessionState(sessionId, state) {
+    const stateFile = path.join(STATE_DIR, `mcp-hooks-${sessionId}.json`);
+    await fs.writeFile(stateFile, JSON.stringify(state), 'utf8');
+}
+
+async function loadConfig() {
+    const configPath = resolveConfigPath(__dirname);
+    try {
+        const data = await fs.readFile(configPath, 'utf8');
+        const config = JSON.parse(data);
+        return {
+            memoryService: config.memoryService || { http: { endpoint: 'http://127.0.0.1:8000', apiKey: '' } },
+            tier2: {
+                enabled: config.autoCapture?.tier2?.enabled !== false,
+                turnThreshold: config.autoCapture?.tier2?.turnThreshold || 20,
+                cooldownTurns: config.autoCapture?.tier2?.cooldownTurns || 5,
+                minProseWords: config.autoCapture?.tier2?.minProseWords || 150,
+                debugMode: config.autoCapture?.debugMode || false,
+            },
+        };
+    } catch {
+        return {
+            memoryService: { http: { endpoint: 'http://127.0.0.1:8000', apiKey: '' } },
+            tier2: { enabled: true, turnThreshold: 20, cooldownTurns: 5, minProseWords: 150, debugMode: false },
+        };
     }
-};
+}
+
+async function readStdin() {
+    return new Promise((resolve) => {
+        let data = '';
+        const timeout = setTimeout(() => resolve(data || '{}'), 1000);
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', chunk => data += chunk);
+        process.stdin.on('end', () => { clearTimeout(timeout); resolve(data); });
+        process.stdin.on('error', () => resolve('{}'));
+        process.stdin.resume();
+    });
+}
+
+async function storeMemory(config, content, memoryType, tags) {
+    const client = new MemoryClient({
+        protocol: 'auto',
+        preferredProtocol: 'http',
+        http: {
+            endpoint: config.memoryService.http.endpoint,
+            apiKey: config.memoryService.http.apiKey,
+        },
+    });
+    await client.connect();
+    let result;
+    try {
+        result = await client.storeMemory(content, {
+            tags,
+            memoryType,
+            metadata: { source: 'tier2-checkpoint', hook: 'UserPromptSubmit', captured_at: new Date().toISOString() },
+        });
+    } finally {
+        await client.disconnect();
+    }
+    if (!result.success) throw new Error(result.error || 'store returned success=false');
+    return result;
+}
+
+async function main() {
+    try {
+        const config = await loadConfig();
+        if (!config.tier2.enabled) process.exit(0);
+
+        const stdinData = await readStdin();
+        let input = {};
+        try { input = JSON.parse(stdinData); } catch { process.exit(0); }
+
+        const sessionId = input.session_id || 'unknown';
+        const transcriptPath = input.transcript_path || input.transcriptPath;
+        const cwd = input.cwd || process.cwd();
+        const userMessage = input.message || '';
+
+        if (!transcriptPath) process.exit(0);
+
+        // #skip override
+        const overrides = hasUserOverride(userMessage);
+        if (overrides.forceSkip) process.exit(0);
+
+        // Load + increment session state
+        const state = await loadSessionState(sessionId);
+        state.turnCount += 1;
+
+        const { turnThreshold, cooldownTurns, minProseWords, debugMode } = config.tier2;
+        const turnsSinceLast = state.turnCount - state.lastTier2Turn;
+
+        // Determine fire condition
+        const isLanguageSignal = detectTier2Signal(userMessage);
+        const isThresholdFire = (turnsSinceLast >= turnThreshold);
+        const shouldFire = (isLanguageSignal || isThresholdFire) && (turnsSinceLast >= cooldownTurns);
+
+        if (!shouldFire) {
+            await saveSessionState(sessionId, state);
+            process.exit(0);
+        }
+
+        if (debugMode) {
+            const reason = isLanguageSignal ? 'language-signal' : 'turn-threshold';
+            console.log(`[tier2] Firing (${reason}), turn ${state.turnCount}`);
+        }
+
+        // Extract conversation window
+        const contextWindow = await extractContextWindow(transcriptPath, 10);
+        const proseWords = countProseWords(contextWindow);
+
+        if (proseWords < minProseWords) {
+            if (debugMode) console.log(`[tier2] Skipping: only ${proseWords} prose words (min ${minProseWords})`);
+            await saveSessionState(sessionId, state);
+            process.exit(0);
+        }
+
+        // Build memory
+        const projectName = extractProjectName(cwd);
+        const memoryType = isLanguageSignal ? 'insight' : 'note';
+        const tags = ['auto-capture', 'tier2', 'checkpoint'];
+        if (projectName) tags.push(projectName.toLowerCase());
+
+        const hostname = require('os').hostname();
+        const topicHint = userMessage.slice(0, 120).replace(/\s+/g, ' ');
+        const content = [
+            `## Session Checkpoint — ${projectName || 'unknown project'} on ${hostname}`,
+            `Working directory: ${cwd}`,
+            isLanguageSignal ? `Trigger: "${topicHint}"` : `Trigger: turn threshold (${state.turnCount} turns)`,
+            '',
+            contextWindow,
+        ].join('\n');
+
+        await storeMemory(config, content, memoryType, tags);
+
+        state.lastTier2Turn = state.turnCount;
+        await saveSessionState(sessionId, state);
+
+        if (debugMode) console.log(`[tier2] Stored ${memoryType} memory`);
+
+        process.exit(0);
+    } catch (err) {
+        console.error('[tier2] Error:', err.message);
+        process.exit(0);
+    }
+}
+
+if (require.main === module) {
+    main();
+}
+
+module.exports = { main, loadSessionState, saveSessionState };
