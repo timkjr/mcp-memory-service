@@ -96,6 +96,17 @@ echo "→ Log file: $LOG_FILE"
   cp -r claude-hooks/. ~/.claude/hooks/ 2>/dev/null || true
   echo ""
 
+  echo "→ Committing changed hook files to dotfiles..."
+  (
+    cd ~/dotfiles
+    git add \
+      claude/.claude/hooks/core/mid-conversation.js \
+      claude/.claude/hooks/utilities/auto-capture-patterns.js \
+      opencode/.config/opencode/opencode.jsonc
+    git diff --cached --quiet || (git commit -m "chore(hooks): sync from mcp-memory deploy" && git push)
+  )
+  echo ""
+
   echo "→ Updating service..."
   ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-mcp-memory.sh" || true
   echo ""
