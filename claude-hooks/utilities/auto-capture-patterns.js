@@ -327,6 +327,26 @@ function extractProseFromContent(content) {
 }
 
 /**
+ * Truncate text to at most maxLen chars without cutting a sentence in half.
+ * Accumulates whole sentences until the next one would exceed the budget.
+ * Falls back to a hard slice only if a single sentence alone exceeds maxLen.
+ * @param {string} text
+ * @param {number} maxLen
+ * @returns {string}
+ */
+function truncateAtSentenceBoundary(text, maxLen) {
+    if (text.length <= maxLen) return text;
+    const sentences = text.split(/(?<=[.!?])\s+/);
+    let result = '';
+    for (const sentence of sentences) {
+        const candidate = result ? `${result} ${sentence}` : sentence;
+        if (candidate.length > maxLen) break;
+        result = candidate;
+    }
+    return result || text.slice(0, maxLen);
+}
+
+/**
  * Strip markdown structure, code blocks, and URLs from a turn's text,
  * then truncate to maxLen. Produces a signal-dense summary, not a verbatim dump.
  * @param {string} text
@@ -335,7 +355,7 @@ function extractProseFromContent(content) {
  */
 function cleanTurnText(text, maxLen) {
     const len = maxLen || 300;
-    return text
+    const cleaned = text
         .replace(/```[\s\S]*?```/g, '')
         .replace(/^#{1,6}\s+.*$/gm, '')
         .replace(/^\|.*$/gm, '')
@@ -344,8 +364,8 @@ function cleanTurnText(text, maxLen) {
         .replace(/\*{1,2}([^*\n]+)\*{1,2}/g, '$1')
         .replace(/https?:\/\/\S+/g, '')
         .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, len);
+        .trim();
+    return truncateAtSentenceBoundary(cleaned, len);
 }
 
 /**
@@ -497,6 +517,7 @@ module.exports = {
     detectTier1Event,
     detectTier2Signal,
     extractProseFromContent,
+    truncateAtSentenceBoundary,
     cleanTurnText,
     extractContextWindow,
     countProseWords,
