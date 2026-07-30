@@ -5,6 +5,7 @@ Coordinates between local SLM, Groq, Gemini, and implicit signals.
 
 import asyncio
 import logging
+import os
 from typing import List, Optional
 import httpx
 from .config import QualityConfig
@@ -330,7 +331,15 @@ class QualityEvaluator:
         per request. Closed via `aclose()`.
         """
         if self._httpx_client is None:
-            self._httpx_client = httpx.AsyncClient(timeout=self.config.openai_compat_timeout)
+            # httpx defaults to the bundled certifi CA list, not the system
+            # trust store — internal Caddy-issued certs (e.g. llm-proxy.k-lab.lan)
+            # need the system bundle explicitly, same fix this homelab has
+            # needed for every other Python service hitting an internal
+            # Caddy endpoint (obsidian-daily-notes, local-deep-research).
+            verify = os.getenv('SSL_CERT_FILE') or os.getenv('REQUESTS_CA_BUNDLE') or True
+            self._httpx_client = httpx.AsyncClient(
+                timeout=self.config.openai_compat_timeout, verify=verify
+            )
         return self._httpx_client
 
     async def aclose(self) -> None:
