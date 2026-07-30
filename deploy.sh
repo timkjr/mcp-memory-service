@@ -96,25 +96,6 @@ echo "→ Log file: $LOG_FILE"
   cp -r claude-hooks/. ~/.claude/hooks/ 2>/dev/null || true
   echo ""
 
-  echo "→ Committing changed hook files to dotfiles..."
-  (
-    cd ~/dotfiles
-    git stash push --include-untracked -m "deploy-hook-sync" 2>/dev/null || true
-    git pull --rebase
-    git stash pop 2>/dev/null || true
-    # --sparse required: mid-conversation.js and auto-capture-patterns.js carry
-    # the skip-worktree bit (set to hide them from other tooling as drift);
-    # plain `git add` silently refuses to stage skip-worktree paths.
-    git add --sparse \
-      claude/.claude/hooks/core/mid-conversation.js \
-      claude/.claude/hooks/core/auto-capture-hook.js \
-      claude/.claude/hooks/core/session-end.js \
-      claude/.claude/hooks/utilities/auto-capture-patterns.js
-    git diff --cached --quiet || git commit -m "chore(hooks): sync from mcp-memory deploy"
-    git push
-  )
-  echo ""
-
   echo "→ Updating service..."
   ssh "$REMOTE_HOST" "bash $REMOTE_BASE/update-mcp-memory.sh" || true
   echo ""
