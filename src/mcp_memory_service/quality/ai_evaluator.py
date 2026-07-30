@@ -125,6 +125,14 @@ class QualityEvaluator:
             # Quality system disabled, return neutral score
             return 0.5
 
+        # Capture the store-time heuristic score before any tier below can
+        # overwrite memory.metadata — if no AI tier produces a real score,
+        # this is preserved instead of being silently discarded in favor of
+        # a weaker implicit-only result (the pre-store gate trusts this
+        # heuristic score; the async evaluation shouldn't erase it).
+        existing_score = memory.metadata.get('quality_score')
+        existing_provider = memory.metadata.get('quality_provider')
+
         # Try tiers in order based on configuration
         provider_used = None
         score = None
@@ -155,8 +163,11 @@ class QualityEvaluator:
             elif self._onnx_ranker:
                 try:
                     score = self._onnx_ranker.score_quality(query, memory.content)
-                    provider_used = 'onnx_local'
-                    logger.debug(f"Local ONNX score: {score:.3f}")
+                    if score is None:
+                        logger.debug("Local ONNX model cannot score without a query, trying next tier")
+                    else:
+                        provider_used = 'onnx_local'
+                        logger.debug(f"Local ONNX score: {score:.3f}")
                 except Exception as e:
                     logger.warning(f"ONNX scoring failed: {e}")
                     score = None
@@ -195,9 +206,20 @@ class QualityEvaluator:
 
         # Tier 5: Implicit signals (always available as fallback)
         if score is None:
-            score = self._implicit_evaluator.evaluate_quality(memory, query)
-            provider_used = 'implicit_signals'
-            logger.debug(f"Implicit signals score: {score:.3f}")
+            implicit_score = self._implicit_evaluator.evaluate_quality(memory, query)
+            if existing_provider == 'heuristic' and existing_score is not None:
+                # No AI tier could score this — preserve the store-time
+                # heuristic assessment rather than replacing it outright.
+                score = (existing_score + implicit_score) / 2
+                provider_used = 'heuristic+implicit'
+                logger.debug(
+                    f"No AI tier available; blended heuristic ({existing_score:.3f}) "
+                    f"+ implicit ({implicit_score:.3f}) = {score:.3f}"
+                )
+            else:
+                score = implicit_score
+                provider_used = 'implicit_signals'
+                logger.debug(f"Implicit signals score: {score:.3f}")
 
         # Store provider information in memory metadata
         memory.metadata['quality_provider'] = provider_used
@@ -525,9 +547,19 @@ class QualityEvaluator:
             }
 
         try:
-            # Use empty query to force absolute quality evaluation (not query-document relevance)
-            # This avoids self-matching bias where content matches itself perfectly
+            # MS-MARCO is a cross-encoder: it scores query-document relevance,
+            # not absolute quality, and cannot score at all without a query.
+            # score_quality() returns None in that case — treat it the same
+            # as a scoring failure and stick with DeBERTa's result.
             ms_marco_score = ms_marco.score_quality("", memory_content)
+            if ms_marco_score is None:
+                logger.debug("MS-MARCO cannot score without a query, using DeBERTa only")
+                return deberta_score, {
+                    'final_score': deberta_score,
+                    'deberta_score': deberta_score,
+                    'ms_marco_score': None,
+                    'decision': 'ms_marco_unscoreable'
+                }
             logger.debug(f"MS-MARCO score: {ms_marco_score:.3f}")
         except Exception as e:
             logger.error(f"MS-MARCO scoring failed: {e}")

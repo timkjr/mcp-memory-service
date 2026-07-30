@@ -315,7 +315,7 @@ class ONNXRankerModel:
 
         logger.info(f"ONNX ranker model loaded. Active provider: {self._model.get_providers()[0]}")
 
-    def score_quality(self, query: str, memory_content: str) -> float:
+    def score_quality(self, query: str, memory_content: str) -> Optional[float]:
         """
         Score the quality/relevance of a memory.
 
@@ -327,7 +327,10 @@ class ONNXRankerModel:
             memory_content: Memory content to score
 
         Returns:
-            Quality score between 0.0 and 1.0
+            Quality score between 0.0 and 1.0, or None if this model type cannot
+            score the given input (e.g. a cross-encoder with no query — callers
+            must treat None as "unavailable" and fall through to the next tier,
+            not as a real 0.0 quality score).
         """
         if not memory_content:
             return 0.0
@@ -355,9 +358,12 @@ class ONNXRankerModel:
                 }
 
             elif self.model_config['type'] == 'cross-encoder':
-                # MS-MARCO: Evaluate query-document relevance
+                # MS-MARCO: Evaluate query-document relevance. With no query
+                # (store-time scoring has none), this model cannot score at
+                # all — return None so the caller falls through to the next
+                # tier instead of treating "unscoreable" as "score 0".
                 if not query:
-                    return 0.0
+                    return None
 
                 if self._use_fast_tokenizer:
                     # Use tokenizers package's ability to encode pairs, which correctly handles special tokens and token type IDs.
