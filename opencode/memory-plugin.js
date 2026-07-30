@@ -1363,7 +1363,7 @@ const createPlugin = async ({ directory, client }) => {
       state._lastToolUseAt = Date.now()
 
       // Tier 1: git commit detection
-      if (!state._tier1Fired?.gitCommit && state._lastToolName === "bash" || state._lastToolName === "Bash") {
+      if (!state._tier1Fired?.gitCommit && (state._lastToolName === "bash" || state._lastToolName === "Bash")) {
         const command = state._lastToolInput?.command || ""
         const commitMatch = command.match(/git\s+commit\s+(-m\s+['"]([^'"]+)['"]|.*)/)
         if (commitMatch) {
