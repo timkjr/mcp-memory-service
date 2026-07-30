@@ -1,7 +1,11 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { countProseWords, detectTier2Signal } = require('../utilities/auto-capture-patterns');
+const { countProseWords, detectTier2Signal, cleanTurnText, extractContextWindow } = require('../utilities/auto-capture-patterns');
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const fsp = require('fs').promises;
 
 // --- Prose density check ---
 test('countProseWords: 150 words of prose passes', () => {
@@ -62,4 +66,66 @@ test('threshold: does not fire at turn 19', () => {
     const threshold = 20;
     const turnsSinceLast = state.turnCount - state.lastTier2Turn;
     assert.ok(turnsSinceLast < threshold);
+});
+
+// --- New session initialization ---
+test('new session turn 1 does not meet threshold when lastTier2Turn=0', () => {
+    // After fix: loadSessionState returns lastTier2Turn=0, not -99
+    const state = { turnCount: 1, lastTier2Turn: 0 };
+    const threshold = 20;
+    const turnsSinceLast = state.turnCount - state.lastTier2Turn;
+    assert.ok(turnsSinceLast < threshold, 'Turn 1 of new session must not fire threshold');
+});
+
+test('loadSessionState: missing file returns lastTier2Turn=0, not -99', async () => {
+    const { loadSessionState } = require('../core/mid-conversation');
+    const state = await loadSessionState('nonexistent-session-id-xyz');
+    assert.strictEqual(state.lastTier2Turn, 0, 'Default lastTier2Turn must be 0 to prevent turn-1 fires');
+    assert.strictEqual(state.turnCount, 0);
+});
+
+// --- cleanTurnText ---
+test('cleanTurnText: strips code blocks', () => {
+    const input = 'Before\n```js\nconst x = 1;\n```\nAfter';
+    const result = cleanTurnText(input, 500);
+    assert.ok(!result.includes('const x'), 'code block content should be stripped');
+    assert.ok(result.includes('Before') && result.includes('After'));
+});
+
+test('cleanTurnText: strips markdown headers', () => {
+    const input = '## My Header\nSome prose here.';
+    const result = cleanTurnText(input, 500);
+    assert.ok(!result.includes('## My Header'), 'header should be stripped');
+    assert.ok(result.includes('Some prose here'));
+});
+
+test('cleanTurnText: truncates to maxLen', () => {
+    const input = 'a'.repeat(1000);
+    const result = cleanTurnText(input, 200);
+    assert.ok(result.length <= 200, `Expected <=200 chars, got ${result.length}`);
+});
+
+test('cleanTurnText: preserves short clean text unchanged', () => {
+    const input = 'The fix was restarting the service.';
+    const result = cleanTurnText(input, 500);
+    assert.ok(result.includes('The fix was restarting the service'));
+});
+
+// --- extractContextWindow content filtering ---
+test('extractContextWindow: long assistant response is truncated per-turn', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tier2-test-${Date.now()}.jsonl`);
+    const longAssistantText = 'Analysis: ' + 'word '.repeat(300); // ~1500 chars
+    const lines = [
+        JSON.stringify({ role: 'user', content: 'What is going on?' }),
+        JSON.stringify({ role: 'assistant', content: longAssistantText }),
+    ];
+    await fsp.writeFile(tmpFile, lines.join('\n'), 'utf8');
+    try {
+        const window = await extractContextWindow(tmpFile, 10);
+        const assistantPart = window.split('\n\n').find(t => t.startsWith('A:'));
+        assert.ok(assistantPart, 'assistant turn should be present');
+        assert.ok(assistantPart.length <= 250, `assistant turn should be truncated, got ${assistantPart.length} chars`);
+    } finally {
+        fs.unlinkSync(tmpFile);
+    }
 });

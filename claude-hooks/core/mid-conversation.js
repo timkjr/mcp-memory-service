@@ -32,7 +32,7 @@ async function loadSessionState(sessionId) {
         const data = await fs.readFile(stateFile, 'utf8');
         return JSON.parse(data);
     } catch {
-        return { turnCount: 0, lastTier2Turn: -99 };
+        return { turnCount: 0, lastTier2Turn: 0 };
     }
 }
 
