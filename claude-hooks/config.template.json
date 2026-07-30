@@ -1,6 +1,16 @@
 {
   "autoCapture": {
-    "enabled": false
+    "enabled": true,
+    "tier1": {
+      "enabled": true,
+      "contextWindowSize": 8
+    },
+    "tier2": {
+      "enabled": true,
+      "turnThreshold": 20,
+      "cooldownTurns": 5,
+      "minProseWords": 150
+    }
   },
   "memoryService": {
     "endpoint": "https://your-server:8443",
