@@ -263,6 +263,201 @@ function extractProjectName(cwd) {
     return lastPart;
 }
 
+const { execSync } = require('child_process');
+const fs_sync = require('fs');
+const path_mod = require('path');
+
+const TIER1_DEPLOY_REGEX = /(\bsystemctl\s+(restart|start)\b|\bdocker\s+compose\s+(up|restart)\b|\bdocker\s+restart\b|\.\/deploy\.sh\b|\bkubectl\s+apply\b)/;
+
+const TIER2_SIGNAL_REGEX = /\b(I think what happened|turns out|the root cause|the fix was|here['']s what we learned|so the theory is|what we found|I believe the issue is|the problem was|what I think is)\b/i;
+
+/**
+ * Detect if a PostToolUse event is a Tier 1 completion event.
+ * @param {string} toolName
+ * @param {object} toolInput
+ * @returns {{ type: string, tool: string, input: object } | null}
+ */
+function detectTier1Event(toolName, toolInput) {
+    if (!toolName) return null;
+
+    if (toolName === 'mcp__git__git_commit') {
+        return { type: 'gitCommit', tool: toolName, input: toolInput || {} };
+    }
+
+    if (toolName === 'Bash') {
+        const cmd = toolInput?.command || '';
+        if (/git\s+commit\b/.test(cmd)) {
+            return { type: 'gitCommit', tool: toolName, input: toolInput };
+        }
+        if (TIER1_DEPLOY_REGEX.test(cmd)) {
+            return { type: 'deployRestart', tool: toolName, input: toolInput };
+        }
+    }
+
+    if ((toolName === 'Write' || toolName === 'Edit') && /DECISIONS\.md$/.test(toolInput?.file_path || '')) {
+        return { type: 'decisionsFile', tool: toolName, input: toolInput };
+    }
+
+    return null;
+}
+
+/**
+ * Detect if a user message contains a Tier 2 language signal.
+ * @param {string} userMessage
+ * @returns {boolean}
+ */
+function detectTier2Signal(userMessage) {
+    if (!userMessage || typeof userMessage !== 'string') return false;
+    return TIER2_SIGNAL_REGEX.test(userMessage);
+}
+
+/**
+ * Extract prose text from a Claude Code content block array or string.
+ * Strips tool_use / tool_result blocks; keeps only text blocks.
+ * @param {string|Array} content
+ * @returns {string}
+ */
+function extractProseFromContent(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+        .filter(block => block.type === 'text')
+        .map(block => block.text || '')
+        .join('\n');
+}
+
+/**
+ * Read the last `windowSize` user/assistant turns from a JSONL transcript,
+ * stripping tool output. Returns a formatted string.
+ * @param {string} transcriptPath
+ * @param {number} windowSize
+ * @returns {Promise<string>}
+ */
+async function extractContextWindow(transcriptPath, windowSize = 8) {
+    const fsAsync = require('fs').promises;
+    const raw = await fsAsync.readFile(transcriptPath, 'utf8');
+    const turns = [];
+
+    for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+            const parsed = JSON.parse(trimmed);
+            const items = Array.isArray(parsed) ? parsed : [parsed];
+            for (const item of items) {
+                const role = item.message?.role || item.role;
+                if (role !== 'user' && role !== 'assistant') continue;
+                const rawContent = item.message?.content ?? item.content;
+                const text = extractProseFromContent(rawContent).trim();
+                if (text) turns.push({ role, text });
+            }
+        } catch { /* skip malformed lines */ }
+    }
+
+    return turns
+        .slice(-windowSize)
+        .map(t => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
+        .join('\n\n');
+}
+
+/**
+ * Count prose words in text (split on whitespace, min 2 chars).
+ * @param {string} text
+ * @returns {number}
+ */
+function countProseWords(text) {
+    if (!text) return 0;
+    return text.trim().split(/\s+/).filter(w => w.length > 1).length;
+}
+
+/**
+ * Get the last git commit info from the repo at `cwd`.
+ * @param {string} cwd
+ * @returns {{ hash: string, subject: string, body: string, files: string } | null}
+ */
+function getLastCommitInfo(cwd) {
+    try {
+        const opts = { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] };
+        const hash = execSync('git log -1 --format=%H', opts).trim();
+        const subject = execSync('git log -1 --format=%s', opts).trim();
+        const body = execSync('git log -1 --format=%b', opts).trim();
+        const files = execSync('git show --stat --format= HEAD', opts).trim();
+        return { hash, subject, body, files };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Infer a service name from a deploy/restart command string.
+ * @param {string} cmd
+ * @returns {string}
+ */
+function extractServiceName(cmd) {
+    const patterns = [
+        /systemctl\s+(?:restart|start)\s+(\S+)/,
+        /docker\s+restart\s+(\S+)/,
+        /docker\s+compose\s+(?:up|restart)(?:\s+-\S+)*\s+(\S+)/,
+    ];
+    for (const p of patterns) {
+        const m = cmd.match(p);
+        if (m) return m[1];
+    }
+    if (/deploy\.sh/.test(cmd)) return 'deploy.sh';
+    return cmd.slice(0, 60);
+}
+
+/**
+ * Build the memory content, type, and tags for a Tier 1 event.
+ * @param {string} eventType - 'gitCommit' | 'deployRestart' | 'decisionsFile'
+ * @param {object} eventData - event-specific data
+ * @param {string} contextWindow - formatted conversation window
+ * @param {string|null} projectName
+ * @returns {{ content: string, memoryType: string, tags: string[] }}
+ */
+function buildTier1Memory(eventType, eventData, contextWindow, projectName) {
+    const baseTags = ['auto-capture', 'tier1'];
+    if (projectName) baseTags.push(projectName.toLowerCase());
+
+    if (eventType === 'gitCommit') {
+        const { subject = '', body = '', files = '' } = eventData;
+        const parts = [`## Commit: ${subject}`];
+        if (body) parts.push(body);
+        if (files) parts.push(`Files changed:\n${files}`);
+        if (contextWindow) parts.push(`## Session Context\n${contextWindow}`);
+        return {
+            content: parts.join('\n\n'),
+            memoryType: 'decision',
+            tags: [...baseTags, 'commit'],
+        };
+    }
+
+    if (eventType === 'deployRestart') {
+        const cmd = eventData?.input?.command || 'unknown';
+        const service = extractServiceName(cmd);
+        const parts = [`## Deploy/Restart: ${service}`, `Command: \`${cmd}\``];
+        if (contextWindow) parts.push(`## Session Context\n${contextWindow}`);
+        return {
+            content: parts.join('\n\n'),
+            memoryType: 'note',
+            tags: [...baseTags, 'deploy'],
+        };
+    }
+
+    if (eventType === 'decisionsFile') {
+        const raw = eventData?.input?.content || eventData?.input?.new_string || '';
+        const entries = raw.match(/^\[\d{4}-\d{2}-\d{2}\].+/gm) || [];
+        const latest = entries[entries.length - 1] || raw.slice(0, 500);
+        return {
+            content: `## Decision recorded\n${latest}`,
+            memoryType: 'decision',
+            tags: [...baseTags, 'decision'],
+        };
+    }
+
+    return { content: '', memoryType: 'note', tags: baseTags };
+}
+
 // Export for Node.js
 module.exports = {
     PATTERNS,
@@ -273,5 +468,13 @@ module.exports = {
     generateTags,
     truncateContent,
     computeContentHash,
-    extractProjectName
+    extractProjectName,
+    detectTier1Event,
+    detectTier2Signal,
+    extractProseFromContent,
+    extractContextWindow,
+    countProseWords,
+    getLastCommitInfo,
+    extractServiceName,
+    buildTier1Memory,
 };
