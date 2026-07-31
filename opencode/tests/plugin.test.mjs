@@ -224,7 +224,7 @@ describe("analyzeSessionMessages", () => {
 // ─── scoreContent ───────────────────────────────────────────────────
 
 describe("scoreContent", () => {
-  test("returns null when backend unavailable (fail-open)", async () => {
+  test("returns null when backend unavailable (caller now fails closed on null)", async () => {
     const config = {
       memoryService: { endpoint: "http://127.0.0.1:1", timeoutMs: 500 },
     }
