@@ -1766,7 +1766,11 @@ class MemoryServer:
         import os
         from pathlib import Path as _Path
         from .harvest.harvester import SessionHarvester
-        from .harvest.models import HarvestConfig, MAX_CANDIDATE_PREVIEW_LENGTH
+        from .harvest.models import (
+            HarvestConfig,
+            MAX_CANDIDATE_PREVIEW_LENGTH,
+            default_llm_fallback_threshold,
+        )
 
         # Resolve project directory
         project_path = arguments.get("project_path")
@@ -1795,6 +1799,7 @@ class MemoryServer:
                 text=json.dumps({"error": f"Project directory not found: {project_path}"})
             )]
 
+        _llm_fallback_threshold = arguments.get("llm_fallback_threshold")
         config = HarvestConfig(
             sessions=arguments.get("sessions", 1),
             session_ids=arguments.get("session_ids"),
@@ -1803,6 +1808,11 @@ class MemoryServer:
             dry_run=arguments.get("dry_run", True),
             project_path=str(project_path),
             use_llm=arguments.get("use_llm", False),
+            llm_fallback_threshold=(
+                _llm_fallback_threshold
+                if _llm_fallback_threshold is not None
+                else default_llm_fallback_threshold()
+            ),
         )
 
         memory_service = None

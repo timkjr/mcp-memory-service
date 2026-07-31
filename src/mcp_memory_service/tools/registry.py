@@ -843,6 +843,17 @@ Examples:
                     "default": False,
                     "description": "Use LLM to validate and refine candidates (requires GROQ_API_KEY)",
                 },
+                "llm_fallback_threshold": {
+                    "type": "number",
+                    "description": (
+                        "Candidates below this confidence get a background LLM "
+                        "refinement pass after heuristic results are stored "
+                        "(mutually exclusive with use_llm, which blocks "
+                        "synchronously instead). Defaults to "
+                        "HARVEST_LLM_FALLBACK_THRESHOLD env var when omitted; "
+                        "unset entirely disables the fallback."
+                    ),
+                },
                 "auto_commit": {
                     "type": "boolean",
                     "default": False,

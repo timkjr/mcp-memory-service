@@ -32,7 +32,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ...harvest.harvester import SessionHarvester
-from ...harvest.models import HARVEST_TYPES, HarvestConfig, MAX_CANDIDATE_PREVIEW_LENGTH
+from ...harvest.models import (
+    HARVEST_TYPES,
+    HarvestConfig,
+    MAX_CANDIDATE_PREVIEW_LENGTH,
+    default_llm_fallback_threshold,
+)
 from ..oauth.middleware import AuthenticationResult, require_write_access
 
 logger = logging.getLogger(__name__)
@@ -55,6 +60,17 @@ class HarvestRequest(BaseModel):
     transcript_content: Optional[str] = Field(
         default=None,
         description="Raw JSONL transcript content (bypasses project_path filesystem lookup — required for remote deployments)",
+    )
+    llm_fallback_threshold: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Candidates with regex confidence below this get a background LLM "
+            "refinement pass after heuristic results are stored. Defaults to "
+            "HARVEST_LLM_FALLBACK_THRESHOLD server-side when omitted; unset "
+            "entirely (both here and in env) disables the fallback."
+        ),
     )
 
 
@@ -164,6 +180,11 @@ async def harvest_sessions(
         dry_run=request.dry_run,
         project_path=str(project_path),
         use_llm=request.use_llm,
+        llm_fallback_threshold=(
+            request.llm_fallback_threshold
+            if request.llm_fallback_threshold is not None
+            else default_llm_fallback_threshold()
+        ),
     )
 
     memory_service = None
