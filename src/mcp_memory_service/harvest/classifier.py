@@ -78,27 +78,42 @@ class ClassificationResult:
 class HarvestClassifier:
     """LLM-based classifier for harvest candidates.
 
-    Uses Groq API (fast, cheap) with fallback to skip classification
-    if no LLM is available. Integrates with existing GroqAgentBridge.
+    Uses the same HARVEST_LLM_PROVIDERS chain (with quality-scorer fallback)
+    as HarvestRewriter, not just Groq — previously this class only checked
+    GROQ_API_KEY, so deployments using LiteLLM or another HARVEST_LLM_PROVIDERS
+    provider silently skipped classification (#178).
     """
 
     def __init__(self, groq_api_key: Optional[str] = None):
         self._groq_bridge = None
         self._api_key = groq_api_key or os.environ.get("GROQ_API_KEY")
+        self._providers = None
+        self._init_attempted = False
 
     def _ensure_initialized(self):
-        """Lazy-init Groq bridge."""
+        """Lazy-init provider chain, preferring configured providers over legacy Groq-only."""
         if self._groq_bridge is not None:
+            return True
+        if self._init_attempted:
+            return bool(self._providers)
+        self._init_attempted = True
+
+        from .rewriter import load_llm_providers
+        self._providers = load_llm_providers()
+
+        if self._providers:
+            provider_names = ", ".join(p.name for p in self._providers)
+            logger.info(f"Harvest classifier: using provider chain [{provider_names}]")
             return True
 
         if not self._api_key:
-            logger.warning("No GROQ_API_KEY — LLM classification unavailable")
+            logger.warning("No LLM providers configured and no GROQ_API_KEY — LLM classification unavailable")
             return False
 
         try:
             from groq import Groq
             self._groq_bridge = _GroqClassifierBridge(api_key=self._api_key)
-            logger.info("Harvest classifier: Groq bridge initialized")
+            logger.info("Harvest classifier: legacy Groq bridge initialized")
             return True
         except ImportError:
             logger.warning("groq package not installed — LLM classification unavailable")
@@ -143,6 +158,65 @@ class HarvestClassifier:
 
         return classified
 
+    def _call_llm(self, prompt: str, system_message: str, max_tokens: int, temperature: float) -> Optional[str]:
+        """Call the configured provider chain (or legacy Groq bridge), return response text or None."""
+        if self._providers:
+            for provider in self._providers:
+                try:
+                    return self._call_openai_compatible(
+                        provider.base_url, provider.model, provider.api_key,
+                        prompt, system_message, max_tokens, temperature,
+                    )
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "rate limit" in err_str or "429" in err_str:
+                        logger.warning(f"{provider.name} rate limited, trying next")
+                    else:
+                        logger.warning(f"{provider.name} failed: {e}, trying next")
+                    continue
+            return None
+
+        if self._groq_bridge is not None:
+            for model in ("llama-3.1-8b-instant", "llama-3.3-70b-versatile"):
+                try:
+                    result = self._groq_bridge.call_model(
+                        prompt=prompt, model=model, max_tokens=max_tokens,
+                        temperature=temperature, system_message=system_message,
+                    )
+                    if result["status"] != "success":
+                        if "429" in str(result.get("error", "")):
+                            logger.warning(f"Rate limit on {model}, trying next")
+                            continue
+                        logger.warning(f"Groq error on {model}: {result.get('error')}")
+                        continue
+                    return result["response"]
+                except Exception as e:
+                    logger.warning(f"Classification failed with {model}: {e}")
+                    continue
+
+        return None
+
+    def _call_openai_compatible(
+        self, base_url: str, model: str, api_key: str,
+        prompt: str, system_message: str, max_tokens: int, temperature: float,
+    ) -> str:
+        """Call any OpenAI-compatible API (Groq, DeepSeek, Ollama, etc.), synchronously."""
+        import httpx
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        messages = [{"role": "system", "content": system_message}, {"role": "user", "content": prompt}]
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
+            )
+            if resp.status_code == 429:
+                raise Exception(f"Rate limit exceeded: {resp.text[:100]}")
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"] or ""
+
     def _classify_single(
         self, candidate: HarvestCandidate, context: str
     ) -> Optional[ClassificationResult]:
@@ -154,30 +228,12 @@ class HarvestClassifier:
             context=context[:2000],
         )
 
-        models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
-        for model in models:
-            try:
-                result = self._groq_bridge.call_model(
-                    prompt=prompt,
-                    model=model,
-                    max_tokens=300,
-                    temperature=0.1,
-                    system_message=SYSTEM_PROMPT,
-                )
-                if result["status"] != "success":
-                    if "429" in str(result.get("error", "")):
-                        logger.warning(f"Rate limit on {model}, trying next")
-                        continue
-                    logger.warning(f"Groq error on {model}: {result.get('error')}")
-                    continue
+        response = self._call_llm(prompt, SYSTEM_PROMPT, max_tokens=300, temperature=0.1)
+        if response is None:
+            logger.warning("All LLM providers/models failed — keeping candidate unfiltered")
+            return ClassificationResult(keep=True, reason="LLM unavailable", confidence=candidate.confidence)
 
-                return self._parse_classification(result["response"])
-            except Exception as e:
-                logger.warning(f"Classification failed with {model}: {e}")
-                continue
-
-        logger.warning("All LLM models failed — keeping candidate unfiltered")
-        return ClassificationResult(keep=True, reason="LLM unavailable", confidence=candidate.confidence)
+        return self._parse_classification(response)
 
     def _parse_classification(self, response: str) -> ClassificationResult:
         """Parse LLM JSON response into ClassificationResult."""
@@ -238,15 +294,14 @@ class HarvestClassifier:
         prompt = DEDUP_PROMPT_TEMPLATE.format(candidates_text=candidates_text)
 
         try:
-            result = self._groq_bridge.call_model(
-                prompt=prompt,
-                model="llama-3.1-8b-instant",
+            response = self._call_llm(
+                prompt,
+                "You deduplicate memories. Respond only with a JSON array of indices.",
                 max_tokens=100,
                 temperature=0.0,
-                system_message="You deduplicate memories. Respond only with a JSON array of indices.",
             )
-            if result["status"] == "success":
-                text = result["response"].strip()
+            if response:
+                text = response.strip()
                 match = re.search(r'\[[\d,\s]*\]', text)
                 if match:
                     keep_indices = json.loads(match.group())

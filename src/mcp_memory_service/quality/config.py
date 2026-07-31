@@ -31,8 +31,18 @@ class QualityConfig:
     openai_compat_timeout: float = 5.0             # seconds; keep short so a down host doesn't stall retrieval
 
     # Quality boost (AI + implicit signals combination)
+    # boost_enabled/boost_weight are also read by storage/base.py for search-time
+    # reranking (semantic vs. quality_score). implicit_boost_enabled/implicit_weight
+    # below let the store-time AI+implicit blend below be tuned independently,
+    # since the two consumers want opposite things from the same weight: more trust
+    # in the AI score should mean a *lower* implicit weight at store time but does
+    # not imply anything about how much reranking should favor quality (upstream #179).
+    # When unset, both fall back to the boost_enabled/boost_weight values so existing
+    # single-variable configs keep working unchanged.
     boost_enabled: bool = False
     boost_weight: float = 0.3  # Weight for implicit signals when combining with AI
+    implicit_boost_enabled: Optional[bool] = None
+    implicit_weight: Optional[float] = None
 
     # Fallback scoring (DeBERTa primary, MS-MARCO rescue for technical content)
     # NOTE: Fallback mode not recommended - MS-MARCO is query-relevance model, not quality classifier
@@ -43,6 +53,16 @@ class QualityConfig:
     @classmethod
     def from_env(cls) -> 'QualityConfig':
         """Load configuration from environment variables."""
+        implicit_boost_enabled_raw = os.getenv('MCP_QUALITY_IMPLICIT_BOOST_ENABLED')
+        implicit_boost_enabled: Optional[bool] = None
+        if implicit_boost_enabled_raw is not None:
+            implicit_boost_enabled = implicit_boost_enabled_raw.lower() == 'true'
+
+        implicit_weight_raw = os.getenv('MCP_QUALITY_IMPLICIT_WEIGHT')
+        implicit_weight: Optional[float] = None
+        if implicit_weight_raw is not None:
+            implicit_weight = float(implicit_weight_raw)
+
         return cls(
             enabled=os.getenv('MCP_QUALITY_SYSTEM_ENABLED', 'true').lower() == 'true',
             ai_provider=os.getenv('MCP_QUALITY_AI_PROVIDER', 'local'),
@@ -56,6 +76,8 @@ class QualityConfig:
             openai_compat_timeout=float(os.getenv('MCP_QUALITY_AI_TIMEOUT', '5.0')),
             boost_enabled=os.getenv('MCP_QUALITY_BOOST_ENABLED', 'false').lower() == 'true',
             boost_weight=float(os.getenv('MCP_QUALITY_BOOST_WEIGHT', '0.3')),
+            implicit_boost_enabled=implicit_boost_enabled,
+            implicit_weight=implicit_weight,
             fallback_enabled=os.getenv('MCP_QUALITY_FALLBACK_ENABLED', 'false').lower() == 'true',
             deberta_threshold=float(os.getenv('MCP_QUALITY_DEBERTA_THRESHOLD', '0.6')),
             ms_marco_threshold=float(os.getenv('MCP_QUALITY_MSMARCO_THRESHOLD', '0.7'))
@@ -72,6 +94,9 @@ class QualityConfig:
 
         if not 0.0 <= self.boost_weight <= 1.0:
             raise ValueError(f"boost_weight must be between 0.0 and 1.0, got {self.boost_weight}")
+
+        if self.implicit_weight is not None and not 0.0 <= self.implicit_weight <= 1.0:
+            raise ValueError(f"implicit_weight must be between 0.0 and 1.0, got {self.implicit_weight}")
 
         # Validate fallback thresholds
         if not 0.0 <= self.deberta_threshold <= 1.0:
@@ -115,6 +140,29 @@ class QualityConfig:
                 )
 
         return True
+
+    @property
+    def effective_implicit_boost_enabled(self) -> bool:
+        """Whether to blend implicit signals into the *stored* composite score.
+
+        Falls back to boost_enabled (the search-reranking flag) when
+        implicit_boost_enabled is unset, for backward compatibility (#179).
+        """
+        if self.implicit_boost_enabled is not None:
+            return self.implicit_boost_enabled
+        return self.boost_enabled
+
+    @property
+    def effective_implicit_weight(self) -> float:
+        """Weight for implicit signals when combining with AI at store time.
+
+        Falls back to boost_weight when implicit_weight is unset, for backward
+        compatibility. Set MCP_QUALITY_IMPLICIT_WEIGHT to tune this independently
+        of MCP_QUALITY_BOOST_WEIGHT, which controls search-time reranking instead (#179).
+        """
+        if self.implicit_weight is not None:
+            return self.implicit_weight
+        return self.boost_weight
 
     @property
     def use_local_only(self) -> bool:
