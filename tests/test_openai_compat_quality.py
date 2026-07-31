@@ -236,7 +236,7 @@ class TestScoreWithOpenAICompatible:
 
     @pytest.mark.asyncio
     async def test_non_gpt5_keeps_max_tokens_and_temperature(self):
-        """Non-gpt-5 models retain the original max_tokens=50 / temperature=0.1 payload (#797)."""
+        """Non-gpt-5 models retain max_tokens=50 and a deterministic temperature=0 (#797, #174)."""
         ev = self._make_evaluator(openai_compat_model="gpt-4.1-mini")
         mock_resp = _mock_httpx_response("0.5")
         captured_payloads = []
@@ -250,7 +250,7 @@ class TestScoreWithOpenAICompatible:
 
         payload = captured_payloads[0]
         assert payload["max_tokens"] == 50
-        assert payload["temperature"] == 0.1
+        assert payload["temperature"] == 0
         assert "max_completion_tokens" not in payload
 
     @pytest.mark.asyncio
