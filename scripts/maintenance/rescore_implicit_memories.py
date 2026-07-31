@@ -6,8 +6,14 @@ Reads every memory where quality_provider is 'implicit' or 'implicit_signals',
 runs the heuristic scorer on the content, and writes the real score back.
 Consolidation can then use actual content quality for promotion/decay decisions.
 
+--force also rescans memories already tagged quality_provider='heuristic' --
+useful after fixing a bug in heuristic_scorer.py itself (e.g. a hard-reject
+pattern matching content it shouldn't), where the persisted score is stale
+relative to the current scorer. Only rewrites entries whose score actually
+changes, to avoid unnecessary churn on the ~90% that are unaffected.
+
 Usage (run from repo root with venv active, .env loaded):
-    python scripts/maintenance/rescore_implicit_memories.py [--dry-run]
+    python scripts/maintenance/rescore_implicit_memories.py [--dry-run] [--force]
 """
 
 import asyncio
@@ -34,7 +40,7 @@ from mcp_memory_service.quality.heuristic_scorer import score_content
 IMPLICIT_PROVIDERS = {"implicit", "implicit_signals", "onnx_local"}
 
 
-async def rescore(dry_run: bool) -> None:
+async def rescore(dry_run: bool, force: bool) -> None:
     if not SQLITE_VEC_PATH:
         print("ERROR: SQLITE_VEC_PATH not configured. Check MCP_MEMORY_STORAGE_BACKEND in .env")
         sys.exit(1)
@@ -46,13 +52,17 @@ async def rescore(dry_run: bool) -> None:
     all_memories = await storage.get_all_memories(limit=None)
     print(f"Total memories in DB: {len(all_memories)}")
 
+    # --force also rescans 'heuristic' — NOT other real AI-tier providers
+    # (openai_compatible, groq, etc.) — overwriting those with a heuristic
+    # score would clobber a legitimate LLM-based score with a worse one.
+    eligible_providers = IMPLICIT_PROVIDERS | {"heuristic"} if force else IMPLICIT_PROVIDERS
     targets = [
         m for m in all_memories
-        if m.metadata.get("quality_provider", "implicit") in IMPLICIT_PROVIDERS
+        if m.metadata.get("quality_provider", "implicit") in eligible_providers
     ]
     already_scored = len(all_memories) - len(targets)
-    print(f"Already have real quality scores: {already_scored}")
-    print(f"Will rescore (implicit/implicit_signals): {len(targets)}")
+    print(f"Already have other real quality scores (untouched): {already_scored}")
+    print(f"Will rescan ({', '.join(sorted(eligible_providers))}): {len(targets)}")
 
     if not targets:
         print("Nothing to rescore.")
@@ -85,11 +95,14 @@ async def rescore(dry_run: bool) -> None:
         return
 
     print(f"\nWriting scores back...")
-    updated = skipped = errors = 0
+    updated = unchanged = skipped = errors = 0
 
     for i, m in enumerate(targets):
         try:
             score = score_content(m.content)
+            if force and m.metadata.get("quality_score") == score:
+                unchanged += 1
+                continue
             success, msg = await storage.update_memory_metadata(
                 content_hash=m.content_hash,
                 updates={"quality_score": score, "quality_provider": "heuristic"},
@@ -103,16 +116,21 @@ async def rescore(dry_run: bool) -> None:
             errors += 1
 
         if (i + 1) % 100 == 0 or (i + 1) == len(targets):
-            print(f"  {i+1}/{len(targets)}  updated={updated} skipped={skipped} errors={errors}", end="\r")
+            print(f"  {i+1}/{len(targets)}  updated={updated} unchanged={unchanged} skipped={skipped} errors={errors}", end="\r")
 
-    print(f"\nDone: {updated} updated, {skipped} skipped, {errors} errors.")
+    print(f"\nDone: {updated} updated, {unchanged} unchanged (skipped write), {skipped} skipped, {errors} errors.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="Preview distribution, no writes")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Also rescan quality_provider='heuristic' memories (e.g. after a heuristic_scorer bug "
+             "fix); only rewrites entries whose score actually changes",
+    )
     args = parser.parse_args()
-    asyncio.run(rescore(dry_run=args.dry_run))
+    asyncio.run(rescore(dry_run=args.dry_run, force=args.force))
 
 
 if __name__ == "__main__":
