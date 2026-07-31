@@ -19,6 +19,65 @@ class LLMProvider:
     model: str
     api_key: str = ""
 
+
+def load_llm_providers() -> list:
+    """Load provider chain from env vars.
+
+    Shared by HarvestRewriter and HarvestClassifier so both fall back to the
+    quality scorer's openai-compatible endpoint (MCP_QUALITY_AI_*, already
+    pointed at llm-proxy's failover chain) when nothing harvest-specific is
+    configured, instead of silently requiring GROQ_API_KEY (#116, #178).
+    """
+    providers_str = os.environ.get("HARVEST_LLM_PROVIDERS", "")
+    if providers_str:
+        providers = []
+        for name in providers_str.split(","):
+            name = name.strip()
+            prefix = f"HARVEST_LLM_{name.upper()}_"
+            base_url = os.environ.get(f"{prefix}BASE_URL", "")
+            model = os.environ.get(f"{prefix}MODEL", "")
+            api_key = os.environ.get(f"{prefix}API_KEY", "")
+            if base_url and model:
+                providers.append(LLMProvider(name=name, base_url=base_url, model=model, api_key=api_key))
+        return providers
+
+    # Legacy: single provider from HARVEST_LLM_PROVIDER, only when the
+    # caller explicitly set it — an unset env var shouldn't be treated
+    # the same as an explicit opt-in to Groq.
+    if "HARVEST_LLM_PROVIDER" in os.environ:
+        provider = os.environ["HARVEST_LLM_PROVIDER"]
+        if provider == "groq":
+            return [LLMProvider(
+                name="groq",
+                base_url="https://api.groq.com/openai/v1",
+                model=os.environ.get("HARVEST_LLM_MODEL", "llama-3.3-70b-versatile"),
+                api_key=os.environ.get("GROQ_API_KEY", ""),
+            )]
+        return []
+
+    return load_quality_fallback_provider()
+
+
+def load_quality_fallback_provider() -> list:
+    """Fall back to the quality scorer's configured LLM endpoint.
+
+    Reuses MCP_QUALITY_AI_* rather than requiring a second, independent
+    HARVEST_LLM_* setup — one blessed llm-proxy path instead of two
+    config surfaces for the same underlying capability (#116).
+    """
+    from ..quality.config import QualityConfig
+
+    quality_config = QualityConfig.from_env()
+    if quality_config.openai_compat_base_url and quality_config.openai_compat_model:
+        return [LLMProvider(
+            name="quality-scorer-fallback",
+            base_url=quality_config.openai_compat_base_url,
+            model=quality_config.openai_compat_model,
+            api_key=quality_config.openai_compat_api_key or "",
+        )]
+    return []
+
+
 REWRITE_PROMPT = """Given this excerpt from a coding session conversation:
 ---
 {text}
@@ -107,7 +166,7 @@ class HarvestRewriter:
     """
 
     def __init__(self):
-        self._providers = self._load_providers()
+        self._providers = load_llm_providers()
         # Legacy single-provider compat
         self._provider = os.environ.get("HARVEST_LLM_PROVIDER", "groq")
         self._model = os.environ.get("HARVEST_LLM_MODEL", "llama-3.3-70b-versatile")
@@ -118,62 +177,6 @@ class HarvestRewriter:
             self._llm_timeout = float(os.environ.get("HARVEST_LLM_TIMEOUT", "10"))
         except ValueError:
             self._llm_timeout = 10.0
-
-    def _load_providers(self) -> list:
-        """Load provider chain from env vars.
-
-        Falls back to the quality scorer's openai-compatible endpoint
-        (MCP_QUALITY_AI_*, already pointed at llm-proxy's failover chain)
-        when nothing harvest-specific is configured at all, instead of
-        silently defaulting to an unconfigured Groq call (#116).
-        """
-        providers_str = os.environ.get("HARVEST_LLM_PROVIDERS", "")
-        if providers_str:
-            providers = []
-            for name in providers_str.split(","):
-                name = name.strip()
-                prefix = f"HARVEST_LLM_{name.upper()}_"
-                base_url = os.environ.get(f"{prefix}BASE_URL", "")
-                model = os.environ.get(f"{prefix}MODEL", "")
-                api_key = os.environ.get(f"{prefix}API_KEY", "")
-                if base_url and model:
-                    providers.append(LLMProvider(name=name, base_url=base_url, model=model, api_key=api_key))
-            return providers
-
-        # Legacy: single provider from HARVEST_LLM_PROVIDER, only when the
-        # caller explicitly set it — an unset env var shouldn't be treated
-        # the same as an explicit opt-in to Groq.
-        if "HARVEST_LLM_PROVIDER" in os.environ:
-            provider = os.environ["HARVEST_LLM_PROVIDER"]
-            if provider == "groq":
-                return [LLMProvider(
-                    name="groq",
-                    base_url="https://api.groq.com/openai/v1",
-                    model=os.environ.get("HARVEST_LLM_MODEL", "llama-3.3-70b-versatile"),
-                    api_key=os.environ.get("GROQ_API_KEY", ""),
-                )]
-            return []
-
-        return self._load_quality_fallback_provider()
-
-    def _load_quality_fallback_provider(self) -> list:
-        """Fall back to the quality scorer's configured LLM endpoint.
-
-        Reuses MCP_QUALITY_AI_* rather than requiring a second, independent
-        HARVEST_LLM_* setup — one blessed llm-proxy path instead of two
-        config surfaces for the same underlying capability (#116).
-        """
-        from ..quality.config import QualityConfig
-
-        quality_config = QualityConfig.from_env()
-        if quality_config.openai_compat_base_url and quality_config.openai_compat_model:
-            return [LLMProvider(
-                name="quality-scorer-fallback",
-                base_url=quality_config.openai_compat_base_url,
-                model=quality_config.openai_compat_model,
-                api_key=quality_config.openai_compat_api_key or "",
-            )]
-        return []
 
     def _build_locale_instruction(self) -> str:
         """Build locale instruction from HARVEST_LOCALE env var."""
