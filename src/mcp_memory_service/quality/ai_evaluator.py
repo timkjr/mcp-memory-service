@@ -6,6 +6,7 @@ Coordinates between local SLM, Groq, Gemini, and implicit signals.
 import asyncio
 import logging
 import os
+import re
 from typing import List, Optional
 import httpx
 from .config import QualityConfig
@@ -14,6 +15,40 @@ from .implicit_signals import ImplicitSignalsEvaluator
 from ..models.memory import Memory
 
 logger = logging.getLogger(__name__)
+
+# ONNX tiers truncate at 512 tokens (~2000 chars for typical English text);
+# the LLM-endpoint prompt used to cut off 4x earlier at 500 chars, scoring a
+# much smaller slice of the same memory than the local tier does (#174).
+_SCORING_CONTENT_CHARS = 2000
+
+# Recovers a score from responses that wrap the number in prose, a code
+# fence, or a "Score: 0.7" prefix instead of returning it bare (#174).
+_SCORE_PATTERN = re.compile(r"-?\d+\.?\d*")
+
+# Asking for "a number between 0.0 and 1.0" without a precision hint led
+# models to reply with a single decimal place (tecnobrat, #170) — collapsing
+# the usable range to 11 values. Spelling out two decimal places recovers
+# the resolution these scores need for ranking/retention comparisons (#174).
+_SCORING_SYSTEM_MESSAGE = (
+    "You are a quality scorer. Respond only with a number between 0.00 and "
+    "1.00, expressed to at least two decimal places (e.g. 0.62, not 0.6)."
+)
+
+
+def _parse_score(response_text: str) -> float:
+    """Parse a quality score out of a model response.
+
+    Raises ValueError if no number can be recovered at all.
+    """
+    try:
+        return float(response_text)
+    except ValueError:
+        pass
+
+    match = _SCORE_PATTERN.search(response_text)
+    if not match:
+        raise ValueError(f"No numeric score found in response: {response_text!r}")
+    return float(match.group())
 
 
 class QualityEvaluator:
@@ -380,7 +415,7 @@ class QualityEvaluator:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a quality scorer. Respond only with a number between 0.0 and 1.0.",
+                    "content": _SCORING_SYSTEM_MESSAGE,
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -392,7 +427,10 @@ class QualityEvaluator:
             payload["max_completion_tokens"] = 800
         else:
             payload["max_tokens"] = 50
-            payload["temperature"] = 0.1
+            # 0, not 0.1 — these scores feed quality-boosted search ranking and
+            # consolidation retention tiers, which assume the same content
+            # scores the same way across calls (#174).
+            payload["temperature"] = 0
             # Reasoning-capable models (behind proxies like llm-proxy, whose
             # failover target can change without this config knowing) can burn
             # the whole 50-token budget on chain-of-thought before emitting a
@@ -424,7 +462,7 @@ class QualityEvaluator:
 
         # Parse float and clamp to [0, 1]
         try:
-            score = float(response_text)
+            score = _parse_score(response_text)
             return max(0.0, min(1.0, score))
         except ValueError:
             raise RuntimeError(
@@ -459,8 +497,8 @@ class QualityEvaluator:
                 prompt=prompt,
                 model=model,
                 max_tokens=50,
-                temperature=0.1,
-                system_message="You are a quality scorer. Respond only with a number between 0.0 and 1.0."
+                temperature=0,
+                system_message=_SCORING_SYSTEM_MESSAGE,
             )
 
             if result["status"] != "success":
@@ -474,7 +512,7 @@ class QualityEvaluator:
             # Parse score from response
             response_text = result["response"].strip()
             try:
-                score = float(response_text)
+                score = _parse_score(response_text)
                 return max(0.0, min(1.0, score))
             except ValueError:
                 logger.warning(f"Could not parse Groq score from {model}: {response_text}")
@@ -625,12 +663,19 @@ class QualityEvaluator:
         Returns:
             Formatted prompt for AI model
         """
-        content_preview = memory_content[:500]
+        content_preview = memory_content[:_SCORING_CONTENT_CHARS]
 
         if not query or not query.strip():
             return f"""Rate the absolute quality of this memory content.
-Respond only with a number between 0.0 (very low quality) and 1.0 (very high quality).
 Consider: specificity, structure, actionability, completeness.
+
+Use these anchors to calibrate:
+0.15 = vague, no structure, nothing a reader could act on
+0.50 = specific but incomplete, or unclear how to use it
+0.85 = specific, well-structured, and immediately actionable
+
+Respond only with a number between 0.00 and 1.00, to at least two decimal
+places (e.g. 0.62, not 0.6).
 
 <memory>
 {content_preview}
@@ -639,7 +684,14 @@ Consider: specificity, structure, actionability, completeness.
 Score:"""
 
         return f"""Rate the relevance and quality of this memory for the given query.
-Respond only with a number between 0.0 (completely irrelevant/low quality) and 1.0 (highly relevant/high quality).
+
+Use these anchors to calibrate:
+0.15 = irrelevant to the query, or low quality even if on-topic
+0.50 = related to the query but incomplete or partly off-target
+0.85 = directly relevant, specific, and high quality
+
+Respond only with a number between 0.00 and 1.00, to at least two decimal
+places (e.g. 0.62, not 0.6).
 
 <query>{query}</query>
 

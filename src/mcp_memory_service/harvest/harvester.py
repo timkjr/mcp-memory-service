@@ -7,7 +7,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .models import HarvestCandidate, HarvestConfig, HarvestResult
 from .parser import TranscriptParser
@@ -27,6 +27,10 @@ class SessionHarvester:
         self.parser = TranscriptParser()
         self.extractor = PatternExtractor()
         self._classifier = None
+        # Holds references to in-flight background refinement tasks (#116) —
+        # asyncio doesn't keep fire-and-forget tasks alive on its own, they'd
+        # be garbage-collected mid-run without this.
+        self._background_tasks: set = set()
 
         # Load filters from locale YAMLs
         locale = os.environ.get("HARVEST_LOCALE", "en")
@@ -47,14 +51,18 @@ class SessionHarvester:
         return self._classifier
 
     def _get_rewriter(self):
-        """Lazy-init LLM rewriter. Returns None if not configured."""
+        """Lazy-init LLM rewriter. Returns None if not configured.
+
+        Checks `_providers` rather than the legacy `_api_key` (bound only to
+        GROQ_API_KEY) — that check disabled the rewriter whenever a
+        multi-provider chain or the quality-config fallback was in use,
+        since neither necessarily sets GROQ_API_KEY (#116).
+        """
         if not hasattr(self, '_rewriter'):
             try:
                 from .rewriter import HarvestRewriter
-                self._rewriter = HarvestRewriter()
-                # Check if API key is available
-                if not self._rewriter._api_key:
-                    self._rewriter = None
+                rewriter = HarvestRewriter()
+                self._rewriter = rewriter if rewriter._providers else None
             except Exception:
                 self._rewriter = None
         return self._rewriter
@@ -101,6 +109,74 @@ class SessionHarvester:
 
         return kept
 
+    def _spawn_background(self, coro) -> None:
+        """Fire-and-forget a coroutine, keeping a reference so it isn't GC'd."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    @staticmethod
+    def _extract_content_hash(resp) -> Optional[str]:
+        """Pull content_hash out of a store_memory response (dict or object)."""
+        try:
+            if isinstance(resp, dict):
+                return resp.get("memory", {}).get("content_hash")
+            memory = getattr(resp, "memory", None)
+            return getattr(memory, "content_hash", None) if memory else None
+        except Exception:
+            return None
+
+    async def _refine_low_confidence(
+        self, items: List[tuple]
+    ) -> None:
+        """Background LLM refinement pass for low-confidence candidates (#116).
+
+        Runs after heuristic results are already stored — doesn't block
+        harvest_and_store. Each refined candidate updates its already-stored
+        memory in place via update_memory_versioned; unparseable or SKIPped
+        items are left as the original heuristic content.
+        """
+        rewriter = self._get_rewriter()
+        if not rewriter or not items:
+            return
+
+        storage = getattr(self.memory_service, "storage", None)
+        if not storage:
+            return
+
+        content_hashes, candidates = zip(*items)
+        try:
+            results = await rewriter.rewrite_batch([
+                {"content": c.content, "memory_type": c.memory_type} for c in candidates
+            ])
+        except Exception as e:
+            logger.warning(f"Background LLM refinement failed: {e}")
+            return
+
+        refined = 0
+        for content_hash, candidate, result in zip(content_hashes, candidates, results):
+            if not result:
+                continue
+            try:
+                ok, msg, _ = await storage.update_memory_versioned(
+                    content_hash,
+                    result.content,
+                    new_tags=["session-harvest", "llm-refined"] + candidate.tags,
+                    new_memory_type=result.memory_type,
+                    reason="Harvest LLM refinement (low-confidence fallback)",
+                )
+                if ok:
+                    refined += 1
+                else:
+                    logger.debug(f"LLM refinement update skipped for {content_hash[:8]}: {msg}")
+            except Exception as e:
+                logger.warning(f"LLM refinement update failed for {content_hash[:8]}: {e}")
+
+        logger.info(
+            f"Background LLM refinement: {refined}/{len(items)} candidates updated "
+            f"({len(items) - refined} left as heuristic)"
+        )
+
     async def _is_duplicate_of_existing(self, content: str) -> bool:
         """Check if content is semantically similar to existing memories."""
         if not self._memory_service:
@@ -146,6 +222,10 @@ class SessionHarvester:
 
             if not config.dry_run and self.memory_service and result.candidates:
                 stored = 0
+                # Confidence-gated LLM fallback (#116): collected here, refined
+                # in one background task after this file's candidates are all
+                # stored — heuristic results aren't held up waiting on it.
+                low_confidence_items = []
                 for candidate in result.candidates:
                     try:
                         evolved = await self._try_evolve(candidate, config)
@@ -162,13 +242,26 @@ class SessionHarvester:
                                     "source": "harvest",
                                 },
                             )
-                            if isinstance(resp, dict) and resp.get("success"):
+                            success = (
+                                (isinstance(resp, dict) and resp.get("success"))
+                                or (hasattr(resp, "success") and resp.success)
+                            )
+                            if success:
                                 stored += 1
-                            elif hasattr(resp, "success") and resp.success:
-                                stored += 1
+                                if (
+                                    not config.use_llm
+                                    and config.llm_fallback_threshold is not None
+                                    and candidate.confidence < config.llm_fallback_threshold
+                                ):
+                                    content_hash = self._extract_content_hash(resp)
+                                    if content_hash:
+                                        low_confidence_items.append((content_hash, candidate))
                     except Exception as e:
                         logger.warning(f"Failed to store harvest candidate: {e}")
                 result.stored = stored
+
+                if low_confidence_items:
+                    self._spawn_background(self._refine_low_confidence(low_confidence_items))
 
             results.append(result)
         return results
