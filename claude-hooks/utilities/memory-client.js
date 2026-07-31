@@ -582,7 +582,10 @@ class MemoryClient {
      * Used by hooks for pre-store quality gating.
      * @param {string} content - Content to score
      * @param {string} memoryType - Memory type (default: 'note')
-     * @returns {Promise<number>} - Quality score [0.0-1.0], defaults to 0.5 on error
+     * @returns {Promise<number|null>} - Quality score [0.0-1.0], or null if the
+     *   scorer is unavailable. Callers should treat null as "skip storage,"
+     *   not as a passing score — failing open here previously let a
+     *   transient scorer outage store unscored content unchecked.
      */
     async scoreContent(content, memoryType = 'note') {
         try {
@@ -592,9 +595,8 @@ class MemoryClient {
             });
             return response.quality_score ?? 0.5;
         } catch (err) {
-            // On error, allow the store to proceed (fail open)
             console.warn('[Memory Client] Quality scoring failed:', err.message);
-            return 0.5;
+            return null;
         }
     }
 

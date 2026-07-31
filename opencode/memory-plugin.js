@@ -1242,9 +1242,15 @@ const createPlugin = async ({ directory, client }) => {
               analysis.nextSteps.length ? `\n**Next Steps:**\n${analysis.nextSteps.map((d) => `- ${d}`).join("\n")}` : "",
             ].filter(Boolean).join("\n")
 
-            // Quality gate: score before storing; fail-open if scoring unavailable
+            // Quality gate: score before storing. Fail CLOSED (skip storage)
+            // if scoring is unavailable — fail-open here previously let a
+            // transient scorer outage store unscored content unchecked, and
+            // the store call itself hits the same host, so an outage that
+            // breaks scoring would very likely break storage too anyway.
             const qualityScore = await scoreContent(config, consolidation, "session-summary")
-            if (qualityScore !== null && qualityScore < QUALITY_THRESHOLD) {
+            if (qualityScore === null) {
+              await logInfo("Session summary skipped (quality scorer unavailable)")
+            } else if (qualityScore < QUALITY_THRESHOLD) {
               await logInfo(`Session summary skipped (quality: ${qualityScore.toFixed(2)})`)
             } else {
             // Overwrite the previous summary of the same active session to avoid DB pollution
