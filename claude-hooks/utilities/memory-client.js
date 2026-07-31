@@ -187,7 +187,6 @@ class MemoryClient {
                         'Connection': 'close'
                     },
                     timeout: this.httpConfig.healthCheckTimeout || 3000,
-                    rejectUnauthorized: false,  // Allow self-signed certificates
                     agent: false  // Disable keepAlive — hook is one-shot, reused sockets race uvicorn close (ECONNRESET / socket hang up)
                 };
 
@@ -305,10 +304,6 @@ class MemoryClient {
                 agent: false,  // Disable keepAlive — one-shot CLI, avoids ECONNRESET from reused sockets
             };
 
-            if (isHttps) {
-                options.rejectUnauthorized = false;
-            }
-
             const requestModule = isHttps ? https : http;
             const req = requestModule.request(options, (res) => {
                 let data = '';
@@ -388,7 +383,6 @@ class MemoryClient {
                 // /api/search/by-tag. Larger than storeMemoryHTTP (5s) and _attemptHealthCheck (3s)
                 // because search queries run embedding + vector scan, not a simple write/ping.
                 timeout: 10000,
-                rejectUnauthorized: false,  // Allow self-signed certificates
                 agent: false  // Disable keepAlive — hook is one-shot, reused sockets race uvicorn close (ECONNRESET / socket hang up)
             };
 

@@ -54,7 +54,7 @@ The plugin config (`memory-plugin.json`) includes:
 {
   "memoryService": {
     "endpoint": "https://memory.timkjr.link",
-    "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
+    "apiKey": "",  // or leave unset — set MEMORY_SERVICE_API_KEY / OPENCODE_MEMORY_API_KEY in the environment instead
     "maxMemoriesPerSession": 8,
     "searchTags": [],
     "projectQueries": [

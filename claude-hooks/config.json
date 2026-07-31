@@ -12,7 +12,7 @@
     "fallbackEnabled": true,
     "http": {
       "endpoint": "https://memory.k-lab.lan",
-      "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
+      "apiKey": "",
       "healthCheckTimeout": 3000,
       "useDetailedHealthCheck": false
     },

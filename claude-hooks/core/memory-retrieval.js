@@ -61,8 +61,7 @@ async function queryMemoryService(endpoint, apiKey, query) {
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(postData),
                 'Authorization': `Bearer ${apiKey}`
-            },
-            rejectUnauthorized: false // For self-signed certificates
+            }
         };
 
         const req = https.request(options, (res) => {

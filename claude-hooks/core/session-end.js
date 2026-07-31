@@ -5,7 +5,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const { resolveConfigPath, applyEnvOverrides } = require('../utilities/config-loader');
 const https = require('https');
 const http = require('http');
 
@@ -22,7 +22,7 @@ async function loadConfig() {
     const configPath = resolveConfigPath(__dirname);
     try {
         const configData = await fs.readFile(configPath, 'utf8');
-        return JSON.parse(configData);
+        return applyEnvOverrides(JSON.parse(configData));
     } catch (error) {
         console.warn(`[Memory Hook] Config not found at ${configPath}, using defaults:`, error.message);
         return {
@@ -258,10 +258,6 @@ function triggerQualityEvaluation(endpoint, apiKey, contentHash) {
             timeout: 10000 // 10 second timeout for quality evaluation
         };
 
-        if (isHttps) {
-            options.rejectUnauthorized = false;
-        }
-
         const req = requestModule.request(options, (res) => {
             let data = '';
             res.on('data', (chunk) => {
@@ -317,10 +313,6 @@ function triggerConsolidation(endpoint, apiKey) {
             timeout: 120000 // 2 min — consolidation can take a while; we don't block on it
         };
 
-        if (isHttps) {
-            options.rejectUnauthorized = false;
-        }
-
         const req = requestModule.request(options, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
@@ -375,8 +367,6 @@ function triggerHarvest(endpoint, apiKey, projectPath) {
             },
             timeout: 15000
         };
-
-        if (isHttps) options.rejectUnauthorized = false;
 
         const req = requestModule.request(options, (res) => {
             let data = '';

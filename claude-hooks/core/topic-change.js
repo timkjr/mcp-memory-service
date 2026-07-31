@@ -6,7 +6,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const { resolveConfigPath, applyEnvOverrides } = require('../utilities/config-loader');
 const https = require('https');
 
 // Import utilities
@@ -29,7 +29,7 @@ async function loadConfig() {
     try {
         const configPath = resolveConfigPath(__dirname);
         const configData = await fs.readFile(configPath, 'utf8');
-        return JSON.parse(configData);
+        return applyEnvOverrides(JSON.parse(configData));
     } catch (error) {
         console.warn('[Topic Change Hook] Using default configuration:', error.message);
         return {
@@ -85,7 +85,6 @@ async function queryMemoryService(endpoint, apiKey, query, options = {}) {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Length': Buffer.byteLength(postData)
             },
-            rejectUnauthorized: false,
             timeout: 5000
         };
 

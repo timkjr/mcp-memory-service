@@ -17,6 +17,7 @@ const { analyzeGitContext, buildGitContextQuery } = require('../utilities/git-an
 const { MemoryClient } = require('../utilities/memory-client');
 const { getVersionInfo, formatVersionDisplay } = require('../utilities/version-checker');
 const { detectUserOverrides, logOverride } = require('../utilities/user-override-detector');
+const { applyEnvOverrides } = require('../utilities/config-loader');
 
 // Strip graph association blobs from search results — they are graph edges stored as
 // text memories for legacy compatibility and carry no useful recall content.
@@ -46,7 +47,7 @@ async function loadConfig() {
         // so a __dirname-relative path would miss the deployed config.
         const configPath = path.join(require('os').homedir(), '.claude', 'hooks', 'config.json');
         const configData = await fs.readFile(configPath, 'utf8');
-        return JSON.parse(configData);
+        return applyEnvOverrides(JSON.parse(configData));
     } catch (error) {
         console.warn('[Memory Hook] Using default configuration:', error.message);
         return {
@@ -1392,7 +1393,6 @@ async function executeSessionStart(context) {
                             ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
                         },
                         timeout: 8000,
-                        rejectUnauthorized: false,
                     };
                     const req = mod.request(opts, (res) => {
                         let d = '';

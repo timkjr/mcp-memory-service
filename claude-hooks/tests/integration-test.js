@@ -630,8 +630,7 @@ async function runTests() {
                     port: url.port || 8443,
                     path: url.pathname,
                     method: 'GET',
-                    timeout: 5000,
-                    rejectUnauthorized: false
+                    timeout: 5000
                 };
                 
                 const req = https.request(options, (res) => {
