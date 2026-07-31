@@ -321,7 +321,6 @@ class DynamicContextUpdater {
                     'Authorization': `Bearer ${apiKey}`,
                     'Content-Length': Buffer.byteLength(postData)
                 },
-                rejectUnauthorized: false,
                 timeout: 5000
             };
 

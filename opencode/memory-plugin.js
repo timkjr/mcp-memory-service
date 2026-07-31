@@ -9,9 +9,9 @@ import { execSync } from "node:child_process"
 const STATUS_FILE = process.env.OPENCODE_MEMORY_STATUS_FILE
   || path.join(homedir(), ".local", "state", "opencode", ".memory-status.json")
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = process.env.NODE_TLS_REJECT_UNAUTHORIZED || "0"
-
-const tlsAgent = new https.Agent({ rejectUnauthorized: false })
+// TLS certificate verification stays on — NODE_EXTRA_CA_CERTS (set fleet-wide
+// via dotfiles) already trusts the internal Caddy CA, so requests to
+// https://memory.k-lab.lan verify normally without disabling validation.
 
 function httpsFetch(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -26,7 +26,6 @@ function httpsFetch(url, options = {}) {
         path: parsed.pathname + parsed.search,
         method,
         headers,
-        agent: isHttps ? tlsAgent : undefined,
         signal,
       },
       (res) => {
@@ -149,7 +148,7 @@ function environmentOverrides() {
     overrides.memoryService.endpoint = endpoint
   }
 
-  const apiKey = process.env.OPENCODE_MEMORY_API_KEY
+  const apiKey = process.env.OPENCODE_MEMORY_API_KEY || process.env.MEMORY_SERVICE_API_KEY
   if (apiKey) {
     overrides.memoryService.apiKey = apiKey
   }

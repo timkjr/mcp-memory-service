@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "memoryService": {
     "endpoint": "http://mcp-memory:8000",
-    "apiKey": "159vNZwaDhRWVLRWYJWnxyOYYhOjpVH6zK/MuPJeexQ=",
+    "apiKey": "",
     "timeoutMs": 5000,
     "loadTimeoutMs": 2500,
     "maxMemoriesPerSession": 8,

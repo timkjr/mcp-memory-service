@@ -14,7 +14,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const { resolveConfigPath, applyEnvOverrides } = require('../utilities/config-loader');
 const { MemoryClient } = require('../utilities/memory-client');
 const {
     detectTier2Signal,
@@ -45,7 +45,7 @@ async function loadConfig() {
     const configPath = resolveConfigPath(__dirname);
     try {
         const data = await fs.readFile(configPath, 'utf8');
-        const config = JSON.parse(data);
+        const config = applyEnvOverrides(JSON.parse(data));
         return {
             memoryService: config.memoryService || { http: { endpoint: 'http://127.0.0.1:8000', apiKey: '' } },
             tier2: {

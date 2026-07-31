@@ -10,7 +10,7 @@
 const fs = require('fs');
 const fsp = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const { resolveConfigPath, applyEnvOverrides } = require('../utilities/config-loader');
 const os = require('os');
 const http = require('http');
 const https = require('https');
@@ -27,7 +27,7 @@ async function loadConfig() {
     try {
         const configPath = resolveConfigPath(__dirname);
         const data = await fsp.readFile(configPath, 'utf8');
-        return JSON.parse(data);
+        return applyEnvOverrides(JSON.parse(data));
     } catch (error) {
         console.warn('[Memory Hook] Harvest: using default configuration:', error.message);
         return {};

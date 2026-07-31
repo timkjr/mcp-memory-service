@@ -40,4 +40,27 @@ function resolveConfigPath(hookDir) {
     return path.join(hookDir, '../config.json');
 }
 
-module.exports = { resolveConfigPath, getUserConfigPath };
+/**
+ * Override memoryService apiKey fields with MEMORY_SERVICE_API_KEY from the
+ * environment when set, so config.json never needs to carry the literal key.
+ * Mutates and returns the same config object; handles both the nested
+ * (memoryService.http.apiKey) and legacy flat (memoryService.apiKey) shapes.
+ *
+ * @param {object} config - Parsed hook config.
+ * @returns {object} The same config object, with apiKey overridden if applicable.
+ */
+function applyEnvOverrides(config) {
+    const envApiKey = process.env.MEMORY_SERVICE_API_KEY;
+    if (!envApiKey || !config || !config.memoryService) {
+        return config;
+    }
+    if (config.memoryService.http) {
+        config.memoryService.http.apiKey = envApiKey;
+    }
+    if (Object.prototype.hasOwnProperty.call(config.memoryService, 'apiKey')) {
+        config.memoryService.apiKey = envApiKey;
+    }
+    return config;
+}
+
+module.exports = { resolveConfigPath, getUserConfigPath, applyEnvOverrides };

@@ -17,7 +17,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveConfigPath } = require('../utilities/config-loader');
+const { resolveConfigPath, applyEnvOverrides } = require('../utilities/config-loader');
 const { MemoryClient } = require('../utilities/memory-client');
 
 // Import pattern detection
@@ -36,7 +36,7 @@ async function loadConfig() {
     const configPath = resolveConfigPath(__dirname);
     try {
         const configData = await fs.readFile(configPath, 'utf8');
-        const config = JSON.parse(configData);
+        const config = applyEnvOverrides(JSON.parse(configData));
 
         return {
             memoryService: config.memoryService || {
