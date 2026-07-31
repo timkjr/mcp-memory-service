@@ -63,14 +63,23 @@ def harvest_config_from_env(**overrides) -> HarvestConfig:
         MCP_HARVEST_MIN_CONFIDENCE_TO_EVOLVE: float (0.0-1.0) — minimum
             staleness-adjusted confidence to consider a memory for evolution.
             Very stale memories below this threshold get a fresh copy instead.
+        MCP_HARVEST_MIN_CONFIDENCE: float (0.0-1.0) — regex-pattern confidence
+            floor for a candidate to be extracted at all (default 0.75).
+            Pattern YAMLs (en.yaml/de.yaml) never emit below 0.6, so lowering
+            this to 0.6 admits every near-miss the patterns can produce
+            without doing anything below that.
         HARVEST_LLM_FALLBACK_THRESHOLD: float (0.0-1.0) — candidates with
             regex confidence below this get a background LLM refinement pass.
-            Unset (default) disables the fallback entirely.
+            Unset (default) disables the fallback entirely. Must be set
+            above min_confidence to have any effect — candidates below
+            min_confidence are dropped during extraction and never reach
+            this check at all.
     """
     defaults = {}
     for env_var, field_name in [
         ("MCP_HARVEST_SIMILARITY_THRESHOLD", "similarity_threshold"),
         ("MCP_HARVEST_MIN_CONFIDENCE_TO_EVOLVE", "min_confidence_to_evolve"),
+        ("MCP_HARVEST_MIN_CONFIDENCE", "min_confidence"),
         ("HARVEST_LLM_FALLBACK_THRESHOLD", "llm_fallback_threshold"),
     ]:
         raw = os.environ.get(env_var)
@@ -82,4 +91,35 @@ def harvest_config_from_env(**overrides) -> HarvestConfig:
                     f"Invalid {env_var}={raw!r}, using default"
                 )
     defaults.update(overrides)
-    return HarvestConfig(**defaults)
+    config = HarvestConfig(**defaults)
+
+    threshold = config.llm_fallback_threshold
+    if threshold is not None and threshold <= config.min_confidence:
+        logging.getLogger(__name__).warning(
+            f"HARVEST_LLM_FALLBACK_THRESHOLD={threshold} <= min_confidence="
+            f"{config.min_confidence} — no candidate can ever be below "
+            "min_confidence (they're dropped during extraction), so the "
+            "fallback will never trigger. Set the threshold above min_confidence."
+        )
+
+    return config
+
+
+def default_llm_fallback_threshold() -> Optional[float]:
+    """Read HARVEST_LLM_FALLBACK_THRESHOLD directly.
+
+    For callers (the HTTP harvest endpoint, the memory_harvest MCP tool) that
+    build HarvestConfig straight from per-call request/tool arguments rather
+    than harvest_config_from_env() — without this, setting the env var in
+    production .env would have no effect on those paths at all (#116).
+    """
+    raw = os.environ.get("HARVEST_LLM_FALLBACK_THRESHOLD")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            f"Invalid HARVEST_LLM_FALLBACK_THRESHOLD={raw!r}, ignoring"
+        )
+        return None

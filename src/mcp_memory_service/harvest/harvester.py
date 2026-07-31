@@ -328,7 +328,13 @@ class SessionHarvester:
 
         all_candidates: List[HarvestCandidate] = []
         for msg in messages:
-            candidates = self.extractor.extract(msg, role_filter=use_role_filter)
+            # Pass config.min_confidence through explicitly — extractor.extract()
+            # defaults to its own hardcoded 0.75 floor otherwise, silently
+            # ignoring config.min_confidence and dropping near-misses before
+            # they ever become candidates the LLM fallback (#116) could see.
+            candidates = self.extractor.extract(
+                msg, role_filter=use_role_filter, min_confidence=config.min_confidence
+            )
             all_candidates.extend(candidates)
 
         # Apply regex-level filters
