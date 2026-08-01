@@ -61,7 +61,12 @@ class QualityConfig:
         implicit_weight_raw = os.getenv('MCP_QUALITY_IMPLICIT_WEIGHT')
         implicit_weight: Optional[float] = None
         if implicit_weight_raw is not None:
-            implicit_weight = float(implicit_weight_raw)
+            try:
+                implicit_weight = float(implicit_weight_raw)
+            except ValueError:
+                raise ValueError(
+                    f"MCP_QUALITY_IMPLICIT_WEIGHT must be a float, got '{implicit_weight_raw}'"
+                )
 
         return cls(
             enabled=os.getenv('MCP_QUALITY_SYSTEM_ENABLED', 'true').lower() == 'true',
