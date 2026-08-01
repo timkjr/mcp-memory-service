@@ -1243,6 +1243,27 @@ class HookInstaller:
                     if 'hooks' not in existing_settings:
                         existing_settings['hooks'] = {}
 
+                    # Respect an existing PostToolUse auto-capture wiring instead of
+                    # force-migrating it to Stop on every reinstall. The Stop-based
+                    # default below is only for installs that have neither — a user who
+                    # explicitly kept/restored PostToolUse (as this repo's own git
+                    # history shows happening more than once) should not have that
+                    # choice silently reverted every time hooks-canonical's VERSION
+                    # bumps and this installer reruns.
+                    existing_hooks = existing_settings.get('hooks', {})
+                    has_posttooluse_capture = any(
+                        'auto-capture-hook' in hook.get('command', '')
+                        for group in existing_hooks.get('PostToolUse', [])
+                        for hook in group.get('hooks', [])
+                    )
+                    has_stop_capture = any(
+                        'auto-capture-hook' in hook.get('command', '')
+                        for group in existing_hooks.get('Stop', [])
+                        for hook in group.get('hooks', [])
+                    )
+                    if has_posttooluse_capture and not has_stop_capture:
+                        hook_config['hooks'].pop('Stop', None)
+
                     # Check for conflicts and merge intelligently
                     memory_hook_types = {'SessionStart', 'SessionEnd', 'UserPromptSubmit'}
                     conflicts = []
@@ -1307,24 +1328,6 @@ class HookInstaller:
                     if not install_permission_hook and "PreToolUse" in existing_settings.get("hooks", {}):
                         del existing_settings["hooks"]["PreToolUse"]
                         self.info("Removed PreToolUse hook from existing settings (permission-request not opted in)")
-
-                    # Upgrade path: auto-capture moved from PostToolUse (fired per tool
-                    # call -> duplicate captures per turn) to Stop (fires once per turn).
-                    # Strip any legacy PostToolUse auto-capture groups so it does not run
-                    # alongside the new Stop hook after a reinstall.
-                    existing_post = existing_settings.get("hooks", {}).get("PostToolUse")
-                    if existing_post:
-                        cleaned = [
-                            group for group in existing_post
-                            if not any('auto-capture-hook' in hook.get('command', '')
-                                       for hook in group.get('hooks', []))
-                        ]
-                        if len(cleaned) != len(existing_post):
-                            if cleaned:
-                                existing_settings["hooks"]["PostToolUse"] = cleaned
-                            else:
-                                del existing_settings["hooks"]["PostToolUse"]
-                            self.info("Migrated auto-capture from PostToolUse to Stop (removed legacy PostToolUse hook)")
 
                     final_config = existing_settings
                     self.success("Settings merged intelligently, preserving existing configuration")
