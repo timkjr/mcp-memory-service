@@ -1018,17 +1018,29 @@ class HookInstaller:
                 # --- API key generation (fix for issue #531) ---
                 # The session-end and auto-capture hooks authenticate via Bearer
                 # token. Without a matching key on both sides the HTTP writes
-                # silently fail.  We generate a key here and embed it in the
-                # hooks config; the user still needs to add the same key as
-                # MCP_API_KEY in their MCP server env block (instructions printed
-                # below after the config is written).
+                # silently fail.  Prefer MEMORY_SERVICE_API_KEY from the
+                # environment when set — the hooks themselves read it at
+                # runtime via config-loader.applyEnvOverrides(), so an empty
+                # apiKey in config.json is a deliberate "use the environment"
+                # signal, not a sign nothing is configured. Only fall back to
+                # generating a random key (which the user must then also set
+                # server-side) when neither an existing key nor the env var
+                # is present; the generated key otherwise silently overwrites
+                # a blank-by-design config with a value the server will never
+                # accept.
                 existing_api_key = (
                     config
                     .get('memoryService', {})
                     .get('http', {})
                     .get('apiKey', 'auto-detect')
                 )
-                api_key = existing_api_key if existing_api_key not in ('', 'auto-detect') else self._generate_api_key()
+                env_api_key = os.environ.get('MEMORY_SERVICE_API_KEY')
+                if existing_api_key not in ('', 'auto-detect'):
+                    api_key = existing_api_key
+                elif env_api_key:
+                    api_key = ''  # leave blank in config.json; hooks read MEMORY_SERVICE_API_KEY at runtime
+                else:
+                    api_key = self._generate_api_key()
                 config.setdefault('memoryService', {}).setdefault('http', {})['apiKey'] = api_key
 
                 # Write the final configuration
