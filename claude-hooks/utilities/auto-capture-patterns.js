@@ -50,6 +50,9 @@ const PATTERNS = {
     },
     important: {
         regex: /\b(critical|important|remember|note|key|essential|must|never|always|crucial|vital|significant|wichtig|merken|notiz|niemals|immer|kritisch|wesentlich|unbedingt|entscheidend)/i,
+        // 'note' is the observation subtype for exactly this: something the
+        // user marked as worth remembering. 'Context' is not in the ontology
+        // and was silently coerced to 'observation' on store (#177).
         memoryType: 'note',
         priority: 5,
         confidence: 0.75,
@@ -57,7 +60,9 @@ const PATTERNS = {
     },
     code: {
         regex: /\b(function|class|component|api|endpoint|database|schema|test|config|module|interface|method|funktion|klasse|komponente|datenbank|schnittstelle|konfiguration|modul)/i,
-        memoryType: 'note',
+        // Substantial code discussion is lookup material later — 'reference'
+        // is the observation subtype for that (#177).
+        memoryType: 'reference',
         priority: 6,
         confidence: 0.7,
         minLength: 600,
