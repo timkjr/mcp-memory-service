@@ -11,10 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 Quick reference; each rule is expanded in the sections below. Violations cause real incidents.
 
 1. **This repo lives on Codeberg, not GitHub.** `origin` is `codeberg.org:doobidoo/mcp-memory-service`; CI is Forgejo Actions (`.forgejo/workflows/`). The `github` remote is a suspended mirror — do **not** use `gh` or `github.com` URLs for CI, releases, or issues.
-2. **Never manually bump versions.** Use the `codeberg-release-manager` agent for every version bump and release.
+2. **Never manually bump versions.** Follow the documented release workflow for every version bump and release.
 3. **Run `bash scripts/pr/pre_pr_check.sh` before every PR.** It is the mandatory pre-PR gate and must pass.
 4. **Use the project venv.** Run `.venv/bin/python` and `.venv/bin/pytest` (Python 3.11) — the system interpreters are not the project environment.
-5. **Store context in the MCP Memory Server, tagged `mcp-memory-service` first.** Never write `MEMORY.md` or local memory files unless the user explicitly asks for file-based storage.
+5. **Store context in the MCP Memory Server first, tagged `mcp-memory-service`.** Claude Code's file-based memory (`~/.claude/projects/<project>/memory/`) may run alongside it as a local cache — it is a supplement, not a substitute, and it lives outside the repo. Never commit memory files into the working tree.
 6. **Access `Memory` fields by attribute** (`memory.tags`), never via `memory.metadata.get('tags')`. This has caused 3 production bugs.
 7. **Sanitize user-provided values in logs** with `_sanitize_log_value()` (from `mcp_memory_service.compat`).
 8. **MCP server configs go in `.mcp.json`**, not `settings.json`.
@@ -22,6 +22,7 @@ Quick reference; each rule is expanded in the sections below. Violations cause r
 10. **Never click "Always allow" on heredoc commands** — it corrupts `.claude/settings.local.json`.
 11. **Before any SSH/network task, verify `hostname` and connection direction** (source → target).
 12. **Report outcomes faithfully.** "Tests pass" means you ran them and saw them pass; if a step was skipped or failed, say so with the output.
+13. **Write in the maintainer's or contributor's own voice.** Commit messages, PR descriptions, CHANGELOG entries, issue/PR comments, and release notes read as authored by the maintainer or contributor.
 
 ## Critical Directives
 
@@ -31,51 +32,34 @@ Quick reference; each rule is expanded in the sections below. Violations cause r
 
 ## Operational Rules
 
-**These rules apply to every session. Violations cause real incidents — follow them exactly.**
-
-### Memory Storage
-- **Always use the MCP Memory Server** (`mcp__memory__memory_store`) for storing context, learnings, and decisions
-- **Never write to `MEMORY.md` or local memory files** unless the user explicitly asks for file-based storage
-- Tag all memories with `mcp-memory-service` as the first tag (per `memory-tagging.md`)
-
-### MCP Configuration
-- **MCP server configs go in `.mcp.json`**, not in `settings.json`
-
-### SSH / Network Safety
-- **Before any SSH or network task**: confirm machine identity with `hostname` and verify connection direction (source → target)
-- **Never assume** which machine you're on or which direction a connection flows — always verify first
-
 ### Auto-Save Learnings
 - **After completing tasks**: automatically save key learnings, decisions, and patterns to the MCP Memory Server without being asked
 - Include relevant tags: `mcp-memory-service`, task-specific tags, and `learnings`
 
 ### Source Control & Hosting (Codeberg, not GitHub)
-- **`origin` is Codeberg**: `git@codeberg.org:doobidoo/mcp-memory-service.git`. CI runs as **Forgejo Actions** in `.forgejo/workflows/`.
-- **The `github` remote is a suspended mirror.** Do not use `gh` CLI, `github.com` URLs, or GitHub Actions for CI/release/issue work.
+- CI runs as **Forgejo Actions** in `.forgejo/workflows/` (`ci.yml`, `release.yml`, `deploy-site.yml`, `cleanup-images.yml`). There is no `.github/workflows/` directory. Issues and PRs are on Codeberg.
 - **GHSA identifiers** (e.g. `GHSA-2r68-g678-7qr3`) are just advisory IDs and remain valid references.
+- **Authorship voice.** Commit messages, PR descriptions, CHANGELOG entries, issue/PR comments, and release notes are written in the maintainer's or contributor's own voice.
 
 ### Release Workflow Checklist
 Before merging or releasing:
-1. Verify CI is green on the target branch (Forgejo Actions on Codeberg).
-2. **Update `site/index.html` version strings** whenever MAJOR.MINOR changes — ALL occurrences: `<title>`, `<meta og:title>`, hero badge, "What's New" section, release link `href`. Use `grep -n "v11\." site/index.html` to find them. The `version-drift-check` CI gate enforces this.
-3. Clean up merged branches after release (`git branch -d`, `git push origin --delete`).
-4. Use the `codeberg-release-manager` agent — never manually bump versions.
+1. **Verify CI is green on the target branch** (Forgejo Actions on Codeberg). Check via the `tea` CLI (Forgejo/Gitea) if configured, otherwise the Actions tab at `https://codeberg.org/doobidoo/mcp-memory-service`.
+2. **Update `site/index.html` version strings** whenever MAJOR.MINOR changes (i.e. every MINOR or MAJOR release — PATCH releases are exempt). The `version-drift-check` CI gate enforces this and will fail if skipped. Update ALL occurrences: `<title>`, `<meta og:title>`, hero badge, "What's New" section, release link `href`. Use `grep -n "v11\." site/index.html` to find them. This is MANDATORY — not optional for "incremental" releases. The site auto-deploys to Cloudflare Pages (mcpmemory.services) when the change lands on main (`.forgejo/workflows/deploy-site.yml`).
+3. **Bump `claude-hooks/.claude-plugin/plugin.json` if the hooks changed.** The Claude Code plugin carries its own version, and the Marketplace cache is keyed on it, so a hook fix released without a manifest bump never reaches installed users. The `plugin-version-check` CI gate enforces this on release changes (`scripts/ci/check_plugin_version.sh`): it fails when `claude-hooks/` changed since the last commit that moved the manifest version. v11.6.0 shipped a hook fix this way (#170).
+4. Clean up merged branches after release (`git branch -d`, `git push origin --delete`).
+5. Follow the release workflow — never manually bump versions.
 
 ## Overview
 
-MCP Memory Service is a semantic memory layer for AI applications, accessible via REST API and MCP transport. It supports multiple storage backends (SQLite-vec, Cloudflare, Hybrid), vector embeddings for semantic search, memory consolidation, quality scoring, and OAuth 2.1 team collaboration.
-
-**Current Version:** v11.5.4 - PATCH release: web dashboard GitHub references replaced with Codeberg (#158, #159, @sunnyagain); see [CHANGELOG.md](CHANGELOG.md) for details. (Issue/PR numbers refer to Codeberg.)
+**Current Version:** v11.6.1 - PATCH release: harvest classifier honors `HARVEST_LLM_PROVIDERS` instead of requiring `GROQ_API_KEY` (#180, timkjr), Claude Code plugin manifest bumped to 1.0.2 so the #177 hook fix reaches installed plugin users, and a CI gate that fails a release PR changing `claude-hooks/` without moving that manifest version (#195); see [CHANGELOG.md](CHANGELOG.md) for details. (Issue/PR numbers refer to Codeberg.)
 
 > **History (v10.0.0):** The v10 API consolidation unified 34 tools into 12. The deprecated tool-name alias layer (`compat.DEPRECATED_TOOLS`) was later **removed in v11** (Issue #53) — old tool names no longer resolve. The registry has since grown to ~28 tools (see `src/mcp_memory_service/tools/registry.py`).
-
-> **History (Feb 2026 roadmap review):** The Q1 2026 quarterly review delivered 6/9 high-priority items ahead of schedule (Python 3.14 support, backup scheduler fix, CI/CD stability). Current roadmap: the **Development Roadmap** page on the Codeberg wiki.
 
 ## Essential Commands
 
 ### Python Environment
 
-This repo uses a project virtualenv at `.venv` (Python 3.11). Always use the venv binaries:
+This repo uses a project virtualenv at `.venv` (Python 3.11). The system `python`/`pytest` are **not** the project interpreter. Always use the venv binaries:
 
 ```bash
 .venv/bin/python -m mcp_memory_service.server   # run a module
@@ -83,282 +67,348 @@ This repo uses a project virtualenv at `.venv` (Python 3.11). Always use the ven
 .venv/bin/python -m pip install -e .            # editable install
 ```
 
-For `git commit`, the pre-commit hook uses **system** Python and will fail with "Package not installed"; prefix commits with `PATH=".venv/bin:$PATH"`.
+The commands below are written as bare `python`/`pytest` for brevity — run them via `.venv/bin/...`. For `git commit`, the pre-commit hook uses **system** Python and will fail with "Package not installed"; prefix commits with `PATH=".venv/bin:$PATH"` (see Troubleshooting). `uv` is also used (`uv.lock` present); `uv pip install -e .` and `uv run memory ...` work too.
 
 ### Development Server
 
+**Recommended (lifecycle CLI):**
 ```bash
+# Start HTTP server in background with PID tracking, logs, health check
 memory launch                              # Background (default)
-memory launch --foreground                 # Foreground
+memory launch --foreground                 # Foreground (same as server --http)
 memory launch --storage-backend hybrid     # With specific backend
-memory info                                # Check if running
-memory stop / memory restart
-memory logs / memory logs -n 50
+memory launch --debug                      # With debug logging
+
+# Check if server is running
+memory info
+
+# Stop server
+memory stop
+
+# Restart (preserves --storage-backend and --debug from running server)
+memory restart
+
+# View logs
+memory logs
+memory logs -n 50
 ```
 
-Legacy: `python scripts/server/run_http_server.py` and `./scripts/update_and_restart.sh` still work.
+**Legacy entry points (still available, but the CLI is preferred):**
+```bash
+# MCP server (for Claude Desktop integration)
+python -m mcp_memory_service.server
+
+# HTTP API server (dashboard + REST API)
+python scripts/server/run_http_server.py
+
+# Quick update after git pull (installs deps, restarts server)
+./scripts/update_and_restart.sh
+```
+
+> **Note:** The `memory launch/stop/restart/info/logs` CLI commands are the
+> preferred way to manage the server going forward. The legacy scripts
+> (`scripts/server/run_http_server.py`, `scripts/update_and_restart.sh`) still
+> work but may be deprecated in a future release. For new deployments, use the CLI.
 
 ### Testing
+
+Standard `pytest` invocations apply; markers are declared in `pytest.ini`. Exact test
+count: `.venv/bin/pytest --collect-only -q | tail -1`.
+
 ```bash
-.venv/bin/pytest                                        # All tests
-.venv/bin/pytest tests/storage/test_sqlite_vec.py       # Specific file
-.venv/bin/pytest -m unit                                # Fast unit tests only
-.venv/bin/pytest -m integration                         # Require storage
-bash scripts/pr/pre_pr_check.sh                         # MANDATORY pre-PR gate
+# Pre-PR validation (MANDATORY before submitting PR)
+bash scripts/pr/pre_pr_check.sh
 ```
 
-### Building & Installation
-```bash
-pip install -e .             # editable (development)
-pip install -e ".[full]"     # all features
-pip install -e ".[sqlite]"   # SQLite + ONNX only
-```
+**Full command reference:** [scripts/README.md](scripts/README.md). Validation and
+diagnostics live in `scripts/validation/`; the HTTP health endpoint is
+`/api/health` on the configured port (default 8000).
 
-### Health Checks
-```bash
-curl http://127.0.0.1:8000/api/health
-python scripts/validation/validate_configuration_complete.py
-python scripts/validation/diagnose_backend_config.py
-```
+## Code Architecture
 
-**Full command reference:** [scripts/README.md](scripts/README.md)
+Package layout: `ls src/mcp_memory_service/`. Non-obvious entry points:
 
-## Memory Field Access Pattern (CRITICAL)
+- `server_impl.py` - the `MemoryServer` class. `list_tools()` builds the tool list from the declarative registry, `call_tool()` dispatches through the routing table, and the `handle_*` methods live here too.
+- `tools/registry.py` - `TOOL_REGISTRY`, the declarative list of `ToolDef` objects, each mapping 1:1 to a `types.Tool`. Count: `grep -c 'ToolDef(' src/mcp_memory_service/tools/registry.py`.
+- `tools/routing.py` - `ROUTING_TABLE` (name -> handler) plus `resolve_handler(name)` with lazy import.
+- `server/handlers/*.py` - request handlers, signature `async def handle_X(server, arguments) -> List[types.TextContent]`.
+- `compat.py` - compatibility shims and `_sanitize_log_value()`.
+- `consolidation/` - dream-inspired memory maintenance, not a data-consolidation layer.
 
-**ALWAYS use direct attribute access on Memory objects. NEVER access via the metadata dict.**
+Global singleton caching in `server/cache_manager.py` prevents redundant storage
+initialization across MCP tool calls. Do not instantiate storage per call.
 
-This anti-pattern has caused 3 production bugs (v10.13.1: PRs #466, #467, #469).
+### Storage backends (`storage/`)
 
-```python
-# WRONG — always returns [] or '' even when field is populated
-memory.metadata.get('tags', [])
-memory.metadata.get('memory_type', '')
+Strategy Pattern over `BaseStorage` (`base.py`), three implementations:
 
-# CORRECT
-memory.tags
-memory.memory_type
-memory.content_hash
-memory.created_at
-```
+| Backend | File | Performance | Use case |
+|---------|------|-------------|----------|
+| SQLite-Vec | `sqlite_vec.py` | 5ms reads | Development, single-user |
+| Cloudflare | `cloudflare.py` | Network-dependent | Cloud-only, edge |
+| Hybrid | `hybrid.py` | 5ms local plus cloud sync | **Production (recommended)** |
 
-`Memory.metadata` is for **custom key-value pairs only** — not standard fields. Standard fields (`tags`, `memory_type`, `content_hash`, etc.) are top-level dataclass attributes.
+SQLite-Vec uses the sqlite-vec extension for KNN search, Cloudflare uses D1 plus
+Vectorize, Hybrid reads locally and syncs to Cloudflare in the background. Graph
+storage sits in `graph.py`. Embeddings: ONNX, `sentence-transformers/all-MiniLM-L6-v2`.
 
-**Log injection:** Never log user-provided values in raw f-strings. Always wrap with `_sanitize_log_value()` from `mcp_memory_service.compat`.
+### Web layer (`web/`)
+
+FastAPI dashboard plus REST API. Two things that are not visible from the file names:
+
+- `api/mcp.py` is a thin MCP-over-HTTP protocol shim. Its tool surface and dispatch
+  are inherited from the shared `MemoryServer`, so tools are not defined twice.
+- Tools that read caller-supplied filesystem paths are filtered out of the remote
+  transport by `local_only_tools()` in `server_impl.py`. This is the confused-deputy
+  guard, not an optimization.
+
+### Quality system (`quality/`)
+
+Three tiers, local first:
+
+| Tier | Provider | Latency | Cost | Role |
+|------|----------|---------|------|------|
+| 1 | Local ONNX | 80-150ms | 0 | Default |
+| 2 | Groq / Llama 3 | 500-800ms | 0.0015 | Fallback if local fails |
+| 3 | Gemini 1.5 Flash | 1-2s | 0.01 | High-accuracy scoring |
+
+Scores are 0.0 to 1.0 and feed quality-boosted search and retention policy.
+
+### Consolidation (`consolidation/`)
+
+Runs via the HTTP API, not the MCP tools (roughly 90 percent fewer tokens), scheduled
+with APScheduler. Retention by quality tier: high 365d, medium 180d, low 30-90d
+(`forgetting.py`). Relationship inference classifies associations as causes, fixes,
+contradicts, supports, follows or related, with a default confidence threshold of 0.6.
+For existing associations, backfill with
+`scripts/maintenance/update_graph_relationship_types.py`.
+
+### Document ingestion (`ingestion/`)
+
+Registry pattern, loaders selected by file extension. Chunker defaults: 1000 chars
+with 200 overlap. `semtools_loader.py` is optional and adds LlamaParse for PDF, DOCX
+and PPTX.
+
+## Test Architecture
+
+About 2,400 tests across roughly 216 files. `tests/` mirrors `src/`.
+
+### Test safety (critical, PR #438)
+
+On Feb 8, 2026 a test cleanup deleted 8,663 production memories. Recovery ran off an
+emergency backup. Three guards now stand between the suite and a production database,
+all in `conftest.py`:
+
+1. An isolated temp directory with prefix `mcp-test-` is created at module import time.
+2. `pytest_sessionstart` aborts the run if a production path is detected.
+3. `pytest_sessionfinish` validates temp location, absence of production indicators,
+   and presence of test markers before deleting anything.
+
+Tests force `MCP_MEMORY_STORAGE_BACKEND=sqlite_vec` unless
+`MCP_TEST_ALLOW_CLOUD_BACKEND=true`. Do not weaken any of this to make a test pass.
+
+### Fixtures and conventions (`conftest.py`)
+
+`temp_db_path` gives an auto-cleaned temp directory, `unique_content` generates
+non-duplicate test content, and `test_store` auto-tags everything with
+`TEST_MEMORY_TAG = "__test__"`, which is reserved for automatic cleanup. Never use
+that tag for real data.
+
+Markers in `pytest.ini`: `unit`, `integration` (needs storage), `performance`,
+`asyncio` (auto-detected).
+
+## Configuration
+
+Full variable list: `.env.example`. Precedence: environment variables, then `.env`,
+then global Claude config, then defaults. After changing `.env`, restart with
+`memory restart`.
+
+Three settings that cause real incidents when wrong:
+
+- `MCP_MEMORY_SQLITE_PRAGMAS` must include `journal_mode=WAL`. Without it, concurrent
+  reads and writes are disabled and the HTTP server plus MCP server running together
+  produce "database is locked". Working value:
+  `journal_mode=WAL,busy_timeout=15000,cache_size=20000`.
+- `MCP_HYBRID_SYNC_OWNER=http` for hybrid mode. Then only the HTTP server syncs to
+  Cloudflare, the MCP server skips Cloudflare initialization entirely and talks to
+  SQLite-Vec directly, and `claude_desktop_config.json` needs no Cloudflare
+  credentials. Claude Desktop gets memory access, the HTTP server owns sync.
+- `MCP_INIT_TIMEOUT` defaults to 30s on Windows and 15s elsewhere, auto-doubled on
+  first run. Slow Windows machines need it raised.
+
+### External embedding APIs
+
+Only supported on the `sqlite_vec` backend, not on `hybrid` or `cloudflare`. Set
+`MCP_EXTERNAL_EMBEDDING_URL` and `MCP_EXTERNAL_EMBEDDING_MODEL`, optionally
+`MCP_EXTERNAL_EMBEDDING_API_KEY`. Works with vLLM, Ollama, TEI, OpenAI or any
+OpenAI-compatible `/v1/embeddings` endpoint. Embedding dimensions must match the
+database schema, and changing them requires re-embedding every memory. Details:
+[`docs/deployment/external-embeddings.md`](docs/deployment/external-embeddings.md).
+
+Claude Desktop wiring: see README.
 
 ## Development Guidelines
 
-**Read before working:**
-- [`.claude/directives/development-setup.md`](.claude/directives/development-setup.md) - Editable install
-- [`.claude/directives/pr-workflow.md`](.claude/directives/pr-workflow.md) - Pre-PR checks (MANDATORY)
-- [`.claude/directives/refactoring-checklist.md`](.claude/directives/refactoring-checklist.md) - Refactoring safety
-- [`.claude/directives/version-management.md`](.claude/directives/version-management.md) - Release workflow (HOW)
-- [`.claude/directives/release-cadence.md`](.claude/directives/release-cadence.md) - Release batching (WHEN)
+### Quality gates
 
-**Quick workflow:** `pip install -e .` → make changes → `.venv/bin/pytest` → `bash scripts/pr/pre_pr_check.sh` → PR via `codeberg-release-manager` agent.
+Three layers: pre-commit (under 5s, Groq/Gemini complexity plus security, blocks on
+complexity above 8 or a security finding), the PR gate
+`bash scripts/pr/pre_pr_check.sh` (10-60s, blocks on security or health below 50), and
+a weekly pyscn review with trend tracking. Health score below 50 blocks a release,
+50-69 means refactor within two weeks, 70 and up is fine. Complexity target is grade
+A-B, meaning 8 or lower.
 
-**Adding a new MCP tool (v11 declarative flow):**
-1. Add `ToolDef(name, description, input_schema, annotations)` to `TOOL_REGISTRY` in `tools/registry.py`
-2. Implement handler `async def handle_X(server, arguments) -> List[types.TextContent]` in `server/handlers/`
-3. Add `"<tool_name>": <handler>` to `ROUTING_TABLE` in `tools/routing.py`
-4. If the tool reads caller-supplied paths, add to `local_only_tools()` in `server_impl.py`
-5. Add tests in `tests/server/test_handlers.py`
+### Log injection guard (v10.68.0, from CodeQL GHSA-84hp-mqvj-3p8h)
 
-**Renaming a tool is a breaking change** — the v11 alias layer was removed. Treat renames as major-version changes.
+User-provided values in raw f-string log calls trigger CodeQL `py/log-injection`.
+Wrap them:
 
-**Removing a feature:** run `grep -r "<term>" docs/ README.md` and clean up references in the same PR.
+```python
+from mcp_memory_service.compat import _sanitize_log_value
+logger.info(f"Stored: {_sanitize_log_value(content)}")
+```
 
-**External data parsers:** Always inspect real data before writing parsers — real JSON structures often differ from API docs.
+The helper strips newline, carriage return and escape characters, which prevents log
+forging and ANSI injection. `pre_pr_check.sh` check 6.5 detects unwrapped f-string
+logger calls. For paths, validate with `Path(user_input).resolve()` and verify the
+result is under the expected base directory.
 
-**Dashboard changes (`web/static/`):** Verify in a browser before merging. No automated JS coverage.
+### Memory field access (cause of three production bugs)
+
+`tags`, `memory_type`, `content_hash` and `created_at` are top-level attributes of the
+`Memory` dataclass. `metadata` is a separate dict for custom key-value pairs only and
+never holds standard fields.
+
+```python
+memory.tags               # correct
+memory.memory_type or ''  # correct, with fallback
+
+memory.metadata.get('tags', [])  # wrong, silently returns []
+memory['tags']                   # wrong, raises AttributeError
+```
+
+The metadata form fails silently, which is why it reached production three times
+(PRs #466, #467, #469 in v10.13.1): a broken REST filter returning zero results, tags
+rendered character by character, and crashing prompt handlers. Flag any
+`metadata.get('tags')` or `metadata.get('memory_type')` in review.
+
+### External data parsers
+
+Download and inspect a real sample before writing a parser or its tests. API docs and
+project pages misdescribe structures often enough to matter, for example LoCoMo
+observations are nested dicts rather than newline-separated strings.
+
+### Directives to read before working
+
+- [`.claude/directives/development-setup.md`](.claude/directives/development-setup.md) - editable install
+- [`.claude/directives/pr-workflow.md`](.claude/directives/pr-workflow.md) - pre-PR checks
+- [`.claude/directives/refactoring-checklist.md`](.claude/directives/refactoring-checklist.md) - refactoring safety
+- [`.claude/directives/version-management.md`](.claude/directives/version-management.md) - release workflow (how)
+- [`.claude/directives/release-cadence.md`](.claude/directives/release-cadence.md) - release batching (when)
+- [`.claude/directives/extending.md`](.claude/directives/extending.md) - new MCP tool, storage backend, document loader
+- [`.claude/directives/troubleshooting.md`](.claude/directives/troubleshooting.md) - symptom-to-fix table
+
+Version bumps follow the documented release workflow, never by hand. It keeps
+`pyproject.toml`, `_version.py`, CHANGELOG and the Codeberg release in sync and writes
+the release notes.
+
+### Gotchas when changing things
+
+- Dashboard (`web/static/`): the JS has no automated coverage. Verify in a browser and
+  attach manual testing evidence or screenshots to the PR.
+- Removing a feature, port or command: run `grep -r "<term>" docs/ README.md` and clean
+  up references in the same PR. `scripts/ci/check_dead_refs.sh` catches new dead refs
+  in CI on docs changes.
+
+### Extension points
+
+Adding an MCP tool, a storage backend, or a document loader — including the
+`readOnlyHint` OAuth-scope trap and the maintenance scripts:
+[`.claude/directives/extending.md`](.claude/directives/extending.md). Renaming a tool is
+a breaking change (the alias layer was removed in v11) — read that file first.
 
 ## Definition of Done
 
-**Every code change:**
-- [ ] Relevant tests pass: `.venv/bin/pytest tests/<area>` or `.venv/bin/pytest -k <pattern>`
-- [ ] `bash scripts/pr/pre_pr_check.sh` passes
-- [ ] New code within complexity budget (A-B grade, complexity ≤8)
-- [ ] User-provided log values wrapped with `_sanitize_log_value()`
-- [ ] `Memory` fields accessed by attribute (`memory.tags`), never `memory.metadata.get('tags')`
-- [ ] If a feature/port/command was removed: references cleaned up in `docs/` and `README.md`
+Work is not "done" until the relevant checks below have been run and pass. Report results plainly — paste the command output; if a check was skipped or failed, say so rather than claiming success.
 
-**Dashboard changes:** verified in a browser — include a screenshot or testing note.
+**Every code change:**
+- [ ] Relevant tests pass: `.venv/bin/pytest tests/<area>` (or `.venv/bin/pytest -k <pattern>`); run the full suite before a release.
+- [ ] `bash scripts/pr/pre_pr_check.sh` passes — the MANDATORY pre-PR gate (blocks on security findings and health score <50, includes the log-injection check).
+- [ ] New code stays within the complexity budget (A-B grade, complexity ≤8).
+- [ ] User-provided values in `logger.*` calls are wrapped with `_sanitize_log_value()`.
+- [ ] `Memory` fields are accessed by attribute (`memory.tags`), never `memory.metadata.get('tags')`.
+- [ ] If a feature/port/command was removed: `grep -r "<term>" docs/ README.md` and clean up references in the same change.
+
+**Dashboard changes (`web/static/`):** verified in a browser (no automated JS coverage) — include a screenshot or a note of what was exercised.
 
 **Before a release / version bump:**
-- [ ] CI is green on the target branch
-- [ ] Version bumped via `codeberg-release-manager` agent (never by hand)
-- [ ] `site/index.html` version strings updated if MAJOR.MINOR changed
+- [ ] CI is green on the target branch (Forgejo Actions on Codeberg).
+- [ ] Version bumped via the release workflow (never by hand) — keeps `pyproject.toml`, `_version.py`, CHANGELOG, and the Codeberg release in sync.
+- [ ] `site/index.html` version strings updated if MAJOR.MINOR changed (see the Release Workflow Checklist).
 
-**After finishing a task:** save key learnings/decisions to the MCP Memory Server, tagged `mcp-memory-service` first.
+**After finishing a task:** save key learnings/decisions to the MCP Memory Server, tagged `mcp-memory-service` first (per the Auto-Save rule).
 
-## Agent Integrations
+## Troubleshooting
 
-- **codeberg-release-manager** — ALL releases (version bump, CHANGELOG, `_version.py`, PR, release notes)
-- **changelog-archival** — keeps CHANGELOG lean by archiving old versions
-- **amp-automation** — coding tasks + PR quality analysis
-- **code-quality-guard** — quality analysis before commits
-- **gemini-pr-automator** — automated PR reviews and fixes
+Symptom-to-fix table (database locks, Cloudflare 401/403, MCP init timeouts, the venv
+pre-commit trap) plus the heredoc permission-corruption warning:
+[`.claude/directives/troubleshooting.md`](.claude/directives/troubleshooting.md).
 
-See [`.claude/directives/agents.md`](.claude/directives/agents.md) for complete workflows.
+## Performance Characteristics
+
+**Key Metrics** (from production deployments):
+- **5ms reads** - SQLite-Vec local storage
+- **534,628x faster** - Global caching optimization (v8.26.0)
+- **90% token reduction** - Consolidation via HTTP API vs MCP tools
+- **85%+ trigger accuracy** - Natural memory triggers (v7.1.3+)
+- **80-150ms** - Local ONNX quality scoring
+
+## Documentation
+
+The wiki is the comprehensive reference:
+https://codeberg.org/doobidoo/mcp-memory-service/wiki
+
+**When to update each:**
+- **CLAUDE.md** - Architecture changes, new patterns, development workflows
+- **README.md** - New features, installation changes, user-facing updates
+- **CHANGELOG.md** - Every version bump (via the release workflow)
+- **site/index.html** - Landing page: MINOR/MAJOR releases only (title, og:title, hero badge, "What's New" cards, test count, release link). No manual publish step: merging to main triggers `.forgejo/workflows/deploy-site.yml`, which deploys `site/` to Cloudflare Pages (mcpmemory.services). GitHub Pages and the here.now mirror are retired; `docs/index.html` is only a redirect stub — never put version strings or content there.
+- **Wiki** - Detailed guides, troubleshooting, tutorials
 
 ## Additional Resources
 
-- **Architecture:** [`.claude/directives/architecture.md`](.claude/directives/architecture.md)
-- **Testing:** [`.claude/directives/testing.md`](.claude/directives/testing.md)
-- **Configuration:** [`.claude/directives/configuration.md`](.claude/directives/configuration.md)
-- **Troubleshooting:** [`.claude/directives/troubleshooting.md`](.claude/directives/troubleshooting.md)
 - **Storage Backends:** [`.claude/directives/storage-backends.md`](.claude/directives/storage-backends.md)
 - **Hooks Configuration:** [`.claude/directives/hooks-configuration.md`](.claude/directives/hooks-configuration.md)
 - **Quality System:** [`.claude/directives/quality-system-details.md`](.claude/directives/quality-system-details.md)
 - **Consolidation:** [`.claude/directives/consolidation-details.md`](.claude/directives/consolidation-details.md)
 - **Code Quality:** [`.claude/directives/code-quality-workflow.md`](.claude/directives/code-quality-workflow.md)
-- **Wiki:** https://codeberg.org/doobidoo/mcp-memory-service/wiki
 
 ---
 
-**Quick Start Checklist for New Contributors:**
-1. [ ] Read this file (CLAUDE.md), especially the Non-Negotiables
-2. [ ] Read `.claude/directives/memory-tagging.md` (MANDATORY)
-3. [ ] Run `pip install -e .` into `.venv` (editable install)
-4. [ ] Run `.venv/bin/pytest` (verify tests pass)
-5. [ ] Read the relevant directive files for your work area
-6. [ ] Make changes and run `bash scripts/pr/pre_pr_check.sh` before a PR
+## Skill routing
 
-<!-- rtk-instructions v2 -->
-# RTK (Rust Token Killer) - Token-Optimized Commands
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
 
-## Golden Rule
+Key routing rules:
+- Product ideas/brainstorming → invoke /office-hours
+- Strategy/scope → invoke /plan-ceo-review
+- Architecture → invoke /plan-eng-review
+- Design system/plan review → invoke /design-consultation or /plan-design-review
+- Full review pipeline → invoke /autoplan
+- Bugs/errors → invoke /investigate
+- QA/testing site behavior → invoke /qa or /qa-only
+- Code review/diff check → invoke /review
+- Visual polish → invoke /design-review
+- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Save progress → invoke /context-save
+- Resume context → invoke /context-restore
 
-**Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
+## graphify
 
-**Important**: Even in command chains with `&&`, use `rtk`:
-```bash
-# ❌ Wrong
-git add . && git commit -m "msg" && git push
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-# ✅ Correct
-rtk git add . && rtk git commit -m "msg" && rtk git push
-```
-
-## RTK Commands by Workflow
-
-### Build & Compile (80-90% savings)
-```bash
-rtk cargo build         # Cargo build output
-rtk cargo check         # Cargo check output
-rtk cargo clippy        # Clippy warnings grouped by file (80%)
-rtk tsc                 # TypeScript errors grouped by file/code (83%)
-rtk lint                # ESLint/Biome violations grouped (84%)
-rtk prettier --check    # Files needing format only (70%)
-rtk next build          # Next.js build with route metrics (87%)
-```
-
-### Test (60-99% savings)
-```bash
-rtk cargo test          # Cargo test failures only (90%)
-rtk go test             # Go test failures only (90%)
-rtk jest                # Jest failures only (99.5%)
-rtk vitest              # Vitest failures only (99.5%)
-rtk playwright test     # Playwright failures only (94%)
-rtk pytest              # Python test failures only (90%)
-rtk rake test           # Ruby test failures only (90%)
-rtk rspec               # RSpec test failures only (60%)
-rtk test <cmd>          # Generic test wrapper - failures only
-```
-
-### Git (59-80% savings)
-```bash
-rtk git status          # Compact status
-rtk git log             # Compact log (works with all git flags)
-rtk git diff            # Compact diff (80%)
-rtk git show            # Compact show (80%)
-rtk git add             # Ultra-compact confirmations (59%)
-rtk git commit          # Ultra-compact confirmations (59%)
-rtk git push            # Ultra-compact confirmations
-rtk git pull            # Ultra-compact confirmations
-rtk git branch          # Compact branch list
-rtk git fetch           # Compact fetch
-rtk git stash           # Compact stash
-rtk git worktree        # Compact worktree
-```
-
-Note: Git passthrough works for ALL subcommands, even those not explicitly listed.
-
-### GitHub (26-87% savings)
-```bash
-rtk gh pr view <num>    # Compact PR view (87%)
-rtk gh pr checks        # Compact PR checks (79%)
-rtk gh run list         # Compact workflow runs (82%)
-rtk gh issue list       # Compact issue list (80%)
-rtk gh api              # Compact API responses (26%)
-```
-
-### JavaScript/TypeScript Tooling (70-90% savings)
-```bash
-rtk pnpm list           # Compact dependency tree (70%)
-rtk pnpm outdated       # Compact outdated packages (80%)
-rtk pnpm install        # Compact install output (90%)
-rtk npm run <script>    # Compact npm script output
-rtk npx <cmd>           # Compact npx command output
-rtk prisma              # Prisma without ASCII art (88%)
-rtk uv run <cmd>        # Compact uv project command output
-```
-
-### Files & Search (60-75% savings)
-```bash
-rtk ls <path>           # Tree format, compact (65%)
-rtk read <file>         # Code reading with filtering (60%)
-rtk grep <pattern>      # Search grouped by file (75%). Format flags (-c, -l, -L, -o, -Z) run raw.
-rtk find <pattern>      # Find grouped by directory (70%)
-```
-
-### Analysis & Debug (70-90% savings)
-```bash
-rtk err <cmd>           # Filter errors only from any command
-rtk log <file>          # Deduplicated logs with counts
-rtk json <file>         # JSON structure without values
-rtk deps                # Dependency overview
-rtk env                 # Environment variables compact
-rtk summary <cmd>       # Smart summary of command output
-rtk diff                # Ultra-compact diffs
-```
-
-### Infrastructure (85% savings)
-```bash
-rtk docker ps           # Compact container list
-rtk docker images       # Compact image list
-rtk docker logs <c>     # Deduplicated logs
-rtk kubectl get         # Compact resource list
-rtk kubectl logs        # Deduplicated pod logs
-```
-
-### Network (65-70% savings)
-```bash
-rtk curl <url>          # Compact HTTP responses (70%)
-rtk wget <url>          # Compact download output (65%)
-```
-
-### Meta Commands
-```bash
-rtk gain                # View token savings statistics
-rtk gain --history      # View command history with savings
-rtk discover            # Analyze Claude Code sessions for missed RTK usage
-rtk proxy <cmd>         # Run command without filtering (for debugging)
-rtk init                # Add RTK instructions to CLAUDE.md
-rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
-```
-
-## Token Savings Overview
-
-| Category | Commands | Typical Savings |
-|----------|----------|-----------------|
-| Tests | vitest, playwright, cargo test | 90-99% |
-| Build | next, tsc, lint, prettier | 70-87% |
-| Git | status, log, diff, add, commit | 59-80% |
-| GitHub | gh pr, gh run, gh issue | 26-87% |
-| Package Managers | pnpm, npm, npx | 70-90% |
-| Files | ls, read, grep, find | 60-75% |
-| Infrastructure | docker, kubectl | 85% |
-| Network | curl, wget | 65-70% |
-
-Overall average: **60-90% token reduction** on common development operations.
-<!-- /rtk-instructions -->
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
