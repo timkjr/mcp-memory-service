@@ -53,16 +53,18 @@ class SessionHarvester:
     def _get_rewriter(self):
         """Lazy-init LLM rewriter. Returns None if not configured.
 
-        Checks `_providers` rather than the legacy `_api_key` (bound only to
-        GROQ_API_KEY) — that check disabled the rewriter whenever a
+        Checks `is_configured` rather than the legacy `_api_key` (bound only
+        to GROQ_API_KEY) — that check disabled the rewriter whenever a
         multi-provider chain or the quality-config fallback was in use,
-        since neither necessarily sets GROQ_API_KEY (#116).
+        since neither necessarily sets GROQ_API_KEY (#116). `is_configured`
+        also filters out a credential-less legacy Groq entry that `_providers`
+        alone would count as usable (#178).
         """
         if not hasattr(self, '_rewriter'):
             try:
                 from .rewriter import HarvestRewriter
                 rewriter = HarvestRewriter()
-                self._rewriter = rewriter if rewriter._providers else None
+                self._rewriter = rewriter if rewriter.is_configured else None
             except Exception:
                 self._rewriter = None
         return self._rewriter

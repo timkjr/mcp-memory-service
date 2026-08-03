@@ -20,6 +20,21 @@ class LLMProvider:
     api_key: str = ""
 
 
+def is_usable_provider(provider: LLMProvider) -> bool:
+    """A provider is usable when it has an endpoint we can actually call.
+
+    ``load_llm_providers`` synthesizes a Groq entry even with no credentials
+    (the legacy single-provider path), so presence in the chain is not
+    enough — the Groq entry needs a key. Self-hosted OpenAI-compatible
+    endpoints legitimately run without one.
+    """
+    if not (provider.base_url and provider.model):
+        return False
+    if provider.name == "groq":
+        return bool(provider.api_key)
+    return True
+
+
 def load_llm_providers() -> list:
     """Load provider chain from env vars.
 
@@ -177,6 +192,18 @@ class HarvestRewriter:
             self._llm_timeout = float(os.environ.get("HARVEST_LLM_TIMEOUT", "10"))
         except ValueError:
             self._llm_timeout = 10.0
+
+    @property
+    def is_configured(self) -> bool:
+        """True when this rewriter has somewhere to send a prompt.
+
+        Either a usable provider from ``HARVEST_LLM_PROVIDERS`` (or the #116
+        quality-scorer fallback), or the legacy ``GROQ_API_KEY``. Callers used
+        to check ``_providers`` truthiness alone, which counted a credential-less
+        legacy Groq entry as "configured" even though it can't actually be
+        called (issue #178).
+        """
+        return any(is_usable_provider(p) for p in self._providers) or bool(self._api_key)
 
     def _build_locale_instruction(self) -> str:
         """Build locale instruction from HARVEST_LOCALE env var."""
